@@ -395,10 +395,10 @@ export default function App() {
         ]}]})
       });
       const data = await resp.json();
-      if (data.error) throw new Error(data.error.message);
+      if (data.error) throw new Error(`API error: ${data.error.type} — ${data.error.message}`);
       const parsed = JSON.parse(data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim());
       setPendingEntry(parsed); setUploadResult(`${parsed.month} — Gross ${fmt(parsed.gross)}, Net ${fmt(parsed.net)}`);
-    } catch { setUploadError("Could not read payslip. Please check it's a valid JLI payslip PDF."); }
+    } catch(err) { setUploadError(err.message || "Unknown error — check API key and network"); }
     setUploading(false); e.target.value="";
   };
 
@@ -1037,3 +1037,4 @@ export default function App() {
     </div>
   );
 }
+
