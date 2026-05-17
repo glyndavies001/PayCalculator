@@ -1,0 +1,80 @@
+# JLI Pay Tracker — Setup Instructions
+
+## What you have
+A personal pay tracking PWA that reads your JLI payslips and tracks your budget.
+It installs on your Android home screen like a real app.
+
+---
+
+## Step 1 — Add your API key
+
+1. Open the file: `src/apikey.js`
+2. You'll see this line:
+   ```
+   const ANTHROPIC_API_KEY = "YOUR_API_KEY_HERE";
+   ```
+3. Replace `YOUR_API_KEY_HERE` with your actual Anthropic API key
+4. Save the file
+
+---
+
+## Step 2 — Build the app
+
+You need Node.js installed on a PC for this step.
+*(If phone-only, skip to Step 3 — Netlify can build it for you)*
+
+```
+npm install
+npm run build
+```
+
+This creates a `build` folder with your finished app.
+
+---
+
+## Step 3 — Deploy to Netlify (free)
+
+### Option A — Drag and drop (easiest)
+1. Go to netlify.com and sign up for a free account
+2. From your dashboard, drag the `build` folder onto the page
+3. Netlify gives you a URL like `https://amazing-app-123.netlify.app`
+
+### Option B — Let Netlify build it (if you have no PC)
+1. Upload this whole `paytrackerapp` folder to a free GitHub account
+2. Connect Netlify to your GitHub repo
+3. Set build command: `npm run build`
+4. Set publish directory: `build`
+5. Add environment variable: `REACT_APP_API_KEY` = your API key
+   *(then update apikey.js to use `process.env.REACT_APP_API_KEY`)*
+6. Netlify builds and deploys automatically
+
+---
+
+## Step 4 — Install on your Android
+
+1. Open Chrome on your Android phone
+2. Go to your Netlify URL
+3. Tap the three-dot menu (top right)
+4. Tap "Add to Home screen"
+5. Tap "Add"
+
+The app now appears on your home screen and opens fullscreen — just like a real app.
+
+---
+
+## Making changes later
+
+To update a bill amount or add a new bill:
+- Open `src/App.js`
+- Find the `BILLS` array near the top
+- Edit the amounts or add a new line in the same format
+- Re-deploy to Netlify (just drag the new `build` folder again)
+
+Or just come back to Claude and ask for the change — I'll update the code for you.
+
+---
+
+## Notes
+- Payslip history is saved in your browser's storage on your phone
+- If you clear Chrome's data, you'll lose added payslips (the original 38 are always in the app)
+- The PDF upload uses your Anthropic API — roughly 2p per payslip read
