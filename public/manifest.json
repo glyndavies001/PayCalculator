@@ -1,6 +1,6 @@
 {
-  "short_name": "Pay Tracker",
-  "name": "JLI Pay Tracker",
+  "short_name": "Vaulted",
+  "name": "Vaulted — Pay Tracker",
   "icons": [
     {
       "src": "icon-192.png",
@@ -15,10 +15,11 @@
       "purpose": "any maskable"
     }
   ],
-  "start_url": ".",
+  "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",
   "theme_color": "#0d0f14",
   "background_color": "#0d0f14",
-  "description": "Track your JLI payslips and budget"
+  "description": "Track your payslips, budget and pay estimates",
+  "prefer_related_applications": false
 }
