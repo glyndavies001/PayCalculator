@@ -253,7 +253,8 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
           <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:11,fontWeight:700,color:"#8892b0",cursor:"text",flex:1}} title="Double-tap to rename">{cat.name}</span>
         )}
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          <span style={{fontSize:11,color:"#e8eaf0",fontWeight:700}}>{fmt(total)}</span>
+          <span style={{fontSize:10,color:"#3a4460"}}>{isGlynOnly?"":"My: "+fmt(glynTotal)+" |"}</span>
+          <span style={{fontSize:11,color:"#e8eaf0",fontWeight:700}}>Total: {fmt(total)}</span>
           <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>✏️</button>
           <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 7px"}}>✕ Delete</button>
         </div>
@@ -296,6 +297,7 @@ export default function App() {
   const [uploadRes,setUploadRes]=useState(null);
   const [uploadErr,setUploadErr]=useState(null);
   const [pending,setPending]=useState(null);
+  const [importMsg,setImportMsg]=useState(null);
 
   const latest=history[history.length-1];
   const shGlyn=sharedBills.reduce((s,b)=>s+billShares(b).glyn,0);
@@ -376,6 +378,36 @@ export default function App() {
     if(isGlyn){const bc={...glynBillCats};catId===null?delete bc[dragBill.current]:(bc[dragBill.current]=catId);updGBC(bc);}
     else{const bc={...billCats};catId===null?delete bc[dragBill.current]:(bc[dragBill.current]=catId);updBC(bc);}
     dragBill.current=null;setDragOver(null);
+  };
+
+  const exportData=()=>{
+    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,exportedAt:new Date().toISOString()};
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download="vaulted-backup-"+new Date().toISOString().slice(0,10)+".json";
+    a.click();URL.revokeObjectURL(url);
+  };
+
+  const importData=e=>{
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try {
+        const d=JSON.parse(ev.target.result);
+        if(d.history){updH(d.history);}
+        if(d.sharedBills){updSB(d.sharedBills);}
+        if(d.glynBills){updGB(d.glynBills);}
+        if(d.cats){updC(d.cats);}
+        if(d.billCats){updBC(d.billCats);}
+        if(d.glynCats){updGC(d.glynCats);}
+        if(d.glynBillCats){updGBC(d.glynBillCats);}
+        if(d.calcInputs){setCi(d.calcInputs);save(SK.calcInputs,d.calcInputs);}
+        setImportMsg("✓ Data restored successfully");
+      } catch{setImportMsg("⚠ Invalid backup file");}
+    };
+    reader.readAsText(file);
+    e.target.value="";
   };
 
   const card={background:"#141824",borderRadius:10,border:"1px solid #1e2535",padding:"14px 12px"};
@@ -841,7 +873,8 @@ export default function App() {
         )}
 
         {tab==="Upload"&&(
-          <div style={{...card,textAlign:"center"}}>
+          <div>
+          <div style={{...card,textAlign:"center",marginBottom:14}}>
             <div style={{fontSize:32,marginBottom:10}}>📄</div>
             <h2 style={{margin:"0 0 6px",fontSize:16,color:"#e8eaf0"}}>Upload Payslip</h2>
             <p style={{fontSize:12,color:"#5a6480",marginBottom:24}}>Select a payslip PDF. Pay Calc will update automatically with the latest bonus and allowance.</p>
@@ -867,6 +900,24 @@ export default function App() {
                 </div>
               </div>
             )}
+          </div>
+
+          <div style={{...card}}>
+            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Backup & Restore</div>
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:16,lineHeight:1.6}}>Export saves all your payslips, bills, and categories to a file. Import restores from a previous export. Save your backup to Google Drive for safekeeping.</p>
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              <button onClick={exportData} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer"}}>⬇ Export Backup</button>
+              <label style={{flex:1,background:"#1a2535",border:"1px solid #00c88c",borderRadius:8,color:"#00c88c",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer",textAlign:"center"}}>
+                ⬆ Import Backup
+                <input type="file" accept=".json" onChange={importData} style={{display:"none"}}/>
+              </label>
+            </div>
+            {importMsg&&(
+              <div style={{padding:"10px 12px",borderRadius:8,background:importMsg.startsWith("✓")?"#0a1a10":"#2a0f15",border:"1px solid "+(importMsg.startsWith("✓")?"#1a4030":"#5a1a2a"),color:importMsg.startsWith("✓")?"#00c88c":"#ff6b8a",fontSize:12,textAlign:"center"}}>
+                {importMsg}
+              </div>
+            )}
+          </div>
           </div>
         )}
 
