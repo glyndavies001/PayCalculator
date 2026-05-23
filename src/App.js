@@ -129,15 +129,54 @@ function billShares(b) {
 
 // Storage keys — NEVER change these, doing so will lose user data
 const SK = {
-  history:     "vaulted_history",
-  sharedBills: "vaulted_shared_bills",
-  glynBills:   "vaulted_glyn_bills",
-  cats:        "vaulted_cats",
-  billCats:    "vaulted_billcats",
-  glynCats:    "vaulted_gcats",
-  glynBillCats:"vaulted_gbillcats",
-  calcInputs:  "vaulted_calc",
+  history:      "vaulted_history",
+  sharedBills:  "vaulted_shared_bills",
+  glynBills:    "vaulted_glyn_bills",
+  cats:         "vaulted_cats",
+  billCats:     "vaulted_billcats",
+  glynCats:     "vaulted_gcats",
+  glynBillCats: "vaulted_gbillcats",
+  calcInputs:   "vaulted_calc",
+  timesheets:   "vaulted_timesheets",   // accumulated weekly timesheet data for current month
+  tsLastUpload: "vaulted_ts_last",      // ISO date string of last timesheet upload
 };
+
+// Work out the actual payday for a given month/year (paid on 29th, adjusted)
+function getPayday(year, month) {
+  // Start with the 29th
+  let d = new Date(year, month, 29);
+  // If month has fewer than 29 days (Feb), go to last day
+  if (d.getMonth() !== month) d = new Date(year, month + 1, 0);
+  const dow = d.getDay();
+  // Saturday → Friday
+  if (dow === 6) d.setDate(d.getDate() - 1);
+  // Sunday → Friday
+  if (dow === 0) d.setDate(d.getDate() - 2);
+  // Monday (possible bank holiday) → check if it's a common UK bank holiday pattern
+  // Simple approach: if Monday, shift to Friday just in case
+  // (Can be refined later)
+  return d;
+}
+
+// Check if accumulated timesheet data should be reset (new pay period started)
+function shouldResetTimesheet(tsLastUpload) {
+  if (!tsLastUpload) return false;
+  const last = new Date(tsLastUpload);
+  const now = new Date();
+  const payday = getPayday(last.getFullYear(), last.getMonth());
+  // If payday has passed since last upload, reset
+  return now > payday && now.getMonth() !== last.getMonth();
+}
+
+// Check if a Monday reminder should show
+function shouldShowTimesheetReminder(tsLastUpload) {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun,1=Mon
+  if (!tsLastUpload) return true; // never uploaded
+  const last = new Date(tsLastUpload);
+  const daysSince = Math.floor((now - last) / (1000 * 60 * 60 * 24));
+  return daysSince >= 7;
+}
 
 // Legacy key names from older builds — migrate once then leave
 const LEGACY = {
@@ -301,6 +340,20 @@ export default function App() {
   const [multiResults,setMultiResults]=useState([]);
   const [uploadProgress,setUploadProgress]=useState(null);
 
+  // Timesheet state
+  const [tsUploading,setTsUploading]=useState(false);
+  const [tsProgress,setTsProgress]=useState(null);
+  const [tsResults,setTsResults]=useState([]);
+  const [tsPending,setTsPending]=useState(null); // extracted data awaiting confirmation
+  const [tsLastUpload,setTsLastUpload]=useState(()=>load(SK.tsLastUpload,null));
+  const [accumulated,setAccumulated]=useState(()=>{
+    const stored=load(SK.timesheets,null);
+    // Reset if new pay period
+    if(stored && shouldResetTimesheet(stored.lastUpload)) return {stdHrs:0,otHrs:0,weekendOtHrs:0,weeks:[],lastUpload:null};
+    return stored||{stdHrs:0,otHrs:0,weekendOtHrs:0,weeks:[],lastUpload:null};
+  });
+  const showTsReminder=shouldShowTimesheetReminder(tsLastUpload);
+
   const latest=history[history.length-1];
   const shGlyn=sharedBills.reduce((s,b)=>s+billShares(b).glyn,0);
   const shHollie=sharedBills.reduce((s,b)=>s+billShares(b).hollie,0);
@@ -428,6 +481,110 @@ export default function App() {
     e.target.value="";
   };
 
+  // Timesheet calculation helpers
+  const parseHM = str => {
+    // Parse "8h 15m", "9h 19m", "8h", "45m" etc into decimal hours
+    const hMatch = str.match(/(\d+)h/);
+    const mMatch = str.match(/(\d+)m/);
+    const h = hMatch ? parseInt(hMatch[1]) : 0;
+    const m = mMatch ? parseInt(mMatch[1]) : 0;
+    return Math.round((h + m / 60) * 100) / 100;
+  };
+
+  const calcTimesheetTotals = days => {
+    let stdHrs = 0, otHrs = 0, weekendOtHrs = 0;
+    const STD = 8.25; // 8h 15m
+    days.forEach(d => {
+      const hrs = parseHM(d.hours);
+      const dayLower = d.day.toLowerCase();
+      const isWeekend = dayLower.startsWith("sat") || dayLower.startsWith("sun");
+      if (isWeekend) {
+        weekendOtHrs += hrs;
+      } else {
+        if (hrs <= STD) {
+          stdHrs += hrs;
+        } else {
+          stdHrs += STD;
+          otHrs += Math.round((hrs - STD) * 100) / 100;
+        }
+      }
+    });
+    return {
+      stdHrs: Math.round(stdHrs * 100) / 100,
+      otHrs: Math.round(otHrs * 100) / 100,
+      weekendOtHrs: Math.round(weekendOtHrs * 100) / 100,
+    };
+  };
+
+  const handleTimesheetUpload = async e => {
+    const files = Array.from(e.target.files); if (!files.length) return;
+    setTsUploading(true); setTsResults([]); setTsPending(null);
+    const allDays = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setTsProgress(`Reading image ${i + 1} of ${files.length}…`);
+      try {
+        const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
+        const mediaType = file.type || "image/jpeg";
+        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-6", max_tokens: 1000,
+            messages: [{ role: "user", content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: b64 } },
+              { type: "text", text: 'This is a work timesheet. Extract each row as JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m"},{"date":"DD/MM","day":"Tue","hours":"9h 30m"}]\nInclude every row that has a day and hours value. Use the hours column value exactly as shown.' }
+            ]}]
+          })
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error.message);
+        const text = data.content.map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
+        const days = JSON.parse(text);
+        allDays.push(...days);
+        setTsResults(prev => [...prev, { ok: true, file: file.name, days }]);
+      } catch (err) {
+        setTsResults(prev => [...prev, { ok: false, file: file.name, err: err.message }]);
+      }
+    }
+    if (allDays.length > 0) {
+      const totals = calcTimesheetTotals(allDays);
+      setTsPending({ days: allDays, totals });
+    }
+    setTsProgress(null);
+    setTsUploading(false);
+    e.target.value = "";
+  };
+
+  const confirmTimesheet = () => {
+    if (!tsPending) return;
+    const now = new Date().toISOString();
+    const newAcc = {
+      stdHrs: Math.round((accumulated.stdHrs + tsPending.totals.stdHrs) * 100) / 100,
+      otHrs: Math.round((accumulated.otHrs + tsPending.totals.otHrs) * 100) / 100,
+      weekendOtHrs: Math.round((accumulated.weekendOtHrs + tsPending.totals.weekendOtHrs) * 100) / 100,
+      weeks: [...accumulated.weeks, { uploadedAt: now, ...tsPending.totals }],
+      lastUpload: now,
+    };
+    setAccumulated(newAcc);
+    save(SK.timesheets, newAcc);
+    setTsLastUpload(now);
+    save(SK.tsLastUpload, now);
+    // Apply to Pay Calc
+    setC("stdHrs", newAcc.stdHrs);
+    setC("otHrs", newAcc.otHrs);
+    setC("weekendOtHrs", newAcc.weekendOtHrs);
+    setTsPending(null);
+  };
+
+  const resetTimesheet = () => {
+    const empty = { stdHrs: 0, otHrs: 0, weekendOtHrs: 0, weeks: [], lastUpload: null };
+    setAccumulated(empty);
+    save(SK.timesheets, empty);
+    setTsResults([]);
+    setTsPending(null);
+  };
+
   const card={background:"#141824",borderRadius:10,border:"1px solid #1e2535",padding:"14px 12px"};
   const hdr={fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6};
   const inp={background:"#1e2535",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:13,padding:"8px 10px",width:"100%",boxSizing:"border-box"};
@@ -461,6 +618,15 @@ export default function App() {
 
         {tab==="Dashboard"&&(
           <div>
+            {showTsReminder&&(
+              <div onClick={()=>setTab("Upload")} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:10,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <span style={{fontSize:20}}>⚠️</span>
+                <div>
+                  <div style={{fontSize:12,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
+                  <div style={{fontSize:11,color:"#8a7040",marginTop:2}}>{tsLastUpload?`Last uploaded ${Math.floor((new Date()-new Date(tsLastUpload))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} · Tap to upload</div>
+                </div>
+              </div>
+            )}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
               {[
                 {label:"Est. Net Pay",    value:fmt(cr.net),      sub:"from Pay Calc",      accent:"#4a9eff"},
@@ -919,6 +1085,63 @@ export default function App() {
               </div>
             )}
           </div>
+
+          <div style={{...card,marginBottom:14}}>
+            <div style={{fontSize:9,color:"#ffb84a",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Weekly Timesheet</div>
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:14,lineHeight:1.6}}>Screenshot your timesheet email and upload here. Hours will be calculated and applied to Pay Calc automatically. Uploads accumulate across the month.</p>
+
+            {accumulated.weeks.length>0&&(
+              <div style={{background:"#0d1117",borderRadius:8,padding:"10px 12px",marginBottom:14}}>
+                <div style={{fontSize:10,color:"#ffb84a",fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>This Month So Far</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:8}}>
+                  {[["Std Hrs",accumulated.stdHrs,"#4a9eff"],["Weekday OT",accumulated.otHrs,"#4affd4"],["Weekend OT",accumulated.weekendOtHrs,"#ffb84a"]].map(([l,v,c])=>(
+                    <div key={l} style={{background:"#141824",borderRadius:6,padding:"8px",textAlign:"center"}}>
+                      <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                      <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{fontSize:10,color:"#3a4460",marginBottom:6}}>{accumulated.weeks.length} week{accumulated.weeks.length!==1?"s":""} uploaded</div>
+                <button onClick={resetTimesheet} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:600,padding:"6px 12px",cursor:"pointer",width:"100%"}}>Reset for New Month</button>
+              </div>
+            )}
+
+            <label style={{display:"block",background:"#0d1117",border:"2px dashed "+(showTsReminder?"#ffb84a":"#2a3050"),borderRadius:10,padding:"20px 16px",cursor:tsUploading?"not-allowed":"pointer",marginBottom:12}}>
+              <input type="file" accept="image/*" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
+              {tsUploading
+                ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#ffb84a",fontSize:13}}>{tsProgress||"Processing…"}</div></div>
+                :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
+              }
+            </label>
+
+            {tsPending&&(
+              <div style={{background:"#0d1a10",border:"1px solid #1a4030",borderRadius:10,padding:14,marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted — {tsPending.days.length} days</div>
+                <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
+                  {tsPending.days.map((d,i)=>(
+                    <div key={i} style={{display:"grid",gridTemplateColumns:"60px 50px 1fr",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:11}}>
+                      <span style={{color:"#5a8070"}}>{d.date}</span>
+                      <span style={{color:"#8892b0"}}>{d.day}</span>
+                      <span style={{color:"#e8eaf0",textAlign:"right",fontWeight:600}}>{d.hours}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:12}}>
+                  {[["Std Hrs",tsPending.totals.stdHrs,"#4a9eff"],["Weekday OT",tsPending.totals.otHrs,"#4affd4"],["Weekend OT",tsPending.totals.weekendOtHrs,"#ffb84a"]].map(([l,v,c])=>(
+                    <div key={l} style={{background:"#0a1a10",borderRadius:6,padding:"8px",textAlign:"center"}}>
+                      <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                      <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={confirmTimesheet} style={{flex:1,background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Apply to Pay Calc</button>
+                  <button onClick={()=>setTsPending(null)} style={{background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px 14px",cursor:"pointer"}}>Discard</button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div style={{...card}}>
             <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Backup & Restore</div>
             <p style={{fontSize:12,color:"#5a6480",marginBottom:16,lineHeight:1.6}}>Export saves all your payslips, bills, and categories to a file. Import restores from a previous export. Save your backup to Google Drive for safekeeping.</p>
