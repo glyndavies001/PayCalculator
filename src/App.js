@@ -1306,32 +1306,48 @@ export default function App() {
                 :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
               }
             </label>
-            {tsPending&&(
-              <div style={{background:"#0d1a10",border:"1px solid #1a4030",borderRadius:10,padding:14,marginBottom:12}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted — {tsPending.days.length} days</div>
-                <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
-                  {tsPending.days.map((d,i)=>(
-                    <div key={i} style={{display:"grid",gridTemplateColumns:"60px 50px 1fr",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:11}}>
-                      <span style={{color:"#5a8070"}}>{d.date}</span>
-                      <span style={{color:"#8892b0"}}>{d.day}</span>
-                      <span style={{color:"#e8eaf0",textAlign:"right",fontWeight:600}}>{d.hours}</span>
-                    </div>
-                  ))}
+            {tsPending&&(()=>{
+              // Calculate what the totals will be after merge+dedup
+              const STD = 8.25;
+              const enrichedNew = tsPending.days.map(d => {
+                const hrs = parseHM(d.hours);
+                const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
+                return { ...d, hrs, otHrs: isWeekend ? 0 : Math.max(0, Math.round((hrs-STD)*100)/100), wkOtHrs: isWeekend ? hrs : 0 };
+              });
+              const seen = new Set();
+              const merged = [...(accumulated.days||[]), ...enrichedNew]
+                .sort((a,b)=>{const[ad,am]=(a.date||"").split("/").map(Number);const[bd,bm]=(b.date||"").split("/").map(Number);return am!==bm?am-bm:ad-bd;})
+                .filter(d=>{const k=d.date+"_"+d.day;if(seen.has(k))return false;seen.add(k);return true;});
+              const projOT = Math.round(merged.reduce((s,d)=>s+(d.otHrs||0),0)*100)/100;
+              const projWknd = Math.round(merged.reduce((s,d)=>s+(d.wkOtHrs||0),0)*100)/100;
+              return(
+                <div style={{background:"#0d1a10",border:"1px solid #1a4030",borderRadius:10,padding:14,marginBottom:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted — {tsPending.days.length} days</div>
+                  <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
+                    {tsPending.days.map((d,i)=>(
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 50px 1fr",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:11}}>
+                        <span style={{color:"#5a8070"}}>{d.date}</span>
+                        <span style={{color:"#8892b0"}}>{d.day}</span>
+                        <span style={{color:"#e8eaf0",textAlign:"right",fontWeight:600}}>{d.hours}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Month total after applying</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+                    {[["Weekday OT",projOT,"#4affd4"],["Weekend OT",projWknd,"#ffb84a"]].map(([l,v,c])=>(
+                      <div key={l} style={{background:"#0a1a10",borderRadius:6,padding:"8px",textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                        <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={confirmTimesheet} style={{flex:1,background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Apply to Pay Calc</button>
+                    <button onClick={()=>setTsPending(null)} style={{background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px 14px",cursor:"pointer"}}>Discard</button>
+                  </div>
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
-                  {[["Weekday OT",tsPending.totals.otHrs,"#4affd4"],["Weekend OT",tsPending.totals.weekendOtHrs,"#ffb84a"]].map(([l,v,c])=>(
-                    <div key={l} style={{background:"#0a1a10",borderRadius:6,padding:"8px",textAlign:"center"}}>
-                      <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
-                      <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{display:"flex",gap:8}}>
-                  <button onClick={confirmTimesheet} style={{flex:1,background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Apply to Pay Calc</button>
-                  <button onClick={()=>setTsPending(null)} style={{background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px 14px",cursor:"pointer"}}>Discard</button>
-                </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
 
           <div style={{...card}}>
@@ -1395,20 +1411,6 @@ export default function App() {
                 <div style={{fontSize:32,marginBottom:10}}>📋</div>
                 <div style={{fontSize:13,color:"#5a6480"}}>No timesheets uploaded yet this month</div>
                 <div style={{fontSize:11,color:"#3a4460",marginTop:6}}>Go to Upload tab to add your weekly timesheet</div>
-              </div>
-            )}
-
-            {/* Weeks uploaded */}
-            {accumulated.weeks&&accumulated.weeks.length>0&&(
-              <div style={{...card,marginBottom:14}}>
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>Weeks Uploaded</div>
-                {accumulated.weeks.map((w,i)=>(
-                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12}}>
-                    <span style={{color:"#5a6480"}}>Upload {i+1}</span>
-                    <span style={{color:"#3a4460"}}>{new Date(w.uploadedAt).toLocaleDateString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}</span>
-                  </div>
-                ))}
-                <div style={{fontSize:10,color:"#3a4460",marginTop:8}}>Totals above reflect all uploads combined after deduplication</div>
               </div>
             )}
 
