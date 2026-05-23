@@ -619,7 +619,7 @@ export default function App() {
       const wkOtHrs = isWeekend ? hrs : 0;
       return { ...d, hrs, otHrs, wkOtHrs };
     });
-    const sortDays = days => {
+    const sortAndDedup = days => {
       const seen = new Set();
       return [...days]
         .sort((a, b) => {
@@ -634,11 +634,15 @@ export default function App() {
           return true;
         });
     };
+    const mergedDays = sortAndDedup([...(accumulated.days||[]), ...enrichedDays]);
+    // Derive totals from the deduplicated days — single source of truth
+    const totalOtHrs = Math.round(mergedDays.reduce((s,d) => s + (d.otHrs||0), 0) * 100) / 100;
+    const totalWkndHrs = Math.round(mergedDays.reduce((s,d) => s + (d.wkOtHrs||0), 0) * 100) / 100;
     const newAcc = {
-      otHrs: Math.round((accumulated.otHrs + tsPending.totals.otHrs) * 100) / 100,
-      weekendOtHrs: Math.round((accumulated.weekendOtHrs + tsPending.totals.weekendOtHrs) * 100) / 100,
+      otHrs: totalOtHrs,
+      weekendOtHrs: totalWkndHrs,
       weeks: [...accumulated.weeks, { uploadedAt: now, ...tsPending.totals }],
-      days: sortDays([...(accumulated.days||[]), ...enrichedDays]),
+      days: mergedDays,
       lastUpload: now,
     };
     setAccumulated(newAcc);
