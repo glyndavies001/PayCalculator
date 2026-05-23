@@ -253,7 +253,7 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
           <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:11,fontWeight:700,color:"#8892b0",cursor:"text",flex:1}} title="Double-tap to rename">{cat.name}</span>
         )}
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          <span style={{fontSize:11,color:"#e8eaf0",fontWeight:700}}>{fmt(total)}</span>
+          <span style={{fontSize:11,color:"#e8eaf0",fontWeight:700,marginRight:4}}>{fmt(total)}</span>
           <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>✏️</button>
           <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 7px"}}>✕ Delete</button>
         </div>
