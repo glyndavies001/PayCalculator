@@ -1,0 +1,1686 @@
+import React, { useState, useMemo, useRef, useCallback } from "react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
+import ANTHROPIC_API_KEY from "./apikey";
+
+function getWorkingDaysInMonth(year, month) {
+  const days = new Date(year, month + 1, 0).getDate();
+  let count = 0;
+  for (let d = 1; d <= days; d++) {
+    const day = new Date(year, month, d).getDay();
+    if (day !== 0 && day !== 6) count++;
+  }
+  return count;
+}
+function getCurrentMonthHours() {
+  const now = new Date();
+  return Math.round(getWorkingDaysInMonth(now.getFullYear(), now.getMonth()) * 8.25 * 100) / 100;
+}
+
+const PAY = {
+  baseRate: 14.50, oteRate: 16.84, otRate: 17.40, weekendOtRate: 21.75,
+  taxFreeMonthly: 1047.50, niPrimaryThreshold: 1048, niUpperThreshold: 4189,
+  slThreshold: 2372, nestRate: 0.05, taxCode: "C1257L", niCategory: "A",
+  bonusTiers: [
+    { label: "Tier 1", range: "<80%",      bonus: 0,   allowance: 0.00 },
+    { label: "Tier 2", range: "80-84.99%", bonus: 80,  allowance: 0.20 },
+    { label: "Tier 3", range: "85-89.99%", bonus: 120, allowance: 0.40 },
+    { label: "Tier 4", range: "90-94.99%", bonus: 160, allowance: 0.60 },
+    { label: "Tier 5", range: "95-99.99%", bonus: 200, allowance: 0.80 },
+    { label: "Tier 6", range: "100%+",     bonus: 240, allowance: 1.00 },
+  ],
+};
+
+function getAllowanceForBonus(bonus) {
+  // Find the matching tier by bonus amount; default to 0 if not found
+  const tier = PAY.bonusTiers.slice().reverse().find(t => bonus >= t.bonus && t.bonus > 0);
+  return tier ? tier.allowance : 0;
+}
+
+function calcPay({ stdHrs, otHrs, weekendOtHrs, bonus, perfAllowance, _allowanceOverride }) {
+  const allowance = _allowanceOverride !== undefined
+    ? _allowanceOverride
+    : perfAllowance !== undefined
+      ? (perfAllowance ? getAllowanceForBonus(bonus) || 1.00 : 0)
+      : getAllowanceForBonus(bonus);
+  const rate = PAY.baseRate + allowance;
+  const stdPay = stdHrs * rate;
+  const otPay = otHrs * PAY.otRate;
+  const wkPay = weekendOtHrs * PAY.weekendOtRate;
+  const gross = stdPay + otPay + wkPay + bonus;
+  const taxable = Math.max(0, gross - PAY.taxFreeMonthly);
+  const tax = taxable * 0.20;
+  const niLower = Math.max(0, Math.min(gross, PAY.niUpperThreshold) - PAY.niPrimaryThreshold);
+  const niUpper = Math.max(0, gross - PAY.niUpperThreshold);
+  const ni = niLower * 0.08 + niUpper * 0.02;
+  const nest = Math.max(0, gross - 520) * PAY.nestRate;
+  const sl = Math.max(0, gross - PAY.slThreshold) * 0.09;
+  const deductions = tax + ni + nest + sl;
+  const net = gross - deductions;
+  return { stdPay, otPay, wkPay, bonus, gross, tax, ni, nest, sl, deductions, net,
+    annualGross: gross*12, annualNet: net*12, annualTax: tax*12, annualNI: ni*12 };
+}
+
+const INITIAL_HISTORY = [
+  { month: "Apr 2022", date: "29/04/2022", gross: 1669.82, net: 1432.82, tax: 124.8,  ni: 112.2,  nest: 0,     sl: 0,  bonus: 0,   ot: 60.38  },
+  { month: "May 2022", date: "30/05/2022", gross: 1719.62, net: 1418.23, tax: 134.6,  ni: 118.8,  nest: 47.99, sl: 0,  bonus: 0,   ot: 43.12  },
+  { month: "Jun 2022", date: "30/06/2022", gross: 2019.89, net: 1606.3,  tax: 195,    ni: 158.59, nest: 60,    sl: 0,  bonus: 100, ot: 166.75 },
+  { month: "Jul 2022", date: "30/07/2022", gross: 1595.06, net: 1369.77, tax: 109.8,  ni: 72.48,  nest: 43.01, sl: 0,  bonus: 0,   ot: 0      },
+  { month: "Aug 2022", date: "30/08/2022", gross: 1781.29, net: 1489.07, tax: 144.6,  ni: 97.16,  nest: 50.46, sl: 0,  bonus: 100, ot: 0      },
+  { month: "Oct 2022", date: "30/10/2022", gross: 2036.24, net: 1647.05, tax: 197.6,  ni: 130.94, nest: 60.65, sl: 0,  bonus: 100, ot: 336.38 },
+  { month: "Nov 2022", date: "30/11/2022", gross: 2089.44, net: 1693.29, tax: 208.4,  ni: 124.97, nest: 62.78, sl: 0,  bonus: 100, ot: 149.44 },
+  { month: "Jan 2023", date: "30/01/2023", gross: 2697.37, net: 2044.55, tax: 329.8,  ni: 197.92, nest: 87.1,  sl: 38, bonus: 100, ot: 577.37 },
+  { month: "Feb 2023", date: "28/02/2023", gross: 2246.17, net: 1793.74, tax: 239.6,  ni: 143.78, nest: 69.05, sl: 38, bonus: 100, ot: 51.17  },
+  { month: "Mar 2023", date: "30/03/2023", gross: 2254.26, net: 1798.93, tax: 241.2,  ni: 144.75, nest: 69.38, sl: 38, bonus: 70,  ot: 164.26 },
+  { month: "Apr 2023", date: "30/04/2023", gross: 2218.62, net: 1776.2,  tax: 234,    ni: 140.47, nest: 67.95, sl: 0,  bonus: 100, ot: 82.62  },
+  { month: "May 2023", date: "30/05/2023", gross: 2203.52, net: 1766.51, tax: 231,    ni: 138.66, nest: 67.35, sl: 0,  bonus: 100, ot: 67.52  },
+  { month: "Jul 2023", date: "30/07/2023", gross: 2193.74, net: 1760.3,  tax: 229,    ni: 137.49, nest: 66.95, sl: 5,  bonus: 100, ot: 57.74  },
+  { month: "Aug 2023", date: "30/08/2023", gross: 2226.87, net: 1781.33, tax: 235.8,  ni: 141.46, nest: 68.28, sl: 5,  bonus: 100, ot: 90.87  },
+  { month: "Sep 2023", date: "30/09/2023", gross: 2331.86, net: 1843.72, tax: 256.6,  ni: 154.06, nest: 72.48, sl: 5,  bonus: 100, ot: 195.86 },
+  { month: "Oct 2023", date: "30/10/2023", gross: 2148.58, net: 1731.16, tax: 220.2,  ni: 132.07, nest: 65.15, sl: 10, bonus: 100, ot: 12.58  },
+  { month: "Nov 2023", date: "30/11/2023", gross: 2209.89, net: 1770.66, tax: 232.2,  ni: 139.43, nest: 67.6,  sl: 10, bonus: 100, ot: 63.89  },
+  { month: "Dec 2023", date: "28/12/2023", gross: 2138.01, net: 1724.48, tax: 218,    ni: 130.8,  nest: 64.73, sl: 10, bonus: 100, ot: 0      },
+  { month: "Jan 2024", date: "31/01/2024", gross: 2528.32, net: 1981.95, tax: 296,    ni: 148.03, nest: 80.34, sl: 22, bonus: 100, ot: 192.32 },
+  { month: "Feb 2024", date: "29/02/2024", gross: 2532.14, net: 1983.44, tax: 296.8,  ni: 148.41, nest: 80.49, sl: 23, bonus: 100, ot: 170.14 },
+  { month: "Mar 2024", date: "28/03/2024", gross: 2362.01, net: 1887.12, tax: 262.8,  ni: 131.4,  nest: 73.69, sl: 7,  bonus: 100, ot: 0      },
+  { month: "Apr 2024", date: "30/04/2024", gross: 2368.6,  net: 1917,    tax: 264,    ni: 105.65, nest: 73.95, sl: 8,  bonus: 100, ot: 32.59  },
+  { month: "May 2024", date: "01/06/2024", gross: 2494.34, net: 1991.45, tax: 289.2,  ni: 115.71, nest: 78.98, sl: 19, bonus: 100, ot: 158.36 },
+  { month: "Jun 2024", date: "28/06/2024", gross: 2336,    net: 1897.72, tax: 257.6,  ni: 103.04, nest: 72.64, sl: 5,  bonus: 100, ot: 0      },
+  { month: "Jul 2024", date: "31/07/2024", gross: 2662.03, net: 2090.62, tax: 322.6,  ni: 129.12, nest: 85.69, sl: 34, bonus: 100, ot: 300.03 },
+  { month: "Aug 2024", date: "31/08/2024", gross: 2527.56, net: 2010.89, tax: 296,    ni: 118.36, nest: 80.31, sl: 22, bonus: 100, ot: 191.56 },
+  { month: "Sep 2024", date: "30/09/2024", gross: 2531.86, net: 2013.07, tax: 296.6,  ni: 118.71, nest: 80.48, sl: 23, bonus: 160, ot: 81.86  },
+  { month: "Oct 2024", date: "30/10/2024", gross: 2667.57, net: 2093.1,  tax: 324,    ni: 129.56, nest: 85.91, sl: 35, bonus: 160, ot: 217.57 },
+  { month: "Nov 2024", date: "29/11/2024", gross: 2482.59, net: 1984.51, tax: 286.8,  ni: 114.77, nest: 78.51, sl: 18, bonus: 200, ot: 32.59  },
+  { month: "Dec 2024", date: "24/12/2024", gross: 2450,    net: 1965.24, tax: 280.4,  ni: 112.16, nest: 77.2,  sl: 15, bonus: 200, ot: 0      },
+  { month: "Apr 2025", date: "29/04/2025", gross: 2669.33, net: 2103.44, tax: 324.2,  ni: 129.71, nest: 85.98, sl: 26, bonus: 160, ot: 82.66  },
+  { month: "May 2025", date: "29/05/2025", gross: 2748.21, net: 2150.06, tax: 340,    ni: 136.02, nest: 89.13, sl: 33, bonus: 160, ot: 131.54 },
+  { month: "Jun 2025", date: "30/06/2025", gross: 2728.63, net: 2137.83, tax: 336,    ni: 134.45, nest: 88.35, sl: 32, bonus: 160, ot: 141.96 },
+  { month: "Aug 2025", date: "29/08/2025", gross: 2760.96, net: 2157.68, tax: 342.6,  ni: 137.04, nest: 89.64, sl: 34, bonus: 160, ot: 120.29 },
+  { month: "Oct 2025", date: "29/10/2025", gross: 3125.28, net: 2372.48, tax: 415.4,  ni: 166.18, nest: 104.22,sl: 67, bonus: 160, ot: 158.09 },
+  { month: "Nov 2025", date: "28/11/2025", gross: 2794.04, net: 2177.39, tax: 349,    ni: 139.68, nest: 90.97, sl: 37, bonus: 200, ot: 88.2   },
+  { month: "Jan 2026", date: "29/01/2026", gross: 2798.53, net: 2179.34, tax: 350,    ni: 140.04, nest: 91.15, sl: 38, bonus: 200, ot: 85.34  },
+  { month: "Mar 2026", date: "30/03/2026", gross: 2860.71, net: 2216.46, tax: 362.6,  ni: 145.02, nest: 93.63, sl: 43, bonus: 240, ot: 83.16  },
+  { month: "Apr 2026", date: "29/04/2026", gross: 2957.36, net: 2280.31, tax: 381.8,  ni: 152.75, nest: 97.5,  sl: 45, bonus: 240, ot: 117.48 },
+];
+
+const HOLLIE_CAR = 100;
+const INITIAL_SHARED_BILLS = [
+  { id: 1,  name: "Food",               total: 300,    isCarGlyn: false },
+  { id: 2,  name: "Petrol",             total: 160,    isCarGlyn: false },
+  { id: 3,  name: "Gaia",               total: 100,    isCarGlyn: false },
+  { id: 4,  name: "Mortgage",           total: 501.59, isCarGlyn: false },
+  { id: 5,  name: "Council Tax",        total: 161,    isCarGlyn: false },
+  { id: 6,  name: "UW Gas & Electric",  total: 126.31, isCarGlyn: false },
+  { id: 7,  name: "Dwr Cymru",          total: 31.5,   isCarGlyn: false },
+  { id: 8,  name: "Sky (TV+Broadband)", total: 60,     isCarGlyn: false },
+  { id: 9,  name: "Netflix",            total: 12.99,  isCarGlyn: false },
+  { id: 10, name: "Disney+",            total: 9.99,   isCarGlyn: false },
+  { id: 11, name: "Spotify",            total: 17.99,  isCarGlyn: false },
+  { id: 12, name: "Car 🚗",             total: 316.02, isCarGlyn: true  },
+  { id: 13, name: "Barclays Hoover",    total: 100.64, isCarGlyn: false },
+  { id: 14, name: "Medivet",            total: 17.5,   isCarGlyn: false },
+  { id: 15, name: "Pet Insurance",      total: 4.97,   isCarGlyn: false },
+  { id: 16, name: "Head Room",          total: 100,    isCarGlyn: false },
+  { id: 17, name: "Angie",              total: 7,      isCarGlyn: false },
+];
+const INITIAL_GLYN_BILLS = [
+  { id: 101, name: "Barclays Phone", total: 38.08 },
+  { id: 102, name: "L&G Insurance",  total: 16.7  },
+  { id: 103, name: "Tesco",          total: 15    },
+  { id: 104, name: "Julia",          total: 15.5  },
+  { id: 105, name: "Google One",     total: 1.59  },
+  { id: 106, name: "Lloyds CC",      total: 67.87 },
+  { id: 107, name: "Ocean CC",       total: 26.95 },
+];
+
+function billShares(b) {
+  if (b.isCarGlyn) return { glyn: Math.max(0, b.total - HOLLIE_CAR), hollie: HOLLIE_CAR };
+  return { glyn: b.total / 2, hollie: b.total / 2 };
+}
+
+// Storage keys — NEVER change these, doing so will lose user data
+const SK = {
+  history:      "vaulted_history",
+  sharedBills:  "vaulted_shared_bills",
+  glynBills:    "vaulted_glyn_bills",
+  cats:         "vaulted_cats",
+  billCats:     "vaulted_billcats",
+  glynCats:     "vaulted_gcats",
+  glynBillCats: "vaulted_gbillcats",
+  calcInputs:   "vaulted_calc",
+  timesheets:   "vaulted_timesheets",   // accumulated weekly timesheet data for current month
+  tsLastUpload: "vaulted_ts_last",      // ISO date string of last timesheet upload
+  notes:        "vaulted_notes",        // { "Mon YYYY": "note text" }
+  tierOverride: "vaulted_tier_override", // { tierIdx: 0-5, month: "Mon YYYY" }
+};
+
+// Work out the actual payday for a given month/year (paid on 29th, adjusted)
+function getPayday(year, month) {
+  // Start with the 29th
+  let d = new Date(year, month, 29);
+  // If month has fewer than 29 days (Feb), go to last day
+  if (d.getMonth() !== month) d = new Date(year, month + 1, 0);
+  const dow = d.getDay();
+  // Saturday → Friday
+  if (dow === 6) d.setDate(d.getDate() - 1);
+  // Sunday → Friday
+  if (dow === 0) d.setDate(d.getDate() - 2);
+  // Monday (possible bank holiday) → check if it's a common UK bank holiday pattern
+  // Simple approach: if Monday, shift to Friday just in case
+  // (Can be refined later)
+  return d;
+}
+
+// Check if accumulated timesheet data should be reset (new pay period started)
+function getNextPayday() {
+  const now = new Date();
+  let pd = getPayday(now.getFullYear(), now.getMonth());
+  if (pd <= now) pd = getPayday(now.getFullYear(), now.getMonth() + 1);
+  return pd;
+}
+
+function shouldResetTimesheet(tsLastUpload) {
+  if (!tsLastUpload) return false;
+  const last = new Date(tsLastUpload);
+  const now = new Date();
+  const payday = getPayday(last.getFullYear(), last.getMonth());
+  // If payday has passed since last upload, reset
+  return now > payday && now.getMonth() !== last.getMonth();
+}
+
+// Check if a Monday reminder should show
+function shouldShowTimesheetReminder(tsLastUpload) {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun,1=Mon
+  if (!tsLastUpload) return true; // never uploaded
+  const last = new Date(tsLastUpload);
+  const daysSince = Math.floor((now - last) / (1000 * 60 * 60 * 24));
+  return daysSince >= 7;
+}
+
+// Legacy key names from older builds — migrate once then leave
+const LEGACY = {
+  "jli_history": "vaulted_history", "jli_bills": "vaulted_shared_bills",
+  "jli_shared_bills": "vaulted_shared_bills", "jli_glyn_bills": "vaulted_glyn_bills",
+  "jli_categories": "vaulted_cats", "jli_billcats": "vaulted_billcats",
+  "jli_glyn_categories": "vaulted_gcats", "jli_glyn_billcats": "vaulted_gbillcats",
+  "v_history": "vaulted_history", "v_shared_bills": "vaulted_shared_bills",
+  "v_glyn_bills": "vaulted_glyn_bills", "v_cats": "vaulted_cats",
+  "v_billcats": "vaulted_billcats", "v_gcats": "vaulted_gcats",
+  "v_gbillcats": "vaulted_gbillcats", "v_calc": "vaulted_calc",
+};
+
+// Run migration once on load
+(function migrate() {
+  try {
+    Object.entries(LEGACY).forEach(([oldKey, newKey]) => {
+      if (localStorage.getItem(newKey)) return; // already migrated
+      const old = localStorage.getItem(oldKey);
+      if (old) { localStorage.setItem(newKey, old); localStorage.removeItem(oldKey); }
+    });
+  } catch {}
+})();
+
+const load = (key, fb) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fb; } catch { return fb; } };
+const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
+
+const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
+const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Upload"];
+const RANGES = ["3M","6M","12M","2Y","All"];
+const SL_START_YEAR = 2019;
+const SL_WRITEOFF_YEAR = 2049;
+
+function sortH(arr) {
+  return [...arr].sort((a,b)=>{
+    const[ma,ya]=a.month.split(" ");const[mb,yb]=b.month.split(" ");
+    return ya!==yb?ya-yb:MONTHS.indexOf(ma)-MONTHS.indexOf(mb);
+  });
+}
+
+function fyAvgNet(history) {
+  const now = new Date();
+  const fyStart = now.getMonth()>=3 ? new Date(now.getFullYear(),3,1) : new Date(now.getFullYear()-1,3,1);
+  const fy = history.filter(r=>{const[mo,yr]=r.month.split(" ");return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;});
+  return fy.length>0 ? fy.reduce((s,r)=>s+r.net,0)/fy.length : 0;
+}
+
+function getMissingMonths(history) {
+  if(history.length<2) return [];
+  const sorted = sortH(history);
+  const missing = [];
+  for(let i=0;i<sorted.length-1;i++){
+    const [ma,ya]=sorted[i].month.split(" ");
+    const [mb,yb]=sorted[i+1].month.split(" ");
+    let mo=MONTHS.indexOf(ma), yr=parseInt(ya);
+    while(true){
+      mo++; if(mo>11){mo=0;yr++;}
+      if(yr===parseInt(yb)&&mo===MONTHS.indexOf(mb)) break;
+      missing.push(MONTHS[mo]+" "+yr);
+    }
+  }
+  return missing;
+}
+
+function groupByFY(history) {
+  // Returns array of {label, months, gross, net, tax, ni, nest, sl, bonus, ot}
+  const fyMap = {};
+  history.forEach(r=>{
+    const [mo,yr]=r.month.split(" ");
+    const monthIdx=MONTHS.indexOf(mo);
+    const yearNum=parseInt(yr);
+    const fyYear = monthIdx>=3 ? yearNum : yearNum-1;
+    const key=fyYear+"-"+(fyYear+1);
+    if(!fyMap[key]) fyMap[key]={label:"Apr "+fyYear+" – Mar "+(fyYear+1),fyYear,gross:0,net:0,tax:0,ni:0,nest:0,sl:0,bonus:0,ot:0,months:0};
+    fyMap[key].gross+=r.gross; fyMap[key].net+=r.net; fyMap[key].tax+=r.tax;
+    fyMap[key].ni+=r.ni; fyMap[key].nest+=r.nest; fyMap[key].sl+=r.sl;
+    fyMap[key].bonus+=r.bonus; fyMap[key].ot+=r.ot; fyMap[key].months++;
+  });
+  return Object.values(fyMap).sort((a,b)=>b.fyYear-a.fyYear);
+}
+
+function getCurrentFYOT(history) {
+  const now = new Date();
+  const fyStart = now.getMonth()>=3 ? new Date(now.getFullYear(),3,1) : new Date(now.getFullYear()-1,3,1);
+  return history.filter(r=>{
+    const[mo,yr]=r.month.split(" ");
+    return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;
+  }).reduce((s,r)=>({
+    otPay: s.otPay+(r.ot||0),
+    // estimate OT hours from pay — weekday OT at £17.40, but we only have £ so show £
+  }),{otPay:0});
+}
+
+function SectionLabel({children}) {
+  return <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>{children}</div>;
+}
+
+function StatRow({label,value,color,last}) {
+  return (
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 0",borderBottom:last?"none":"1px solid #1a1f2e"}}>
+      <span style={{fontSize:13,color:"#8892b0"}}>{label}</span>
+      <span style={{fontSize:13,fontWeight:700,color:color||"#e8eaf0"}}>{value}</span>
+    </div>
+  );
+}
+
+// The allowance is entirely determined by the tier bonus — they're linked.
+// So inferring perfAllowance just means checking if a bonus was paid.
+function inferPerfAllowance(r) {
+  if (typeof r.perfAllowance === "boolean") return r.perfAllowance;
+  return (r.bonus || 0) > 0;
+}({title,data,dataKey,color}) {
+  const [open,setOpen]=useState(false);
+  return (
+    <div style={{border:"1px solid #1e2535",borderRadius:10,overflow:"hidden",marginBottom:8}}>
+      <button onClick={()=>setOpen(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 14px",background:"#141824",border:"none",cursor:"pointer",color:"#e8eaf0"}}>
+        <span style={{fontSize:13,fontWeight:600,color:"#8892b0"}}>{title}</span>
+        <span style={{fontSize:12,color:"#3a4460"}}>{open?"▲":"▼"}</span>
+      </button>
+      {open&&(
+        <div style={{padding:"12px",background:"#111520"}}>
+          <ResponsiveContainer width="100%" height={130}>
+            <BarChart data={data} margin={{top:4,right:4,left:0,bottom:0}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
+              <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(data.length/6)-1)}/>
+              <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
+              <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
+              <Bar dataKey={dataKey} fill={color} radius={[2,2,0,0]}/>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,onDragStart}) {
+  const [val,setVal]=useState(String(bill.total));
+  const sh=isGlynOnly?null:billShares(bill);
+  return (
+    <div draggable onDragStart={onDragStart} style={{
+      display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",
+      padding:"9px 10px",fontSize:12,alignItems:"center",
+      background:idx%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"grab"
+    }}>
+      <span style={{color:"#8892b0"}}>{bill.name}</span>
+      {editing?(
+        <input autoFocus type="number" value={val} onChange={e=>setVal(e.target.value)}
+          onBlur={()=>onEditBlur(val)} onKeyDown={e=>e.key==="Enter"&&onEditBlur(val)}
+          style={{background:"#1e2535",border:"1px solid #4a9eff",borderRadius:4,color:"#e8eaf0",fontSize:11,padding:"2px 4px",width:"100%",textAlign:"right"}}/>
+      ):(
+        <span onClick={onEditStart} style={{textAlign:"right",color:isGlynOnly?"#4a9eff":"#5a6480",display:"block",cursor:"pointer",borderBottom:"1px dashed #2a3050",fontWeight:isGlynOnly?600:400}}>
+          {fmt(bill.total)}
+        </span>
+      )}
+      {!isGlynOnly&&<><span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(sh.glyn)}</span><span style={{textAlign:"right",color:"#c84aff",fontWeight:600}}>{fmt(sh.hollie)}</span></>}
+      <button onClick={onDelete} style={{background:"none",border:"none",color:"#3a4460",fontSize:12,cursor:"pointer",padding:0,textAlign:"center"}}>✕</button>
+    </div>
+  );
+}
+
+function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,onBillBlur,onBillDelete,onCatDelete,onCatRename,dragBill,setDragOver,dragOver,onDrop}) {
+  const [renaming,setRenaming]=useState(false);
+  const [rv,setRv]=useState(cat.name);
+  const cb=bills.filter(b=>billCats[b.id]===cat.id);
+  const total=cb.reduce((s,b)=>s+b.total,0);
+  const glynTotal=isGlynOnly?total:cb.reduce((s,b)=>s+billShares(b).glyn,0);
+  return (
+    <div onDragOver={e=>{e.preventDefault();setDragOver(cat.id);}} onDragLeave={()=>setDragOver(null)} onDrop={()=>onDrop(cat.id)}
+      style={{border:"1px solid "+(dragOver===cat.id?"#4a9eff":"#1e2535"),borderTop:"none",transition:"border-color 0.15s"}}>
+      <div style={{display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",alignItems:"center",padding:"8px 10px",background:dragOver===cat.id?"#0d1525":"#0f1520"}}>
+        {renaming?(
+          <input autoFocus value={rv} onChange={e=>setRv(e.target.value)}
+            onBlur={()=>{onCatRename(cat.id,rv);setRenaming(false);}}
+            onKeyDown={e=>{if(e.key==="Enter"){onCatRename(cat.id,rv);setRenaming(false);}}}
+            style={{background:"#1e2535",border:"1px solid #4a9eff",borderRadius:4,color:"#e8eaf0",fontSize:12,padding:"3px 6px",marginRight:8}}/>
+        ):(
+          <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:11,fontWeight:700,color:"#8892b0",cursor:"text"}} title="Double-tap to rename">{cat.name}</span>
+        )}
+        <span style={{textAlign:"right",fontSize:11,color:"#e8eaf0",fontWeight:700}}>{fmt(total)}</span>
+        {!isGlynOnly&&<><span></span><span></span></>}
+        <div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"center"}}>
+          <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>✏️</button>
+          <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 5px"}}>✕</button>
+        </div>
+      </div>
+      {cb.length===0&&<div style={{padding:"10px",textAlign:"center",fontSize:11,color:"#2a3050",fontStyle:"italic"}}>Drop bills here</div>}
+      {cb.map((b,i)=>(
+        <BillRow key={b.id} bill={b} idx={i} isGlynOnly={isGlynOnly}
+          editing={editingBill===b.id} onEditStart={()=>setEditingBill(b.id)}
+          onEditBlur={v=>onBillBlur(b.id,v)} onDelete={()=>onBillDelete(b.id)}
+          onDragStart={()=>{dragBill.current=b.id;}}/>
+      ))}
+    </div>
+  );
+}
+
+export default function App() {
+  const [tab,setTab]=useState("Dashboard");
+  const [history,setHistory]=useState(()=>load(SK.history,INITIAL_HISTORY));
+  const [sharedBills,setSharedBills]=useState(()=>load(SK.sharedBills,INITIAL_SHARED_BILLS));
+  const [glynBills,setGlynBills]=useState(()=>load(SK.glynBills,INITIAL_GLYN_BILLS));
+  const [cats,setCats]=useState(()=>load(SK.cats,[]));
+  const [billCats,setBillCats]=useState(()=>load(SK.billCats,{}));
+  const [glynCats,setGlynCats]=useState(()=>load(SK.glynCats,[]));
+  const [glynBillCats,setGlynBillCats]=useState(()=>load(SK.glynBillCats,{}));
+  const defCalc={stdHrs:getCurrentMonthHours(),otHrs:0,weekendOtHrs:0,bonus:240,perfAllowance:true};
+  const [ci,setCi]=useState(()=>load(SK.calcInputs,defCalc));
+  const [editSh,setEditSh]=useState(null);
+  const [editGl,setEditGl]=useState(null);
+  const [addSh,setAddSh]=useState(false);
+  const [addGl,setAddGl]=useState(false);
+  const [newSh,setNewSh]=useState({name:"",total:"",isCarGlyn:false});
+  const [newGl,setNewGl]=useState({name:"",total:""});
+  const [addingCat,setAddingCat]=useState(null);
+  const [newCat,setNewCat]=useState("");
+  const [dragOver,setDragOver]=useState(null);
+  const [budTab,setBudTab]=useState("shared");
+  const dragBill=useRef(null);
+  const [chartRange,setChartRange]=useState("All");
+  const [uploading,setUploading]=useState(false);
+  const [uploadRes,setUploadRes]=useState(null);
+  const [uploadErr,setUploadErr]=useState(null);
+  const [pending,setPending]=useState(null);
+  const [importMsg,setImportMsg]=useState(null);
+  const [multiResults,setMultiResults]=useState([]);
+  const [uploadProgress,setUploadProgress]=useState(null);
+  const [notes,setNotes]=useState(()=>load(SK.notes,{}));
+  const [expandedPayslip,setExpandedPayslip]=useState(null);
+  const [deleteConfirm,setDeleteConfirm]=useState(null);
+  const [payslipSearch,setPayslipSearch]=useState("");
+  const [showAllTimeTotals,setShowAllTimeTotals]=useState(false);
+
+  // Tier override — resets if stored month doesn't match current month
+  const currentMonthStr = MONTHS[new Date().getMonth()]+" "+new Date().getFullYear();
+  const [tierOverride,setTierOverride]=useState(()=>{
+    const stored=load(SK.tierOverride,null);
+    if(stored && stored.month===currentMonthStr) return stored.tierIdx;
+    return null; // null = auto (inferred from latest payslip)
+  });
+  const saveTierOverride=(tierIdx)=>{
+    const val=tierIdx===null?null:{tierIdx,month:currentMonthStr};
+    setTierOverride(tierIdx);
+    save(SK.tierOverride,val);
+  };
+
+  // Timesheet state
+  const [tsUploading,setTsUploading]=useState(false);
+  const [tsProgress,setTsProgress]=useState(null);
+  const [tsResults,setTsResults]=useState([]);
+  const [tsPending,setTsPending]=useState(null); // extracted data awaiting confirmation
+  const [tsLastUpload,setTsLastUpload]=useState(()=>load(SK.tsLastUpload,null));
+  const [accumulated,setAccumulated]=useState(()=>{
+    const stored=load(SK.timesheets,null);
+    if(stored && shouldResetTimesheet(stored.lastUpload)) return {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+    return stored||{otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+  });
+  const showTsReminder=shouldShowTimesheetReminder(tsLastUpload);
+
+  const latest=useMemo(()=>sortH(history).slice(-1)[0],[history]);
+  const prevMonth=useMemo(()=>sortH(history).slice(-2)[0],[history]);
+  const shGlyn=sharedBills.reduce((s,b)=>s+billShares(b).glyn,0);
+  const shHollie=sharedBills.reduce((s,b)=>s+billShares(b).hollie,0);
+  const glOnly=glynBills.reduce((s,b)=>s+b.total,0);
+  const totalOut=shGlyn+glOnly;
+  const cr=useMemo(()=>calcPay({...ci, _allowanceOverride: effectiveAllowance}),[ci, effectiveAllowance]);
+  const surplus=cr.net-totalOut;
+
+  const chartData=useMemo(()=>{
+    const s=sortH(history);
+    const m={"3M":3,"6M":6,"12M":12,"2Y":24}[chartRange];
+    return m?s.slice(-m):s;
+  },[history,chartRange]);
+
+  const ts=useMemo(()=>({
+    gross:history.reduce((s,r)=>s+r.gross,0),net:history.reduce((s,r)=>s+r.net,0),
+    tax:history.reduce((s,r)=>s+r.tax,0),ni:history.reduce((s,r)=>s+r.ni,0),
+    nest:history.reduce((s,r)=>s+r.nest,0),sl:history.reduce((s,r)=>s+r.sl,0),
+    bonus:history.reduce((s,r)=>s+r.bonus,0),ot:history.reduce((s,r)=>s+r.ot,0),
+    avgNet:fyAvgNet(history),
+  }),[history]);
+
+  const updH=h=>{setHistory(h);save(SK.history,h);};
+  const updSB=b=>{setSharedBills(b);save(SK.sharedBills,b);};
+  const updGB=b=>{setGlynBills(b);save(SK.glynBills,b);};
+  const updC=c=>{setCats(c);save(SK.cats,c);};
+  const updBC=bc=>{setBillCats(bc);save(SK.billCats,bc);};
+  const updGC=c=>{setGlynCats(c);save(SK.glynCats,c);};
+  const updGBC=bc=>{setGlynBillCats(bc);save(SK.glynBillCats,bc);};
+  const setC=useCallback((k,v)=>{setCi(p=>{const n={...p,[k]:v};save(SK.calcInputs,n);return n;});},[]);
+  const updNotes=n=>{setNotes(n);save(SK.notes,n);};
+  const deletePayslip=month=>{updH(history.filter(h=>h.month!==month));setDeleteConfirm(null);setExpandedPayslip(null);};
+
+  const handleUpload=async e=>{
+    const files=Array.from(e.target.files);if(!files.length)return;
+    setUploading(true);setUploadRes(null);setUploadErr(null);setPending(null);setMultiResults([]);
+    const results=[];
+    const successful=[];
+    for(let i=0;i<files.length;i++){
+      const file=files[i];
+      setUploadProgress(`Reading ${i+1} of ${files.length}…`);
+      try {
+        const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
+        const resp=await fetch("https://api.anthropic.com/v1/messages",{
+          method:"POST",
+          headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:[
+            {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
+            {type:"text",text:'Extract payslip data. Return ONLY JSON:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00}\nmonth=payment month/year, ot=total overtime, sl=student loan, nest=pension, bonus=performance bonus.'}
+          ]}]})
+        });
+        const data=await resp.json();
+        if(data.error) throw new Error(data.error.message);
+        const parsed=JSON.parse(data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim());
+        // Allowance is active whenever a performance bonus was paid (they're the same tier)
+        parsed.perfAllowance = (parsed.bonus || 0) > 0;
+        successful.push(parsed);
+        results.push({ok:true,parsed});
+      } catch(err){results.push({ok:false,name:file.name,err:err.message||"Unknown error"});}
+    }
+    if(successful.length>0){
+      setHistory(prev=>{
+        let h=[...prev];
+        successful.forEach(p=>{const exists=h.find(x=>x.month===p.month);h=exists?h.map(x=>x.month===p.month?p:x):[...h,p];});
+        const sorted=sortH(h);save(SK.history,sorted);return sorted;
+      });
+      const last=successful[successful.length-1];
+      setC("bonus", last.bonus);
+      setC("perfAllowance", last.perfAllowance);
+    }
+    setMultiResults(results);
+    setUploadProgress(null);
+    setUploading(false);
+    e.target.value="";
+  };
+
+  const confirmAdd=()=>{
+    if(!pending)return;
+    const exists=history.find(h=>h.month===pending.month);
+    updH(exists?history.map(h=>h.month===pending.month?pending:h):sortH([...history,pending]));
+    setPending(null);setUploadRes(null);setTab("Payslips");
+  };
+
+  const hSB=(id,v)=>{const n=parseFloat(v);updSB(sharedBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditSh(null);};
+  const hGB=(id,v)=>{const n=parseFloat(v);updGB(glynBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditGl(null);};
+  const delSh=id=>{updSB(sharedBills.filter(b=>b.id!==id));const bc={...billCats};delete bc[id];updBC(bc);};
+  const delGl=id=>{updGB(glynBills.filter(b=>b.id!==id));const bc={...glynBillCats};delete bc[id];updGBC(bc);};
+  const addShBill=()=>{if(!newSh.name.trim())return;updSB([...sharedBills,{id:Date.now(),name:newSh.name.trim(),total:parseFloat(newSh.total)||0,isCarGlyn:newSh.isCarGlyn}]);setNewSh({name:"",total:"",isCarGlyn:false});setAddSh(false);};
+  const addGlBill=()=>{if(!newGl.name.trim())return;updGB([...glynBills,{id:Date.now(),name:newGl.name.trim(),total:parseFloat(newGl.total)||0}]);setNewGl({name:"",total:""});setAddGl(false);};
+  const addCategory=(isGlyn)=>{if(!newCat.trim())return;const c={id:Date.now(),name:newCat.trim()};isGlyn?updGC([...glynCats,c]):updC([...cats,c]);setNewCat("");setAddingCat(null);};
+  const delCat=(id,isGlyn)=>{
+    if(isGlyn){updGC(glynCats.filter(c=>c.id!==id));const bc={...glynBillCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});updGBC(bc);}
+    else{updC(cats.filter(c=>c.id!==id));const bc={...billCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});updBC(bc);}
+  };
+  const renCat=(id,name,isGlyn)=>{isGlyn?updGC(glynCats.map(c=>c.id===id?{...c,name}:c)):updC(cats.map(c=>c.id===id?{...c,name}:c));};
+  const drop=(catId,isGlyn)=>{
+    if(dragBill.current==null)return;
+    if(isGlyn){const bc={...glynBillCats};catId===null?delete bc[dragBill.current]:(bc[dragBill.current]=catId);updGBC(bc);}
+    else{const bc={...billCats};catId===null?delete bc[dragBill.current]:(bc[dragBill.current]=catId);updBC(bc);}
+    dragBill.current=null;setDragOver(null);
+  };
+
+  const exportData=()=>{
+    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,exportedAt:new Date().toISOString()};
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download="vaulted-backup-"+new Date().toISOString().slice(0,10)+".json";
+    a.click();URL.revokeObjectURL(url);
+  };
+
+  const importData=e=>{
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try {
+        const d=JSON.parse(ev.target.result);
+        if(d.history){updH(d.history);}
+        if(d.sharedBills){updSB(d.sharedBills);}
+        if(d.glynBills){updGB(d.glynBills);}
+        if(d.cats){updC(d.cats);}
+        if(d.billCats){updBC(d.billCats);}
+        if(d.glynCats){updGC(d.glynCats);}
+        if(d.glynBillCats){updGBC(d.glynBillCats);}
+        if(d.calcInputs){setCi(d.calcInputs);save(SK.calcInputs,d.calcInputs);}
+        if(d.notes){updNotes(d.notes);}
+        setImportMsg("✓ Data restored successfully");
+      } catch{setImportMsg("⚠ Invalid backup file");}
+    };
+    reader.readAsText(file);
+    e.target.value="";
+  };
+
+  // Timesheet calculation helpers
+  const parseHM = str => {
+    // Parse "8h 15m", "9h 19m", "8h", "45m" etc into decimal hours
+    const hMatch = str.match(/(\d+)h/);
+    const mMatch = str.match(/(\d+)m/);
+    const h = hMatch ? parseInt(hMatch[1]) : 0;
+    const m = mMatch ? parseInt(mMatch[1]) : 0;
+    return Math.round((h + m / 60) * 100) / 100;
+  };
+
+  const calcTimesheetTotals = days => {
+    let stdHrs = 0, otHrs = 0, weekendOtHrs = 0;
+    const STD = 8.25; // 8h 15m
+    days.forEach(d => {
+      const hrs = parseHM(d.hours);
+      const dayLower = d.day.toLowerCase();
+      const isWeekend = dayLower.startsWith("sat") || dayLower.startsWith("sun");
+      if (isWeekend) {
+        weekendOtHrs += hrs;
+      } else {
+        if (hrs <= STD) {
+          stdHrs += hrs;
+        } else {
+          stdHrs += STD;
+          otHrs += Math.round((hrs - STD) * 100) / 100;
+        }
+      }
+    });
+    return {
+      stdHrs: Math.round(stdHrs * 100) / 100,
+      otHrs: Math.round(otHrs * 100) / 100,
+      weekendOtHrs: Math.round(weekendOtHrs * 100) / 100,
+    };
+  };
+
+  const handleTimesheetUpload = async e => {
+    const files = Array.from(e.target.files); if (!files.length) return;
+    setTsUploading(true); setTsResults([]); setTsPending(null);
+    const allDays = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setTsProgress(`Reading image ${i + 1} of ${files.length}…`);
+      try {
+        const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
+        const mediaType = file.type || "image/jpeg";
+        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-6", max_tokens: 1000,
+            messages: [{ role: "user", content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: b64 } },
+              { type: "text", text: 'This is a work timesheet. Extract each row as JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m"},{"date":"DD/MM","day":"Tue","hours":"9h 30m"}]\nInclude every row that has a day and hours value. Use the hours column value exactly as shown.' }
+            ]}]
+          })
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error.message);
+        const text = data.content.map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
+        const days = JSON.parse(text);
+        allDays.push(...days);
+        setTsResults(prev => [...prev, { ok: true, file: file.name, days }]);
+      } catch (err) {
+        setTsResults(prev => [...prev, { ok: false, file: file.name, err: err.message }]);
+      }
+    }
+    if (allDays.length > 0) {
+      const totals = calcTimesheetTotals(allDays);
+      setTsPending({ days: allDays, totals });
+    }
+    setTsProgress(null);
+    setTsUploading(false);
+    e.target.value = "";
+  };
+
+  const confirmTimesheet = () => {
+    if (!tsPending) return;
+    const now = new Date().toISOString();
+    const STD = 8.25;
+    const enrichedDays = tsPending.days.map(d => {
+      const hrs = parseHM(d.hours);
+      const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
+      const otHrs = isWeekend ? 0 : Math.max(0, Math.round((hrs - STD) * 100) / 100);
+      const wkOtHrs = isWeekend ? hrs : 0;
+      return { ...d, hrs, otHrs, wkOtHrs };
+    });
+    const sortAndDedup = days => {
+      const seen = new Set();
+      return [...days]
+        .sort((a, b) => {
+          const [ad, am] = (a.date || "").split("/").map(Number);
+          const [bd, bm] = (b.date || "").split("/").map(Number);
+          return (am !== bm ? am - bm : ad - bd);
+        })
+        .filter(d => {
+          const key = d.date + "_" + d.day;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+    };
+    const mergedDays = sortAndDedup([...(accumulated.days||[]), ...enrichedDays]);
+    // Derive totals from the deduplicated days — single source of truth
+    const totalOtHrs = Math.round(mergedDays.reduce((s,d) => s + (d.otHrs||0), 0) * 100) / 100;
+    const totalWkndHrs = Math.round(mergedDays.reduce((s,d) => s + (d.wkOtHrs||0), 0) * 100) / 100;
+    const newAcc = {
+      otHrs: totalOtHrs,
+      weekendOtHrs: totalWkndHrs,
+      weeks: [...accumulated.weeks, { uploadedAt: now, ...tsPending.totals }],
+      days: mergedDays,
+      lastUpload: now,
+    };
+    setAccumulated(newAcc);
+    save(SK.timesheets, newAcc);
+    setTsLastUpload(now);
+    save(SK.tsLastUpload, now);
+    setC("otHrs", newAcc.otHrs);
+    setC("weekendOtHrs", newAcc.weekendOtHrs);
+    setTsPending(null);
+  };
+
+  const resetTimesheet = () => {
+    const empty = { otHrs: 0, weekendOtHrs: 0, weeks: [], days: [], lastUpload: null };
+    setAccumulated(empty);
+    save(SK.timesheets, empty);
+    setTsResults([]);
+    setTsPending(null);
+  };
+
+  const card={background:"#141824",borderRadius:10,border:"1px solid #1e2535",padding:"14px 12px"};
+  const hdr={fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6};
+  const inp={background:"#1e2535",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:13,padding:"8px 10px",width:"100%",boxSizing:"border-box"};
+  const numI={...inp,textAlign:"right",fontWeight:700};
+  const row={display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12};
+
+  const allSorted=useMemo(()=>sortH(history),[history]);
+  const missingMonths=useMemo(()=>getMissingMonths(history),[history]);
+  const budgetVsActual=useMemo(()=>sortH(history).slice(-12).map(r=>({month:r.month,actual:r.net,estimated:cr.net})),[history,cr.net]);
+
+  const nextPayday=useMemo(()=>{
+    const pd=getNextPayday();
+    const days=Math.ceil((pd-new Date())/(1000*60*60*24));
+    return {date:pd.toLocaleDateString("en-GB",{day:"numeric",month:"short"}),days};
+  },[]);
+
+  // Effective tier: manual override takes priority, otherwise infer from latest payslip bonus
+  const effectiveTierIdx=useMemo(()=>{
+    if(tierOverride!==null) return tierOverride;
+    if(!latest) return 0;
+    const bonus=latest.bonus||0;
+    // Find highest tier whose bonus the payslip bonus matches or exceeds
+    for(let i=PAY.bonusTiers.length-1;i>=0;i--){
+      if(bonus>=PAY.bonusTiers[i].bonus&&PAY.bonusTiers[i].bonus>0) return i;
+    }
+    return 0;
+  },[tierOverride,latest]);
+
+  const effectiveAllowance=PAY.bonusTiers[effectiveTierIdx].allowance;
+
+  const slProgress=useMemo(()=>{
+    const elapsed=new Date().getFullYear()-SL_START_YEAR;
+    const total=SL_WRITEOFF_YEAR-SL_START_YEAR;
+    return {elapsed,total,pct:Math.min(100,Math.round(elapsed/total*100)),yearsLeft:total-elapsed};
+  },[]);
+
+  const filteredHistory=useMemo(()=>{
+    if(!payslipSearch.trim()) return [...history].reverse();
+    const q=payslipSearch.toLowerCase();
+    return [...history].reverse().filter(r=>r.month.toLowerCase().includes(q));
+  },[history,payslipSearch]);
+
+  return (
+    <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
+
+      <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"14px 14px 0",position:"sticky",top:0,zIndex:100}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}>
+            <span style={{color:"#4a9eff"}}>V</span>AULTED
+          </h1>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:11,color:"#5a6480"}}>{history.length} payslips</div>
+            <div style={{fontSize:11,color:"#3a4460"}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> · {nextPayday.date}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:2,marginBottom:2}}>
+          {PRIMARY_TABS.map(t=>(
+            <button key={t} onClick={()=>setTab(t)} style={{
+              flex:1,background:tab===t?"#4a9eff":"transparent",
+              color:tab===t?"#fff":"#5a6480",border:"none",
+              borderRadius:"6px 6px 0 0",padding:"8px 4px",fontSize:12,fontWeight:600,cursor:"pointer"
+            }}>{t}</button>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:2,borderTop:"1px solid #1e2535",paddingTop:2}}>
+          {SECONDARY_TABS.map(t=>(
+            <button key={t} onClick={()=>setTab(t)} style={{
+              flex:1,background:tab===t?"#2a3a5a":"transparent",
+              color:tab===t?"#a0c0ff":"#3a4460",border:"none",
+              padding:"6px 4px",fontSize:11,fontWeight:600,cursor:"pointer"
+            }}>{t}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{padding:"14px 12px"}}>
+
+        {tab==="Dashboard"&&(
+          <div>
+            {showTsReminder&&(
+              <div onClick={()=>setTab("Upload")} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <span style={{fontSize:20}}>⚠️</span>
+                <div>
+                  <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
+                  <div style={{fontSize:12,color:"#8a7040",marginTop:2}}>{tsLastUpload?`Last uploaded ${Math.floor((new Date()-new Date(tsLastUpload))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} · Tap to upload</div>
+                </div>
+              </div>
+            )}
+            {missingMonths.length>0&&(
+              <div style={{background:"#1a0f1a",border:"1px solid #c84aff",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                  <span style={{fontSize:16}}>📭</span>
+                  <span style={{fontSize:13,fontWeight:700,color:"#c84aff"}}>Missing payslips detected</span>
+                </div>
+                <div style={{fontSize:12,color:"#8a5080",lineHeight:1.8}}>{missingMonths.join(", ")}</div>
+              </div>
+            )}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+              {[
+                {label:"Est. Net Pay",    value:fmt(cr.net),      sub:"from Pay Calc",   accent:"#4a9eff"},
+                {label:"Monthly Surplus", value:fmt(surplus),     sub:"after all bills", accent:surplus>=0?"#00c88c":"#ff4a6a"},
+                {label:"Latest Net",      value:fmt(latest?.net), sub:latest?.month,     accent:"#7c6fff"},
+                {label:"FY Avg Net",      value:fmt(ts.avgNet),   sub:"Apr to now",      accent:"#ffb84a"},
+              ].map(k=>(
+                <div key={k.label} style={{...card,textAlign:"center",padding:"14px 10px"}}>
+                  <div style={{fontSize:11,color:"#5a6480",fontWeight:600,letterSpacing:0.5,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
+                  <div style={{fontSize:22,fontWeight:700,color:k.accent,letterSpacing:-0.5}}>{k.value}</div>
+                  <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>{k.sub}</div>
+                </div>
+              ))}
+            </div>
+
+            {latest&&prevMonth&&(()=>{
+              return(
+                <div style={{...card,marginBottom:12}}>
+                  <SectionLabel>Latest vs Previous Month</SectionLabel>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+                    {[
+                      {label:"Gross",diff:latest.gross-prevMonth.gross,val:fmt(latest.gross)},
+                      {label:"Net",  diff:latest.net-prevMonth.net,    val:fmt(latest.net)},
+                      {label:"Bonus",diff:latest.bonus-prevMonth.bonus,val:fmt(latest.bonus)},
+                    ].map(k=>(
+                      <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                        <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>{k.label}</div>
+                        <div style={{fontSize:14,fontWeight:700,color:"#e8eaf0"}}>{k.val}</div>
+                        <div style={{fontSize:11,fontWeight:600,color:k.diff>=0?"#00c88c":"#ff6b8a",marginTop:3}}>{k.diff>=0?"+":""}{fmt(Math.abs(k.diff))}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div style={{...card,marginBottom:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <span style={{fontSize:11,fontWeight:600,color:"#8892b0"}}>Net Pay Trend</span>
+                <div style={{display:"flex",gap:3}}>
+                  {RANGES.map(r=>(
+                    <button key={r} onClick={()=>setChartRange(r)} style={{
+                      background:chartRange===r?"#4a9eff":"#1e2535",color:chartRange===r?"#fff":"#3a4460",
+                      border:"none",borderRadius:4,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer"
+                    }}>{r}</button>
+                  ))}
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={160}>
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
+                  <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(chartData.length/7)-1)}/>
+                  <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
+                  <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
+                  <Line type="monotone" dataKey="net" stroke="#4a9eff" strokeWidth={2} dot={false} name="Net Pay"/>
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div style={{...card,marginBottom:14}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#8892b0",marginBottom:4}}>Budget vs Actual Net Pay</div>
+              <div style={{fontSize:10,color:"#3a4460",marginBottom:10}}>Current Pay Calc estimate vs actual received — last 12 months</div>
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={budgetVsActual} margin={{top:4,right:4,left:0,bottom:0}}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
+                  <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(budgetVsActual.length/6)-1)}/>
+                  <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
+                  <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
+                  <Bar dataKey="estimated" fill="#2a3a5a" name="Estimated" radius={[2,2,0,0]}/>
+                  <Bar dataKey="actual" fill="#4a9eff" name="Actual" radius={[2,2,0,0]}/>
+                </BarChart>
+              </ResponsiveContainer>
+              {budgetVsActual.length>0&&(()=>{
+                const last=budgetVsActual[budgetVsActual.length-1];
+                const diff=last.actual-last.estimated;
+                return(
+                  <div style={{marginTop:8,fontSize:11,color:"#5a6480",textAlign:"center"}}>
+                    Last month ({last.month}): <span style={{color:diff>=0?"#00c88c":"#ff6b8a",fontWeight:700}}>{diff>=0?"+":""}{fmt(Math.abs(diff))} {diff>=0?"above":"below"} estimate</span>
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div style={{...card,marginBottom:12}}>
+              <SectionLabel>Monthly Budget</SectionLabel>
+              {[
+                ["Est. Net Pay",          fmt(cr.net),   "#4a9eff"],
+                ["Shared Bills (my half)",fmt(shGlyn),   "#ff6b8a"],
+                ["My Personal Bills",     fmt(glOnly),   "#ff8c4a"],
+                ["Total Outgoings",       fmt(totalOut), "#ff4a6a"],
+                ["Monthly Surplus",       fmt(surplus),  surplus>=0?"#00c88c":"#ff4a6a"],
+              ].map(([l,v,c],i,arr)=>(
+                <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
+              ))}
+            </div>
+
+            <div style={{...card,marginBottom:12}}>
+              <SectionLabel>Student Loan — Plan 2</SectionLabel>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{fontSize:13,color:"#8892b0"}}>{slProgress.elapsed} of {slProgress.total} years</span>
+                <span style={{fontSize:13,fontWeight:700,color:"#c84aff"}}>{slProgress.pct}% complete</span>
+              </div>
+              <div style={{background:"#1e2535",borderRadius:99,height:8,overflow:"hidden",marginBottom:6}}>
+                <div style={{width:slProgress.pct+"%",height:"100%",background:"linear-gradient(90deg,#7c6fff,#c84aff)",borderRadius:99}}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#3a4460"}}>
+                <span>Started {SL_START_YEAR}</span>
+                <span style={{color:"#5a6480"}}>{slProgress.yearsLeft} years to write-off</span>
+                <span>Write-off {SL_WRITEOFF_YEAR}</span>
+              </div>
+            </div>
+
+            <div style={{...card,marginBottom:12}}>
+              <button onClick={()=>setShowAllTimeTotals(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"none",border:"none",cursor:"pointer",padding:0,marginBottom:showAllTimeTotals?12:0}}>
+                <SectionLabel>All-Time Totals</SectionLabel>
+                <span style={{fontSize:12,color:"#3a4460",marginTop:-10}}>{showAllTimeTotals?"▲":"▼"}</span>
+              </button>
+              {showAllTimeTotals&&[
+                ["Total Earned (Gross)", fmt(ts.gross), "#7c6fff"],
+                ["Total Net Received",   fmt(ts.net),   "#4a9eff"],
+                ["Total Tax Paid",       fmt(ts.tax),   "#ff6b8a"],
+                ["Total NI Paid",        fmt(ts.ni),    "#ff8c4a"],
+                ["Total NEST",           fmt(ts.nest),  "#00c88c"],
+                ["Total Student Loan",   fmt(ts.sl),    "#ffb84a"],
+                ["Total Bonuses",        fmt(ts.bonus), "#c84aff"],
+                ["Total Overtime Pay",   fmt(ts.ot),    "#4affd4"],
+              ].map(([l,v,c],i,arr)=>(
+                <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
+              ))}
+            </div>
+
+            <div style={{fontSize:12,color:"#5a6480",fontWeight:600,marginBottom:8}}>Historical Charts</div>
+            {[
+              {title:"Gross Pay",    key:"gross", color:"#7c6fff"},
+              {title:"Net Pay",      key:"net",   color:"#4a9eff"},
+              {title:"Tax Paid",     key:"tax",   color:"#ff6b8a"},
+              {title:"NI Paid",      key:"ni",    color:"#ff8c4a"},
+              {title:"NEST Pension", key:"nest",  color:"#00c88c"},
+              {title:"Student Loan", key:"sl",    color:"#ffb84a"},
+              {title:"Bonus",        key:"bonus", color:"#c84aff"},
+              {title:"Overtime Pay", key:"ot",    color:"#4affd4"},
+            ].map(c=>(
+              <CollapsibleChart key={c.key} title={c.title} data={allSorted} dataKey={c.key} color={c.color}/>
+            ))}
+          </div>
+        )}
+
+        {tab==="Budget"&&(
+          <div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+              {[
+                {label:"Shared (my half)",value:fmt(shGlyn),  accent:"#4a9eff"},
+                {label:"My Bills",         value:fmt(glOnly), accent:"#ff8c4a"},
+                {label:"Surplus",          value:fmt(surplus),accent:surplus>=0?"#00c88c":"#ff4a6a"},
+              ].map(k=>(
+                <div key={k.label} style={{...card,textAlign:"center",padding:"10px 6px"}}>
+                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>{k.label}</div>
+                  <div style={{fontSize:15,fontWeight:700,color:k.accent}}>{k.value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{display:"flex",gap:4,marginBottom:12}}>
+              {[["shared","Shared Bills"],["glyn","My Bills"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setBudTab(v)} style={{
+                  flex:1,background:budTab===v?"#4a9eff":"#141824",color:budTab===v?"#fff":"#5a6480",
+                  border:"1px solid "+(budTab===v?"#4a9eff":"#1e2535"),borderRadius:8,padding:"9px",fontSize:12,fontWeight:600,cursor:"pointer"
+                }}>{l}</button>
+              ))}
+            </div>
+
+            {budTab==="shared"&&(
+              <div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <span style={{fontSize:10,color:"#3a4460",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Categories</span>
+                  <button onClick={()=>setAddingCat("shared")} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:6,color:"#00c88c",fontSize:11,fontWeight:600,padding:"5px 10px",cursor:"pointer"}}>+ New</button>
+                </div>
+                {addingCat==="shared"&&(
+                  <div style={{display:"flex",gap:6,marginBottom:10}}>
+                    <input autoFocus placeholder="Category name..." value={newCat} onChange={e=>setNewCat(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCategory(false)} style={{...inp,flex:1,padding:"6px 8px",fontSize:12}}/>
+                    <button onClick={()=>addCategory(false)} style={{background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"6px 12px",cursor:"pointer"}}>Add</button>
+                    <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>✕</button>
+                  </div>
+                )}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"8px 10px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",border:"1px solid #1e2535",borderBottom:"none"}}>
+                  <span>Bill</span><span style={{textAlign:"right"}}>Total</span><span style={{textAlign:"right"}}>Glyn</span><span style={{textAlign:"right"}}>Hollie</span><span></span>
+                </div>
+                {cats.map(cat=>(
+                  <CatSection key={cat.id} cat={cat} bills={sharedBills} billCats={billCats} isGlynOnly={false}
+                    editingBill={editSh} setEditingBill={setEditSh} onBillBlur={hSB} onBillDelete={delSh}
+                    onCatDelete={id=>delCat(id,false)} onCatRename={(id,n)=>renCat(id,n,false)}
+                    dragBill={dragBill} setDragOver={setDragOver} dragOver={dragOver} onDrop={id=>drop(id,false)}/>
+                ))}
+                {(()=>{const u=sharedBills.filter(b=>!billCats[b.id]);if(!u.length)return null;return(
+                  <div onDragOver={e=>{e.preventDefault();setDragOver("ush");}} onDragLeave={()=>setDragOver(null)} onDrop={()=>drop(null,false)}
+                    style={{border:"1px solid "+(dragOver==="ush"?"#4a9eff":"#1e2535"),borderTop:"none"}}>
+                    <div style={{padding:"8px 10px",background:dragOver==="ush"?"#0d1525":"#0f1520"}}><span style={{fontSize:10,fontWeight:700,color:"#3a4460",textTransform:"uppercase",letterSpacing:1}}>Uncategorised</span></div>
+                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={false} editing={editSh===b.id} onEditStart={()=>setEditSh(b.id)} onEditBlur={v=>hSB(b.id,v)} onDelete={()=>delSh(b.id)} onDragStart={()=>{dragBill.current=b.id;}}/>)}
+                  </div>
+                );})()}
+                {addSh&&(
+                  <div style={{border:"1px solid #00c88c",borderTop:"none",background:"#0a1a10",padding:12}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:6}}>
+                      <input autoFocus placeholder="Bill name" value={newSh.name} onChange={e=>setNewSh(r=>({...r,name:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12}}/>
+                      <input placeholder="£ Total" type="number" value={newSh.total} onChange={e=>setNewSh(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
+                    </div>
+                    <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"#8892b0",marginBottom:10,cursor:"pointer"}}>
+                      <input type="checkbox" checked={newSh.isCarGlyn} onChange={e=>setNewSh(r=>({...r,isCarGlyn:e.target.checked}))}/>
+                      Car exception (Hollie pays £{HOLLIE_CAR}, Glyn pays rest)
+                    </label>
+                    <div style={{display:"flex",gap:6}}>
+                      <button onClick={addShBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"8px",cursor:"pointer"}}>Add Bill</button>
+                      <button onClick={()=>setAddSh(false)} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"8px 12px",cursor:"pointer"}}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"10px 10px",fontSize:11,fontWeight:700,background:"#141824",border:"1px solid #1e2535",borderTop:"1px solid #2a3050"}}>
+                  <span style={{color:"#5a6480"}}>TOTAL</span>
+                  <span style={{textAlign:"right",color:"#5a6480"}}>{fmt(sharedBills.reduce((s,b)=>s+b.total,0))}</span>
+                  <span style={{textAlign:"right",color:"#4a9eff"}}>{fmt(shGlyn)}</span>
+                  <span style={{textAlign:"right",color:"#c84aff"}}>{fmt(shHollie)}</span>
+                  <span></span>
+                </div>
+                <div style={{display:"flex",gap:8,marginTop:10}}>
+                  <button onClick={()=>setAddSh(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
+                  <button onClick={()=>{updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
+                </div>
+                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap Total to edit · Drag to categorise · Double-tap category to rename</p>
+              </div>
+            )}
+
+            {budTab==="glyn"&&(
+              <div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <span style={{fontSize:10,color:"#3a4460",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Categories</span>
+                  <button onClick={()=>setAddingCat("glyn")} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:6,color:"#00c88c",fontSize:11,fontWeight:600,padding:"5px 10px",cursor:"pointer"}}>+ New</button>
+                </div>
+                {addingCat==="glyn"&&(
+                  <div style={{display:"flex",gap:6,marginBottom:10}}>
+                    <input autoFocus placeholder="Category name..." value={newCat} onChange={e=>setNewCat(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCategory(true)} style={{...inp,flex:1,padding:"6px 8px",fontSize:12}}/>
+                    <button onClick={()=>addCategory(true)} style={{background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"6px 12px",cursor:"pointer"}}>Add</button>
+                    <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>✕</button>
+                  </div>
+                )}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",padding:"8px 10px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",border:"1px solid #ff8c4a",borderBottom:"none"}}>
+                  <span>Bill</span><span style={{textAlign:"right"}}>Amount</span><span></span>
+                </div>
+                {glynCats.map(cat=>(
+                  <CatSection key={cat.id} cat={cat} bills={glynBills} billCats={glynBillCats} isGlynOnly={true}
+                    editingBill={editGl} setEditingBill={setEditGl} onBillBlur={hGB} onBillDelete={delGl}
+                    onCatDelete={id=>delCat(id,true)} onCatRename={(id,n)=>renCat(id,n,true)}
+                    dragBill={dragBill} setDragOver={setDragOver} dragOver={dragOver} onDrop={id=>drop(id,true)}/>
+                ))}
+                {(()=>{const u=glynBills.filter(b=>!glynBillCats[b.id]);if(!u.length)return null;return(
+                  <div onDragOver={e=>{e.preventDefault();setDragOver("ugl");}} onDragLeave={()=>setDragOver(null)} onDrop={()=>drop(null,true)}
+                    style={{border:"1px solid "+(dragOver==="ugl"?"#4a9eff":"#ff8c4a"),borderTop:"none"}}>
+                    <div style={{padding:"8px 10px",background:dragOver==="ugl"?"#0d1525":"#0f1520"}}><span style={{fontSize:10,fontWeight:700,color:"#ff8c4a",textTransform:"uppercase",letterSpacing:1}}>Uncategorised</span></div>
+                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={true} editing={editGl===b.id} onEditStart={()=>setEditGl(b.id)} onEditBlur={v=>hGB(b.id,v)} onDelete={()=>delGl(b.id)} onDragStart={()=>{dragBill.current=b.id;}}/>)}
+                  </div>
+                );})()}
+                {addGl&&(
+                  <div style={{border:"1px solid #00c88c",borderTop:"none",background:"#0a1a10",padding:12}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:10}}>
+                      <input autoFocus placeholder="Bill name" value={newGl.name} onChange={e=>setNewGl(r=>({...r,name:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12}}/>
+                      <input placeholder="£ Total" type="number" value={newGl.total} onChange={e=>setNewGl(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
+                    </div>
+                    <div style={{display:"flex",gap:6}}>
+                      <button onClick={addGlBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"8px",cursor:"pointer"}}>Add Bill</button>
+                      <button onClick={()=>setAddGl(false)} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"8px 12px",cursor:"pointer"}}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",padding:"10px 10px",fontSize:11,fontWeight:700,background:"#141824",border:"1px solid #ff8c4a",borderTop:"1px solid #2a3050"}}>
+                  <span style={{color:"#5a6480"}}>TOTAL</span>
+                  <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(glOnly)}</span>
+                  <span></span>
+                </div>
+                <div style={{display:"flex",gap:8,marginTop:10}}>
+                  <button onClick={()=>setAddGl(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
+                  <button onClick={()=>{updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
+                </div>
+                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit · Drag to categorise · Double-tap category to rename</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab==="Pay Calc"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{...card,background:"linear-gradient(135deg,#0a1525,#0d1117)",border:"1px solid #4a9eff"}}>
+              <div style={{textAlign:"center",marginBottom:14}}>
+                <div style={{fontSize:11,color:"#4a9eff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
+                <div style={{fontSize:38,fontWeight:700,color:"#4a9eff"}}>{fmt(cr.net)}</div>
+                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after bills: <span style={{color:surplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmt(surplus)}</span></div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                {[["Annual Gross",fmt(cr.annualGross),"#7c6fff"],["Annual Net",fmt(cr.annualNet),"#4a9eff"],["Annual Tax",fmt(cr.annualTax),"#ff6b8a"],["Annual NI",fmt(cr.annualNI),"#ff8c4a"]].map(([l,v,c])=>(
+                  <div key={l} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                    <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                    <div style={{fontSize:14,fontWeight:700,color:c}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={card}>
+              <SectionLabel>Inputs</SectionLabel>
+              <div style={{marginBottom:10}}>
+                <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                  <span>Standard Hours</span><span style={{color:"#3a4460"}}>{getCurrentMonthHours()}hrs this month</span>
+                </label>
+                <input type="number" value={ci.stdHrs} onChange={e=>setC("stdHrs",parseFloat(e.target.value)||0)} style={numI}/>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                <div>
+                  <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Overtime Hrs <span style={{color:"#3a4460"}}>@£{PAY.otRate}</span></label>
+                  <input type="number" value={ci.otHrs} onChange={e=>setC("otHrs",parseFloat(e.target.value)||0)} style={numI}/>
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Weekend OT <span style={{color:"#3a4460"}}>@£{PAY.weekendOtRate}</span></label>
+                  <input type="number" value={ci.weekendOtHrs} onChange={e=>setC("weekendOtHrs",parseFloat(e.target.value)||0)} style={numI}/>
+                </div>
+              </div>
+              <div style={{marginBottom:10}}>
+                <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Performance Bonus</label>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
+                  {[0,100,160,240].map(b=>(
+                    <button key={b} onClick={()=>setC("bonus",b)} style={{
+                      background:ci.bonus===b?"#4a9eff":"#1e2535",color:ci.bonus===b?"#fff":"#5a6480",
+                      border:"1px solid "+(ci.bonus===b?"#4a9eff":"#2a3050"),borderRadius:6,padding:"5px 12px",fontSize:12,fontWeight:600,cursor:"pointer"
+                    }}>{b===0?"None":fmt(b)}</button>
+                  ))}
+                </div>
+                <input type="number" value={ci.bonus} onChange={e=>setC("bonus",parseFloat(e.target.value)||0)} style={numI}/>
+              </div>
+              <div style={{marginTop:4}}>
+                <label style={{fontSize:13,color:"#5a6480",display:"block",marginBottom:8}}>Performance Tier</label>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:8}}>
+                  {PAY.bonusTiers.map((tier,i)=>{
+                    const isActive=effectiveTierIdx===i;
+                    const isAuto=tierOverride===null&&isActive;
+                    const colors=["#3a4460","#4a9eff","#7c6fff","#c84aff","#ffb84a","#00c88c"];
+                    return(
+                      <button key={i} onClick={()=>saveTierOverride(tierOverride===i&&i===effectiveTierIdx?null:i)} style={{
+                        background:isActive?colors[i]+"22":"#1e2535",
+                        border:"1px solid "+(isActive?colors[i]:"#2a3050"),
+                        borderRadius:8,padding:"8px 4px",cursor:"pointer",textAlign:"center"
+                      }}>
+                        <div style={{fontSize:11,fontWeight:700,color:isActive?colors[i]:"#5a6480"}}>{tier.label}</div>
+                        <div style={{fontSize:10,color:isActive?colors[i]:"#3a4460",marginTop:2}}>+£{tier.allowance.toFixed(2)}/hr</div>
+                        {isAuto&&<div style={{fontSize:9,color:colors[i],marginTop:2,opacity:0.8}}>auto</div>}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:"#5a6480"}}>
+                  <span>Effective rate: <span style={{color:"#e8eaf0",fontWeight:700}}>£{(PAY.baseRate+effectiveAllowance).toFixed(2)}/hr</span></span>
+                  {tierOverride!==null&&(
+                    <button onClick={()=>saveTierOverride(null)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",textDecoration:"underline"}}>
+                      Reset to auto
+                    </button>
+                  )}
+                </div>
+                {tierOverride!==null&&(
+                  <div style={{fontSize:11,color:"#ffb84a",marginTop:6}}>⚠ Manual override active — resets next month</div>
+                )}
+              </div>
+            </div>
+            <div style={card}>
+              <SectionLabel>Gross Breakdown</SectionLabel>
+              {[
+                ["Standard Pay", ci.stdHrs+"hrs × £"+(PAY.baseRate+effectiveAllowance).toFixed(2), fmt(cr.stdPay), "#e8eaf0"],
+                ["Overtime Pay", ci.otHrs+"hrs x £"+PAY.otRate, fmt(cr.otPay), "#4affd4"],
+                ["Weekend OT",   ci.weekendOtHrs+"hrs x £"+PAY.weekendOtRate, fmt(cr.wkPay), "#00c88c"],
+                ["Perf. Bonus",  "", fmt(cr.bonus), "#ffb84a"],
+              ].map(([l,sub,v,c])=>(
+                <div key={l} style={{...row,flexDirection:"column",gap:2}}>
+                  <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#8892b0"}}>{l}</span><span style={{fontWeight:700,color:c}}>{v}</span></div>
+                  {sub&&<span style={{fontSize:10,color:"#3a4460"}}>{sub}</span>}
+                </div>
+              ))}
+              <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderTop:"1px solid #2a3050",marginTop:4}}>
+                <span style={{color:"#e8eaf0",fontWeight:700}}>Total Gross</span>
+                <span style={{fontSize:16,fontWeight:700,color:"#7c6fff"}}>{fmt(cr.gross)}</span>
+              </div>
+            </div>
+            <div style={card}>
+              <SectionLabel>Deductions</SectionLabel>
+              {[
+                ["Income Tax (20%)",  "Tax-free: "+fmt(PAY.taxFreeMonthly)+"/mo", fmt(cr.tax),  "#ff6b8a"],
+                ["National Insurance","8% to £4,189 | 2% above",                  fmt(cr.ni),   "#ff8c4a"],
+                ["NEST Pension (5%)", "On qualifying earnings",                    fmt(cr.nest), "#ffb84a"],
+                ["Student Loan P2",   "9% above £2,372/mo",                        fmt(cr.sl),   "#c84aff"],
+              ].map(([l,sub,v,c])=>(
+                <div key={l} style={{...row,flexDirection:"column",gap:2}}>
+                  <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#8892b0"}}>{l}</span><span style={{fontWeight:700,color:c}}>-{v}</span></div>
+                  <span style={{fontSize:10,color:"#3a4460"}}>{sub}</span>
+                </div>
+              ))}
+              <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderTop:"1px solid #2a3050",marginTop:4}}>
+                <span style={{color:"#e8eaf0",fontWeight:700}}>Total Deductions</span>
+                <span style={{fontSize:16,fontWeight:700,color:"#ff4a6a"}}>-{fmt(cr.deductions)}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab==="Pay Info"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {latest&&prevMonth&&(
+              <div style={card}>
+                <SectionLabel>This Month vs Last</SectionLabel>
+                {[
+                  ["Gross",  latest.gross,  prevMonth.gross,  "#7c6fff"],
+                  ["Net",    latest.net,    prevMonth.net,    "#4a9eff"],
+                  ["Tax",    latest.tax,    prevMonth.tax,    "#ff6b8a"],
+                  ["NI",     latest.ni,     prevMonth.ni,     "#ff8c4a"],
+                  ["NEST",   latest.nest,   prevMonth.nest,   "#00c88c"],
+                  ["Bonus",  latest.bonus,  prevMonth.bonus,  "#c84aff"],
+                  ["OT Pay", latest.ot,     prevMonth.ot,     "#4affd4"],
+                ].map(([l,cur,prev,c],i,arr)=>{
+                  const diff=cur-prev;
+                  return(
+                    <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<arr.length-1?"1px solid #1a1f2e":"none"}}>
+                      <span style={{fontSize:13,color:"#8892b0",width:60}}>{l}</span>
+                      <span style={{fontSize:13,fontWeight:700,color:c}}>{fmt(cur)}</span>
+                      <span style={{fontSize:12,fontWeight:600,color:diff===0?"#3a4460":diff>0?"#00c88c":"#ff6b8a",width:80,textAlign:"right"}}>{diff===0?"—":(diff>0?"+":"")+fmt(Math.abs(diff))}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div style={card}>
+              <SectionLabel>Pay Rates</SectionLabel>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+                {[
+                  {label:"Base Rate",  value:"£"+PAY.baseRate+"/hr",      sub:"Standard hours",    accent:"#4a9eff"},
+                  {label:"OTE Rate",   value:"£"+PAY.oteRate+"/hr",        sub:"+ perf. allowance", accent:"#00c88c"},
+                  {label:"Overtime",   value:"£"+PAY.otRate+"/hr",         sub:"Weekday OT",        accent:"#4affd4"},
+                  {label:"Weekend OT", value:"£"+PAY.weekendOtRate+"/hr",  sub:"Weekend OT",        accent:"#ffb84a"},
+                ].map(k=>(
+                  <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                    <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>{k.label}</div>
+                    <div style={{fontSize:18,fontWeight:700,color:k.accent}}>{k.value}</div>
+                    <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{k.sub}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{background:"#0d1117",borderRadius:8,padding:"10px 12px",display:"flex",justifyContent:"space-between"}}>
+                <span style={{fontSize:12,color:"#5a6480"}}>This Month's Hours</span>
+                <span style={{fontSize:12,fontWeight:700,color:"#e8eaf0"}}>{getCurrentMonthHours()}hrs</span>
+              </div>
+            </div>
+            <div style={card}>
+              <SectionLabel>Employment Details</SectionLabel>
+              {[
+                ["Employer",           "JLI Trading Limited"],
+                ["Tax Code",           PAY.taxCode],
+                ["NI Category",        PAY.niCategory],
+                ["NEST Pension",       "5% employee contribution"],
+                ["Student Loan",       "Plan 2 (30-year write-off)"],
+                ["Tax-Free Allowance", fmt(PAY.taxFreeMonthly)+"/mo"],
+                ["Standard Day",       "8hrs 15min"],
+                ["This Month's Hours", getCurrentMonthHours()+"hrs"],
+              ].map(([l,v],i,arr)=>(
+                <StatRow key={l} label={l} value={v} last={i===arr.length-1}/>
+              ))}
+            </div>
+            <div style={card}>
+              <SectionLabel>Performance Bonus Tiers</SectionLabel>
+              <p style={{fontSize:12,color:"#3a4460",marginBottom:14,marginTop:0}}>Based on team average performance % each month</p>
+              {PAY.bonusTiers.map((tier,i)=>{
+                const colors=["#3a4460","#4a9eff","#7c6fff","#c84aff","#ffb84a","#00c88c"];
+                return(
+                  <div key={tier.label} style={{background:"#0d1117",borderRadius:8,padding:"10px 14px",borderLeft:"3px solid "+colors[i],marginBottom:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:700,color:tier.bonus===0?"#3a4460":colors[i]}}>{tier.label} · {tier.range}</div>
+                      <div style={{fontSize:11,color:"#5a6480",marginTop:3}}>{tier.bonus===0?"No bonus":"Bonus: "+fmt(tier.bonus)}</div>
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:13,fontWeight:700,color:tier.allowance>0?colors[i]:"#3a4460"}}>+£{tier.allowance.toFixed(2)}/hr</div>
+                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>allowance</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={card}>
+              <SectionLabel>Recent Bonus History</SectionLabel>
+              {allSorted.slice(-10).reverse().map((r,i,arr)=>(
+                <StatRow key={r.month} label={r.month} color={r.bonus>=240?"#00c88c":r.bonus>=200?"#ffb84a":r.bonus>=160?"#7c6fff":r.bonus>0?"#4a9eff":"#3a4460"} value={r.bonus>0?fmt(r.bonus):"—"} last={i===arr.length-1}/>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {tab==="Payslips"&&(
+          <div>
+            <div style={{marginBottom:12,position:"relative"}}>
+              <input placeholder="Search e.g. Jan 2025…" value={payslipSearch} onChange={e=>setPayslipSearch(e.target.value)}
+                style={{...inp,paddingLeft:36,background:"#141824"}}/>
+              <span style={{position:"absolute",top:"50%",left:12,transform:"translateY(-50%)",fontSize:14,pointerEvents:"none"}}>🔍</span>
+            </div>
+              <div style={{background:"#2a0f15",border:"1px solid #ff4a6a",borderRadius:10,padding:"16px 14px",marginBottom:14,display:deleteConfirm?"block":"none"}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#ff4a6a",marginBottom:8}}>Delete {deleteConfirm}?</div>
+                <div style={{fontSize:11,color:"#8a4050",marginBottom:14}}>This will permanently remove this payslip from your history.</div>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>deletePayslip(deleteConfirm)} style={{flex:1,background:"#ff4a6a",border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Delete</button>
+                  <button onClick={()=>setDeleteConfirm(null)} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px",cursor:"pointer"}}>Cancel</button>
+                </div>
+              </div>
+            <div style={{...card,padding:0,overflow:"hidden",marginBottom:10}}>
+              <div style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr 28px",padding:"10px",background:"#0d1117",fontSize:10,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase"}}>
+                <span>Month</span>
+                <span style={{textAlign:"right"}}>Gross</span><span style={{textAlign:"right"}}>Net</span>
+                <span style={{textAlign:"right"}}>Tax</span><span style={{textAlign:"right"}}>NI</span><span style={{textAlign:"right"}}>NEST</span><span></span>
+              </div>
+              <div style={{maxHeight:"50vh",overflowY:"auto"}}>
+                {filteredHistory.map((r,i)=>(
+                  <div key={r.month}>
+                    <div onClick={()=>setExpandedPayslip(expandedPayslip===r.month?null:r.month)}
+                      style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr 28px",padding:"10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"pointer",alignItems:"center"}}>
+                      <span style={{fontSize:12,fontWeight:600,color:"#8892b0"}}>{r.month}</span>
+                      <span style={{textAlign:"right",color:"#7c6fff"}}>{fmt(r.gross)}</span>
+                      <span style={{textAlign:"right",color:"#4a9eff",fontWeight:700}}>{fmt(r.net)}</span>
+                      <span style={{textAlign:"right",color:"#ff6b8a"}}>{fmt(r.tax)}</span>
+                      <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(r.ni)}</span>
+                      <span style={{textAlign:"right",color:"#00c88c"}}>{fmt(r.nest)}</span>
+                      <button onClick={e=>{e.stopPropagation();setDeleteConfirm(r.month);}}
+                        style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
+                    </div>
+                    {expandedPayslip===r.month&&(
+                      <div style={{background:"#0d1525",borderBottom:"1px solid #1e2535",padding:"12px 14px"}}>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                          {[
+                            ["Bonus",    r.bonus>0?fmt(r.bonus):"—","#c84aff"],
+                            ["OT Pay",   r.ot>0?fmt(r.ot):"—",    "#4affd4"],
+                            ["Std Loan", r.sl>0?fmt(r.sl):"—",    "#ffb84a"],
+                          ].map(([l,v,c])=>(
+                            <div key={l} style={{background:"#111827",borderRadius:8,padding:"9px",textAlign:"center"}}>
+                              <div style={{fontSize:10,color:"#5a6480",marginBottom:3}}>{l}</div>
+                              <div style={{fontSize:13,fontWeight:700,color:c}}>{v}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <textarea placeholder="Add a note for this month…" value={notes[r.month]||""}
+                          onChange={e=>{const n={...notes,[r.month]:e.target.value};updNotes(n);}}
+                          style={{width:"100%",boxSizing:"border-box",background:"#111827",border:"1px solid #2a3050",borderRadius:8,color:"#8892b0",fontSize:12,padding:"10px",resize:"vertical",minHeight:60,fontFamily:"inherit",lineHeight:1.5}}/>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {filteredHistory.length===0&&<div style={{padding:"32px",textAlign:"center",color:"#3a4460",fontSize:13}}>No payslips match "{payslipSearch}"</div>}
+              </div>
+            </div>
+            <div style={{...card,padding:0,overflow:"hidden",marginBottom:10}}>
+              <div style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr",padding:"10px",background:"#0d1117",fontSize:10,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase"}}>
+                <span>Month</span><span style={{textAlign:"right"}}>St. Loan</span><span style={{textAlign:"right"}}>Bonus</span><span style={{textAlign:"right"}}>Overtime</span>
+              </div>
+              <div style={{maxHeight:"40vh",overflowY:"auto"}}>
+                {filteredHistory.map((r,i)=>(
+                  <div key={r.month} style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr",padding:"10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e"}}>
+                    <span style={{fontSize:12,fontWeight:600,color:"#8892b0"}}>{r.month}</span>
+                    <span style={{textAlign:"right",color:"#ffb84a"}}>{r.sl>0?fmt(r.sl):"—"}</span>
+                    <span style={{textAlign:"right",color:"#c84aff"}}>{r.bonus>0?fmt(r.bonus):"—"}</span>
+                    <span style={{textAlign:"right",color:"#4affd4"}}>{r.ot>0?fmt(r.ot):"—"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{...card,display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr",fontSize:11,fontWeight:700}}>
+              <span style={{color:"#5a6480"}}>TOTALS</span>
+              <span style={{textAlign:"right",color:"#7c6fff"}}>{fmt(ts.gross)}</span>
+              <span style={{textAlign:"right",color:"#4a9eff"}}>{fmt(ts.net)}</span>
+              <span style={{textAlign:"right",color:"#ff6b8a"}}>{fmt(ts.tax)}</span>
+              <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(ts.ni)}</span>
+              <span style={{textAlign:"right",color:"#00c88c"}}>{fmt(ts.nest)}</span>
+            </div>
+            <p style={{fontSize:10,color:"#3a4460",textAlign:"center",marginTop:8}}>Tap a row to expand · add notes or delete</p>
+
+            {latest&&(()=>{
+              const active = inferPerfAllowance(latest);
+              const allowanceRate = getAllowanceForBonus(latest.bonus||0);
+              const [mo,yr] = latest.month.split(" ");
+              const moIdx = MONTHS.indexOf(mo);
+              const nextMo = MONTHS[(moIdx+1)%12];
+              const nextYr = moIdx===11 ? parseInt(yr)+1 : parseInt(yr);
+              const tier = PAY.bonusTiers.slice().reverse().find(t=>(latest.bonus||0)>=t.bonus&&t.bonus>0)||PAY.bonusTiers[0];
+              return(
+                <div style={{marginTop:12,background:active?"#0a1a10":"#1a0f0a",border:"1px solid "+(active?"#00c88c":"#ff8c4a"),borderRadius:12,padding:"14px 16px"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                    <span style={{fontSize:18}}>{active?"✅":"❌"}</span>
+                    <span style={{fontSize:13,fontWeight:700,color:active?"#00c88c":"#ff8c4a"}}>
+                      Performance Allowance — {nextMo} {nextYr}
+                    </span>
+                  </div>
+                  <div style={{fontSize:12,color:"#8892b0",lineHeight:1.7}}>
+                    Your <span style={{color:"#e8eaf0",fontWeight:600}}>{latest.month}</span> payslip shows a <span style={{color:"#c84aff",fontWeight:700}}>{fmt(latest.bonus||0)}</span> bonus
+                    {" "}(<span style={{color:"#e8eaf0"}}>{tier.label} · {tier.range}</span>).
+                    {active
+                      ? <> The <span style={{color:"#00c88c",fontWeight:700}}>+£{allowanceRate.toFixed(2)}/hr</span> allowance will apply to every hour worked in <span style={{color:"#e8eaf0",fontWeight:600}}>{nextMo} {nextYr}</span>. Pay Calc updated.</>
+                      : <> No performance allowance applies for <span style={{color:"#e8eaf0",fontWeight:600}}>{nextMo} {nextYr}</span> — a bonus is needed to unlock the hourly allowance.</>
+                    }
+                  </div>
+                  <button onClick={()=>setC("perfAllowance",!ci.perfAllowance)}
+                    style={{marginTop:10,background:"#1e2535",border:"1px solid #2a3050",borderRadius:8,color:"#5a6480",fontSize:12,padding:"7px 14px",cursor:"pointer"}}>
+                    Override in Pay Calc: mark as {ci.perfAllowance?"inactive":"active"}
+                  </button>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {tab==="Tax Year"&&(
+          <div>
+            <div style={{...card,marginBottom:14,background:"linear-gradient(135deg,#0f1a10,#0d1117)",border:"1px solid #00c88c"}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>Tax Year Summaries</div>
+              <p style={{fontSize:11,color:"#3a4460",margin:0}}>Apr – Mar breakdown from your payslip history</p>
+            </div>
+            {groupByFY(history).map((fy,i)=>{
+              const isCurrent=i===0;
+              return(
+                <div key={fy.label} style={{...card,marginBottom:12,border:"1px solid "+(isCurrent?"#00c88c":"#1e2535")}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:700,color:isCurrent?"#00c88c":"#8892b0"}}>{fy.label}</div>
+                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{fy.months} month{fy.months!==1?"s":""} recorded{isCurrent?" · current year":""}</div>
+                    </div>
+                    {isCurrent&&<span style={{background:"#0a2a15",border:"1px solid #00c88c",borderRadius:12,fontSize:9,fontWeight:700,color:"#00c88c",padding:"3px 8px",letterSpacing:1}}>CURRENT</span>}
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:10}}>
+                    {[
+                      {label:"Total Gross",value:fmt(fy.gross),accent:"#7c6fff"},
+                      {label:"Total Net",  value:fmt(fy.net),  accent:"#4a9eff"},
+                      {label:"Avg Net/Mo", value:fmt(fy.net/fy.months),accent:"#00c88c"},
+                      {label:"Total Bonus",value:fmt(fy.bonus),accent:"#c84aff"},
+                    ].map(k=>(
+                      <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"9px",textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:3}}>{k.label}</div>
+                        <div style={{fontSize:14,fontWeight:700,color:k.accent}}>{k.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <SectionLabel>Deductions</SectionLabel>
+                  {[
+                    ["Income Tax",         fmt(fy.tax),  "#ff6b8a"],
+                    ["National Insurance", fmt(fy.ni),   "#ff8c4a"],
+                    ["NEST Pension",       fmt(fy.nest), "#ffb84a"],
+                    ["Student Loan",       fmt(fy.sl),   "#c84aff"],
+                    ["Overtime Pay",       fmt(fy.ot),   "#4affd4"],
+                  ].map(([l,v,c],i,arr)=>(
+                    <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
+                  ))}
+                  <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0 0",fontSize:12,fontWeight:700}}>
+                    <span style={{color:"#8892b0"}}>Total Deductions</span>
+                    <span style={{color:"#ff4a6a"}}>{fmt(fy.tax+fy.ni+fy.nest+fy.sl)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {tab==="Upload"&&(
+          <div>
+          <div style={{...card,textAlign:"center",marginBottom:14}}>
+            <div style={{fontSize:32,marginBottom:10}}>📄</div>
+            <h2 style={{margin:"0 0 6px",fontSize:16,color:"#e8eaf0"}}>Upload Payslips</h2>
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:24}}>Select one or more payslip PDFs. They'll be read and added to your history automatically.</p>
+            <label style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer"}}>
+              <input type="file" accept=".pdf" multiple onChange={handleUpload} style={{display:"none"}} disabled={uploading}/>
+              {uploading
+                ?<div><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing…"}</div></div>
+                :<div><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
+              }
+            </label>
+            {multiResults.length>0&&(
+              <div style={{marginTop:16,textAlign:"left"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
+                  ✓ {multiResults.filter(r=>r.ok).length} of {multiResults.length} added
+                </div>
+                {multiResults.map((r,i)=>(
+                  <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:12}}>
+                    {r.ok
+                      ?<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}</span><span style={{color:"#8892b0"}}>Gross {fmt(r.parsed.gross)} · Net {fmt(r.parsed.net)}</span></div>
+                      :<div style={{color:"#ff6b8a"}}>⚠ {r.name} — {r.err}</div>
+                    }
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{...card,marginBottom:14}}>
+            <div style={{fontSize:9,color:"#ffb84a",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Weekly Timesheet</div>
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:14,lineHeight:1.6}}>Screenshot your timesheet email and upload here. Hours will be calculated and applied to Pay Calc automatically.</p>
+            <label style={{display:"block",background:"#0d1117",border:"2px dashed "+(showTsReminder?"#ffb84a":"#2a3050"),borderRadius:10,padding:"20px 16px",cursor:tsUploading?"not-allowed":"pointer",marginBottom:12}}>
+              <input type="file" accept="image/*" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
+              {tsUploading
+                ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#ffb84a",fontSize:13}}>{tsProgress||"Processing…"}</div></div>
+                :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
+              }
+            </label>
+            {tsPending&&(()=>{
+              // Calculate what the totals will be after merge+dedup
+              const STD = 8.25;
+              const enrichedNew = tsPending.days.map(d => {
+                const hrs = parseHM(d.hours);
+                const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
+                return { ...d, hrs, otHrs: isWeekend ? 0 : Math.max(0, Math.round((hrs-STD)*100)/100), wkOtHrs: isWeekend ? hrs : 0 };
+              });
+              const seen = new Set();
+              const merged = [...(accumulated.days||[]), ...enrichedNew]
+                .sort((a,b)=>{const[ad,am]=(a.date||"").split("/").map(Number);const[bd,bm]=(b.date||"").split("/").map(Number);return am!==bm?am-bm:ad-bd;})
+                .filter(d=>{const k=d.date+"_"+d.day;if(seen.has(k))return false;seen.add(k);return true;});
+              const projOT = Math.round(merged.reduce((s,d)=>s+(d.otHrs||0),0)*100)/100;
+              const projWknd = Math.round(merged.reduce((s,d)=>s+(d.wkOtHrs||0),0)*100)/100;
+              return(
+                <div style={{background:"#0d1a10",border:"1px solid #1a4030",borderRadius:10,padding:14,marginBottom:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted — {tsPending.days.length} days</div>
+                  <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
+                    {tsPending.days.map((d,i)=>(
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 50px 1fr",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:11}}>
+                        <span style={{color:"#5a8070"}}>{d.date}</span>
+                        <span style={{color:"#8892b0"}}>{d.day}</span>
+                        <span style={{color:"#e8eaf0",textAlign:"right",fontWeight:600}}>{d.hours}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Month total after applying</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+                    {[["Weekday OT",projOT,"#4affd4"],["Weekend OT",projWknd,"#ffb84a"]].map(([l,v,c])=>(
+                      <div key={l} style={{background:"#0a1a10",borderRadius:6,padding:"8px",textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                        <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={confirmTimesheet} style={{flex:1,background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Apply to Pay Calc</button>
+                    <button onClick={()=>setTsPending(null)} style={{background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px 14px",cursor:"pointer"}}>Discard</button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          <div style={{...card}}>
+            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Backup & Restore</div>
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:16,lineHeight:1.6}}>Export saves all your payslips, bills, and categories to a file. Import restores from a previous export. Save your backup to Google Drive for safekeeping.</p>
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              <button onClick={exportData} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer"}}>⬇ Export Backup</button>
+              <label style={{flex:1,background:"#1a2535",border:"1px solid #00c88c",borderRadius:8,color:"#00c88c",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer",textAlign:"center"}}>
+                ⬆ Import Backup
+                <input type="file" accept=".json" onChange={importData} style={{display:"none"}}/>
+              </label>
+            </div>
+            {importMsg&&(
+              <div style={{padding:"10px 12px",borderRadius:8,background:importMsg.startsWith("✓")?"#0a1a10":"#2a0f15",border:"1px solid "+(importMsg.startsWith("✓")?"#1a4030":"#5a1a2a"),color:importMsg.startsWith("✓")?"#00c88c":"#ff6b8a",fontSize:12,textAlign:"center"}}>
+                {importMsg}
+              </div>
+            )}
+          </div>
+          </div>
+        )}
+
+        {tab==="Timesheet"&&(
+          <div>
+            {/* Summary cards */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+              {[
+                {label:"Weekday OT",value:(accumulated.otHrs||0)+"h",accent:"#4affd4"},
+                {label:"Weekend OT",value:(accumulated.weekendOtHrs||0)+"h",accent:"#ffb84a"},
+              ].map(k=>(
+                <div key={k.label} style={{...card,textAlign:"center",padding:"12px 8px"}}>
+                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
+                  <div style={{fontSize:22,fontWeight:700,color:k.accent}}>{k.value}</div>
+                  <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>this month</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Daily breakdown */}
+            {accumulated.days&&accumulated.days.length>0?(
+              <div style={{...card,padding:0,overflow:"hidden",marginBottom:14}}>
+                <div style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase"}}>
+                  <span>Date</span><span>Day</span><span style={{textAlign:"right"}}>Hours</span><span style={{textAlign:"right"}}>Wkdy OT</span><span style={{textAlign:"right"}}>Wknd OT</span>
+                </div>
+                <div style={{maxHeight:"60vh",overflowY:"auto"}}>
+                  {accumulated.days
+                    .filter(d=>parseHM(d.hours)>0)
+                    .map((d,i)=>{
+                    const isWeekend=d.day.toLowerCase().startsWith("sat")||d.day.toLowerCase().startsWith("sun");
+                    return(
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px 10px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
+                        <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
+                        <span style={{color:isWeekend?"#ffb84a":"#5a6480",fontWeight:isWeekend?700:400}}>{d.day}</span>
+                        <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{d.hours}</span>
+                        <span style={{textAlign:"right",color:"#4affd4",fontWeight:600}}>{d.otHrs>0?"+"+d.otHrs+"h":"—"}</span>
+                        <span style={{textAlign:"right",color:"#ffb84a",fontWeight:600}}>{d.wkOtHrs>0?d.wkOtHrs+"h":"—"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ):(
+              <div style={{...card,textAlign:"center",padding:"32px 16px",marginBottom:14}}>
+                <div style={{fontSize:32,marginBottom:10}}>📋</div>
+                <div style={{fontSize:13,color:"#5a6480"}}>No timesheets uploaded yet this month</div>
+                <div style={{fontSize:11,color:"#3a4460",marginTop:6}}>Go to Upload tab to add your weekly timesheet</div>
+              </div>
+            )}
+
+            {(()=>{
+              // FY OT tracker from payslip history
+              const now=new Date();
+              const fyStart=now.getMonth()>=3?new Date(now.getFullYear(),3,1):new Date(now.getFullYear()-1,3,1);
+              const fyYear=fyStart.getFullYear();
+              const fyLabel="Apr "+fyYear+" – Mar "+(fyYear+1);
+              const fyRows=history.filter(r=>{const[mo,yr]=r.month.split(" ");return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;});
+              const fyOTPay=fyRows.reduce((s,r)=>s+(r.ot||0),0);
+              const fyOTHrsEst=Math.round(fyOTPay/PAY.otRate*100)/100;
+              const fyWkndPayEst=fyRows.reduce((s,r)=>{
+                // Weekend OT can't be split from total OT in stored data, show total OT pay
+                return s;
+              },0);
+              if(fyRows.length===0) return null;
+              return(
+                <div style={{...card,marginBottom:14,border:"1px solid #2a4a4a"}}>
+                  <SectionLabel>FY Overtime Tracker — {fyLabel}</SectionLabel>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+                    {[
+                      {label:"Total OT Pay",value:fmt(fyOTPay),accent:"#4affd4"},
+                      {label:"Est. OT Hours",value:fyOTHrsEst+"h",accent:"#00c88c",sub:"at £"+PAY.otRate+"/hr avg"},
+                      {label:"Months Tracked",value:fyRows.length,accent:"#7c6fff"},
+                      {label:"Avg OT/Month",value:fmt(fyOTPay/fyRows.length),accent:"#ffb84a"},
+                    ].map(k=>(
+                      <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{k.label}</div>
+                        <div style={{fontSize:16,fontWeight:700,color:k.accent}}>{k.value}</div>
+                        {k.sub&&<div style={{fontSize:9,color:"#3a4460",marginTop:2}}>{k.sub}</div>}
+                      </div>
+                    ))}
+                  </div>
+                  <SectionLabel>Month by Month</SectionLabel>
+                  {fyRows.map((r,i,arr)=>(
+                    <StatRow key={r.month} label={r.month} value={r.ot>0?fmt(r.ot):"—"} color={r.ot>0?"#4affd4":"#3a4460"} last={i===arr.length-1}/>
+                  ))}
+                </div>
+              );
+            })()}
+
+            <button onClick={resetTimesheet} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"12px",cursor:"pointer"}}>
+              Reset for New Month
+            </button>
+          </div>
+        )}
+
+      </div>
+
+      <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.5.4</span>
+      </div>
+
+    </div>
+  );
+}
