@@ -127,11 +127,41 @@ function billShares(b) {
   return { glyn: b.total / 2, hollie: b.total / 2 };
 }
 
+// Storage keys — NEVER change these, doing so will lose user data
 const SK = {
-  history: "v_history", sharedBills: "v_shared_bills", glynBills: "v_glyn_bills",
-  cats: "v_cats", billCats: "v_billcats", glynCats: "v_gcats", glynBillCats: "v_gbillcats",
-  calcInputs: "v_calc",
+  history:     "vaulted_history",
+  sharedBills: "vaulted_shared_bills",
+  glynBills:   "vaulted_glyn_bills",
+  cats:        "vaulted_cats",
+  billCats:    "vaulted_billcats",
+  glynCats:    "vaulted_gcats",
+  glynBillCats:"vaulted_gbillcats",
+  calcInputs:  "vaulted_calc",
 };
+
+// Legacy key names from older builds — migrate once then leave
+const LEGACY = {
+  "jli_history": "vaulted_history", "jli_bills": "vaulted_shared_bills",
+  "jli_shared_bills": "vaulted_shared_bills", "jli_glyn_bills": "vaulted_glyn_bills",
+  "jli_categories": "vaulted_cats", "jli_billcats": "vaulted_billcats",
+  "jli_glyn_categories": "vaulted_gcats", "jli_glyn_billcats": "vaulted_gbillcats",
+  "v_history": "vaulted_history", "v_shared_bills": "vaulted_shared_bills",
+  "v_glyn_bills": "vaulted_glyn_bills", "v_cats": "vaulted_cats",
+  "v_billcats": "vaulted_billcats", "v_gcats": "vaulted_gcats",
+  "v_gbillcats": "vaulted_gbillcats", "v_calc": "vaulted_calc",
+};
+
+// Run migration once on load
+(function migrate() {
+  try {
+    Object.entries(LEGACY).forEach(([oldKey, newKey]) => {
+      if (localStorage.getItem(newKey)) return; // already migrated
+      const old = localStorage.getItem(oldKey);
+      if (old) { localStorage.setItem(newKey, old); localStorage.removeItem(oldKey); }
+    });
+  } catch {}
+})();
+
 const load = (key, fb) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fb; } catch { return fb; } };
 const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
 
@@ -209,6 +239,7 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
   const [rv,setRv]=useState(cat.name);
   const cb=bills.filter(b=>billCats[b.id]===cat.id);
   const total=cb.reduce((s,b)=>s+b.total,0);
+  const glynTotal=isGlynOnly?total:cb.reduce((s,b)=>s+billShares(b).glyn,0);
   return (
     <div onDragOver={e=>{e.preventDefault();setDragOver(cat.id);}} onDragLeave={()=>setDragOver(null)} onDrop={()=>onDrop(cat.id)}
       style={{border:"1px solid "+(dragOver===cat.id?"#4a9eff":"#1e2535"),borderTop:"none",transition:"border-color 0.15s"}}>
@@ -222,7 +253,8 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
           <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:11,fontWeight:700,color:"#8892b0",cursor:"text",flex:1}} title="Double-tap to rename">{cat.name}</span>
         )}
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          <span style={{fontSize:11,color:"#4a9eff"}}>{fmt(total)}</span>
+          <span style={{fontSize:10,color:"#3a4460"}}>{isGlynOnly?"":"My: "+fmt(glynTotal)+" |"}</span>
+          <span style={{fontSize:11,color:"#e8eaf0",fontWeight:700}}>Total: {fmt(total)}</span>
           <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>✏️</button>
           <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 7px"}}>✕ Delete</button>
         </div>
