@@ -1246,7 +1246,7 @@ export default function App() {
                 style={{...inp,paddingLeft:36,background:"#141824"}}/>
               <span style={{position:"absolute",top:"50%",left:12,transform:"translateY(-50%)",fontSize:14,pointerEvents:"none"}}>🔍</span>
             </div>
-              <div style={{background:"#2a0f15",border:"1px solid #ff4a6a",borderRadius:10,padding:"16px 14px",marginBottom:14}}>
+              <div style={{background:"#2a0f15",border:"1px solid #ff4a6a",borderRadius:10,padding:"16px 14px",marginBottom:14,display:deleteConfirm?"block":"none"}}>
                 <div style={{fontSize:13,fontWeight:700,color:"#ff4a6a",marginBottom:8}}>Delete {deleteConfirm}?</div>
                 <div style={{fontSize:11,color:"#8a4050",marginBottom:14}}>This will permanently remove this payslip from your history.</div>
                 <div style={{display:"flex",gap:8}}>
@@ -1254,7 +1254,6 @@ export default function App() {
                   <button onClick={()=>setDeleteConfirm(null)} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px",cursor:"pointer"}}>Cancel</button>
                 </div>
               </div>
-            )}
             <div style={{...card,padding:0,overflow:"hidden",marginBottom:10}}>
               <div style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr 28px",padding:"10px",background:"#0d1117",fontSize:10,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase"}}>
                 <span>Month</span>
