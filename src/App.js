@@ -1404,10 +1404,11 @@ export default function App() {
                 <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>Weeks Uploaded</div>
                 {accumulated.weeks.map((w,i)=>(
                   <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12}}>
-                    <span style={{color:"#5a6480"}}>Week {i+1} — {new Date(w.uploadedAt).toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span>
-                    <span style={{color:"#4affd4",fontWeight:600}}>{w.otHrs}h OT · <span style={{color:"#ffb84a"}}>{w.weekendOtHrs}h wknd</span></span>
+                    <span style={{color:"#5a6480"}}>Upload {i+1}</span>
+                    <span style={{color:"#3a4460"}}>{new Date(w.uploadedAt).toLocaleDateString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}</span>
                   </div>
                 ))}
+                <div style={{fontSize:10,color:"#3a4460",marginTop:8}}>Totals above reflect all uploads combined after deduplication</div>
               </div>
             )}
 
