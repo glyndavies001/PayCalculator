@@ -1,4 +1,4 @@
-const CACHE = 'vaulted-v1';
+const CACHE = 'vaulted-v2';
 const URLS  = ['/', '/index.html'];
 
 self.addEventListener('install', e => {
