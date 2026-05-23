@@ -619,12 +619,21 @@ export default function App() {
       const wkOtHrs = isWeekend ? hrs : 0;
       return { ...d, hrs, otHrs, wkOtHrs };
     });
-    // Sort all accumulated days by date (DD/MM), assuming same month context
-    const sortDays = days => [...days].sort((a, b) => {
-      const [ad, am] = (a.date || "").split("/").map(Number);
-      const [bd, bm] = (b.date || "").split("/").map(Number);
-      return (am !== bm ? am - bm : ad - bd);
-    });
+    const sortDays = days => {
+      const seen = new Set();
+      return [...days]
+        .sort((a, b) => {
+          const [ad, am] = (a.date || "").split("/").map(Number);
+          const [bd, bm] = (b.date || "").split("/").map(Number);
+          return (am !== bm ? am - bm : ad - bd);
+        })
+        .filter(d => {
+          const key = d.date + "_" + d.day;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+    };
     const newAcc = {
       otHrs: Math.round((accumulated.otHrs + tsPending.totals.otHrs) * 100) / 100,
       weekendOtHrs: Math.round((accumulated.weekendOtHrs + tsPending.totals.weekendOtHrs) * 100) / 100,
