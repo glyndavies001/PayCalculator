@@ -2,21 +2,6 @@ import React, { useState, useMemo, useRef, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 import ANTHROPIC_API_KEY from "./apikey";
 
-class ErrorBoundary extends React.Component {
-  constructor(props) { super(props); this.state = { error: null }; }
-  componentDidCatch(error, info) { this.setState({ error, info }); }
-  render() {
-    if (this.state.error) return (
-      <div style={{padding:20,background:"#1a0000",color:"#ff6b6b",fontSize:12,wordBreak:"break-all",fontFamily:"monospace",whiteSpace:"pre-wrap"}}>
-        <strong style={{fontSize:14}}>⚠ App Error</strong>{"\n\n"}
-        {this.state.error.toString()}{"\n\n"}
-        {this.state.info?.componentStack}
-      </div>
-    );
-    return this.props.children;
-  }
-}
-
 function getWorkingDaysInMonth(year, month) {
   const days = new Date(year, month + 1, 0).getDate();
   let count = 0;
@@ -268,8 +253,7 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
           <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:11,fontWeight:700,color:"#8892b0",cursor:"text",flex:1}} title="Double-tap to rename">{cat.name}</span>
         )}
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          <span style={{fontSize:10,color:"#3a4460"}}>{isGlynOnly?"":"My: "+fmt(glynTotal)+" |"}</span>
-          <span style={{fontSize:11,color:"#e8eaf0",fontWeight:700}}>Total: {fmt(total)}</span>
+          <span style={{fontSize:11,color:"#e8eaf0",fontWeight:700}}>{fmt(total)}</span>
           <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>✏️</button>
           <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 7px"}}>✕ Delete</button>
         </div>
@@ -403,7 +387,6 @@ export default function App() {
   const allSorted=useMemo(()=>sortH(history),[history]);
 
   return (
-    <ErrorBoundary>
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
 
       <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"16px 14px 0",position:"sticky",top:0,zIndex:100}}>
@@ -889,6 +872,5 @@ export default function App() {
 
       </div>
     </div>
-    </ErrorBoundary>
   );
 }
