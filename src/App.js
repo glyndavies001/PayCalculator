@@ -160,6 +160,13 @@ function getPayday(year, month) {
 }
 
 // Check if accumulated timesheet data should be reset (new pay period started)
+function getNextPayday() {
+  const now = new Date();
+  let pd = getPayday(now.getFullYear(), now.getMonth());
+  if (pd <= now) pd = getPayday(now.getFullYear(), now.getMonth() + 1);
+  return pd;
+}
+
 function shouldResetTimesheet(tsLastUpload) {
   if (!tsLastUpload) return false;
   const last = new Date(tsLastUpload);
@@ -207,8 +214,11 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const TABS = ["Dashboard","Budget","Pay Calc","Pay Info","Payslips","Timesheet","Tax Year","Upload"];
+const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
+const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Upload"];
 const RANGES = ["3M","6M","12M","2Y","All"];
+const SL_START_YEAR = 2019;
+const SL_WRITEOFF_YEAR = 2049;
 
 function sortH(arr) {
   return [...arr].sort((a,b)=>{
@@ -270,12 +280,25 @@ function getCurrentFYOT(history) {
   }),{otPay:0});
 }
 
+function SectionLabel({children}) {
+  return <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>{children}</div>;
+}
+
+function StatRow({label,value,color,last}) {
+  return (
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 0",borderBottom:last?"none":"1px solid #1a1f2e"}}>
+      <span style={{fontSize:13,color:"#8892b0"}}>{label}</span>
+      <span style={{fontSize:13,fontWeight:700,color:color||"#e8eaf0"}}>{value}</span>
+    </div>
+  );
+}
+
 function CollapsibleChart({title,data,dataKey,color}) {
   const [open,setOpen]=useState(false);
   return (
     <div style={{border:"1px solid #1e2535",borderRadius:10,overflow:"hidden",marginBottom:8}}>
-      <button onClick={()=>setOpen(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 14px",background:"#141824",border:"none",cursor:"pointer",color:"#e8eaf0"}}>
-        <span style={{fontSize:12,fontWeight:600,color:"#8892b0"}}>{title}</span>
+      <button onClick={()=>setOpen(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 14px",background:"#141824",border:"none",cursor:"pointer",color:"#e8eaf0"}}>
+        <span style={{fontSize:13,fontWeight:600,color:"#8892b0"}}>{title}</span>
         <span style={{fontSize:12,color:"#3a4460"}}>{open?"▲":"▼"}</span>
       </button>
       {open&&(
@@ -301,7 +324,7 @@ function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,on
   return (
     <div draggable onDragStart={onDragStart} style={{
       display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",
-      padding:"8px 10px",fontSize:11,alignItems:"center",
+      padding:"9px 10px",fontSize:12,alignItems:"center",
       background:idx%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"grab"
     }}>
       <span style={{color:"#8892b0"}}>{bill.name}</span>
@@ -389,6 +412,8 @@ export default function App() {
   const [notes,setNotes]=useState(()=>load(SK.notes,{}));
   const [expandedPayslip,setExpandedPayslip]=useState(null);
   const [deleteConfirm,setDeleteConfirm]=useState(null);
+  const [payslipSearch,setPayslipSearch]=useState("");
+  const [showAllTimeTotals,setShowAllTimeTotals]=useState(false);
 
   // Timesheet state
   const [tsUploading,setTsUploading]=useState(false);
@@ -403,7 +428,8 @@ export default function App() {
   });
   const showTsReminder=shouldShowTimesheetReminder(tsLastUpload);
 
-  const latest=history[history.length-1];
+  const latest=useMemo(()=>sortH(history).slice(-1)[0],[history]);
+  const prevMonth=useMemo(()=>sortH(history).slice(-2)[0],[history]);
   const shGlyn=sharedBills.reduce((s,b)=>s+billShares(b).glyn,0);
   const shHollie=sharedBills.reduce((s,b)=>s+billShares(b).hollie,0);
   const glOnly=glynBills.reduce((s,b)=>s+b.total,0);
@@ -669,34 +695,55 @@ export default function App() {
   const row={display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12};
 
   const allSorted=useMemo(()=>sortH(history),[history]);
-
   const missingMonths=useMemo(()=>getMissingMonths(history),[history]);
+  const budgetVsActual=useMemo(()=>sortH(history).slice(-12).map(r=>({month:r.month,actual:r.net,estimated:cr.net})),[history,cr.net]);
 
-  const budgetVsActual=useMemo(()=>{
-    // Last 12 months of history vs Pay Calc estimate
-    return sortH(history).slice(-12).map(r=>({
-      month:r.month,
-      actual:r.net,
-      estimated:cr.net,
-    }));
-  },[history,cr.net]);
+  const nextPayday=useMemo(()=>{
+    const pd=getNextPayday();
+    const days=Math.ceil((pd-new Date())/(1000*60*60*24));
+    return {date:pd.toLocaleDateString("en-GB",{day:"numeric",month:"short"}),days};
+  },[]);
+
+  const slProgress=useMemo(()=>{
+    const elapsed=new Date().getFullYear()-SL_START_YEAR;
+    const total=SL_WRITEOFF_YEAR-SL_START_YEAR;
+    return {elapsed,total,pct:Math.min(100,Math.round(elapsed/total*100)),yearsLeft:total-elapsed};
+  },[]);
+
+  const filteredHistory=useMemo(()=>{
+    if(!payslipSearch.trim()) return [...history].reverse();
+    const q=payslipSearch.toLowerCase();
+    return [...history].reverse().filter(r=>r.month.toLowerCase().includes(q));
+  },[history,payslipSearch]);
 
   return (
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
 
-      <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"16px 14px 0",position:"sticky",top:0,zIndex:100}}>
-        <div style={{textAlign:"center",marginBottom:2}}>
-          <h1 style={{margin:0,fontSize:22,fontWeight:800,color:"#fff",letterSpacing:3}}>
+      <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"14px 14px 0",position:"sticky",top:0,zIndex:100}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}>
             <span style={{color:"#4a9eff"}}>V</span>AULTED
           </h1>
-          <p style={{margin:"2px 0 12px",fontSize:10,color:"#5a6480"}}>{history.length} payslips tracked</p>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:11,color:"#5a6480"}}>{history.length} payslips</div>
+            <div style={{fontSize:11,color:"#3a4460"}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> · {nextPayday.date}</div>
+          </div>
         </div>
-        <div style={{display:"flex",gap:2,overflowX:"auto",justifyContent:"center"}}>
-          {TABS.map(t=>(
+        <div style={{display:"flex",gap:2,marginBottom:2}}>
+          {PRIMARY_TABS.map(t=>(
             <button key={t} onClick={()=>setTab(t)} style={{
-              flexShrink:0,background:tab===t?"#4a9eff":"transparent",
+              flex:1,background:tab===t?"#4a9eff":"transparent",
               color:tab===t?"#fff":"#5a6480",border:"none",
-              borderRadius:"6px 6px 0 0",padding:"7px 10px",fontSize:11,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"
+              borderRadius:"6px 6px 0 0",padding:"8px 4px",fontSize:12,fontWeight:600,cursor:"pointer"
+            }}>{t}</button>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:2,borderTop:"1px solid #1e2535",paddingTop:2}}>
+          {SECONDARY_TABS.map(t=>(
+            <button key={t} onClick={()=>setTab(t)} style={{
+              flex:1,background:tab===t?"#2a3a5a":"transparent",
+              color:tab===t?"#a0c0ff":"#3a4460",border:"none",
+              padding:"6px 4px",fontSize:11,fontWeight:600,cursor:"pointer"
             }}>{t}</button>
           ))}
         </div>
@@ -707,39 +754,58 @@ export default function App() {
         {tab==="Dashboard"&&(
           <div>
             {showTsReminder&&(
-              <div onClick={()=>setTab("Upload")} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:10,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+              <div onClick={()=>setTab("Upload")} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>⚠️</span>
                 <div>
-                  <div style={{fontSize:12,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
-                  <div style={{fontSize:11,color:"#8a7040",marginTop:2}}>{tsLastUpload?`Last uploaded ${Math.floor((new Date()-new Date(tsLastUpload))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} · Tap to upload</div>
+                  <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
+                  <div style={{fontSize:12,color:"#8a7040",marginTop:2}}>{tsLastUpload?`Last uploaded ${Math.floor((new Date()-new Date(tsLastUpload))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} · Tap to upload</div>
                 </div>
               </div>
             )}
             {missingMonths.length>0&&(
-              <div style={{background:"#1a0f1a",border:"1px solid #c84aff",borderRadius:10,padding:"12px 14px",marginBottom:14}}>
-                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+              <div style={{background:"#1a0f1a",border:"1px solid #c84aff",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                   <span style={{fontSize:16}}>📭</span>
-                  <span style={{fontSize:12,fontWeight:700,color:"#c84aff"}}>Missing payslips detected</span>
+                  <span style={{fontSize:13,fontWeight:700,color:"#c84aff"}}>Missing payslips detected</span>
                 </div>
-                <div style={{fontSize:11,color:"#8a5080",lineHeight:1.8}}>
-                  {missingMonths.join(", ")}
-                </div>
+                <div style={{fontSize:12,color:"#8a5080",lineHeight:1.8}}>{missingMonths.join(", ")}</div>
               </div>
             )}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
               {[
-                {label:"Est. Net Pay",    value:fmt(cr.net),      sub:"from Pay Calc",      accent:"#4a9eff"},
-                {label:"Monthly Surplus", value:fmt(surplus),     sub:"after all bills",    accent:surplus>=0?"#00c88c":"#ff4a6a"},
-                {label:"Latest Gross",    value:fmt(latest?.gross),sub:latest?.month,       accent:"#7c6fff"},
-                {label:"FY Avg Net",      value:fmt(ts.avgNet),   sub:"Apr to now",         accent:"#ffb84a"},
+                {label:"Est. Net Pay",    value:fmt(cr.net),      sub:"from Pay Calc",   accent:"#4a9eff"},
+                {label:"Monthly Surplus", value:fmt(surplus),     sub:"after all bills", accent:surplus>=0?"#00c88c":"#ff4a6a"},
+                {label:"Latest Net",      value:fmt(latest?.net), sub:latest?.month,     accent:"#7c6fff"},
+                {label:"FY Avg Net",      value:fmt(ts.avgNet),   sub:"Apr to now",      accent:"#ffb84a"},
               ].map(k=>(
-                <div key={k.label} style={{...card,textAlign:"center"}}>
-                  <div style={hdr}>{k.label}</div>
-                  <div style={{fontSize:20,fontWeight:700,color:k.accent}}>{k.value}</div>
-                  <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{k.sub}</div>
+                <div key={k.label} style={{...card,textAlign:"center",padding:"14px 10px"}}>
+                  <div style={{fontSize:11,color:"#5a6480",fontWeight:600,letterSpacing:0.5,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
+                  <div style={{fontSize:22,fontWeight:700,color:k.accent,letterSpacing:-0.5}}>{k.value}</div>
+                  <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>{k.sub}</div>
                 </div>
               ))}
             </div>
+
+            {latest&&prevMonth&&(()=>{
+              return(
+                <div style={{...card,marginBottom:12}}>
+                  <SectionLabel>Latest vs Previous Month</SectionLabel>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+                    {[
+                      {label:"Gross",diff:latest.gross-prevMonth.gross,val:fmt(latest.gross)},
+                      {label:"Net",  diff:latest.net-prevMonth.net,    val:fmt(latest.net)},
+                      {label:"Bonus",diff:latest.bonus-prevMonth.bonus,val:fmt(latest.bonus)},
+                    ].map(k=>(
+                      <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                        <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>{k.label}</div>
+                        <div style={{fontSize:14,fontWeight:700,color:"#e8eaf0"}}>{k.val}</div>
+                        <div style={{fontSize:11,fontWeight:600,color:k.diff>=0?"#00c88c":"#ff6b8a",marginTop:3}}>{k.diff>=0?"+":""}{fmt(Math.abs(k.diff))}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             <div style={{...card,marginBottom:14}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -788,22 +854,41 @@ export default function App() {
               })()}
             </div>
 
-            <div style={{...card,marginBottom:14}}>
-              <div style={{...hdr,marginBottom:12}}>Monthly Budget Summary</div>
+            <div style={{...card,marginBottom:12}}>
+              <SectionLabel>Monthly Budget</SectionLabel>
               {[
-                ["Est. Net Pay",          fmt(cr.net),      "#4a9eff"],
-                ["Shared Bills (my half)",fmt(shGlyn),      "#ff6b8a"],
-                ["My Personal Bills",     fmt(glOnly),      "#ff8c4a"],
-                ["Total Outgoings",       fmt(totalOut),    "#ff4a6a"],
-                ["Monthly Surplus",       fmt(surplus),     surplus>=0?"#00c88c":"#ff4a6a"],
-              ].map(([l,v,c])=>(
-                <div key={l} style={row}><span style={{color:"#8892b0"}}>{l}</span><span style={{fontWeight:700,color:c}}>{v}</span></div>
+                ["Est. Net Pay",          fmt(cr.net),   "#4a9eff"],
+                ["Shared Bills (my half)",fmt(shGlyn),   "#ff6b8a"],
+                ["My Personal Bills",     fmt(glOnly),   "#ff8c4a"],
+                ["Total Outgoings",       fmt(totalOut), "#ff4a6a"],
+                ["Monthly Surplus",       fmt(surplus),  surplus>=0?"#00c88c":"#ff4a6a"],
+              ].map(([l,v,c],i,arr)=>(
+                <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
               ))}
             </div>
 
-            <div style={{...card,marginBottom:14}}>
-              <div style={{...hdr,marginBottom:12}}>All-Time Totals</div>
-              {[
+            <div style={{...card,marginBottom:12}}>
+              <SectionLabel>Student Loan — Plan 2</SectionLabel>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{fontSize:13,color:"#8892b0"}}>{slProgress.elapsed} of {slProgress.total} years</span>
+                <span style={{fontSize:13,fontWeight:700,color:"#c84aff"}}>{slProgress.pct}% complete</span>
+              </div>
+              <div style={{background:"#1e2535",borderRadius:99,height:8,overflow:"hidden",marginBottom:6}}>
+                <div style={{width:slProgress.pct+"%",height:"100%",background:"linear-gradient(90deg,#7c6fff,#c84aff)",borderRadius:99}}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#3a4460"}}>
+                <span>Started {SL_START_YEAR}</span>
+                <span style={{color:"#5a6480"}}>{slProgress.yearsLeft} years to write-off</span>
+                <span>Write-off {SL_WRITEOFF_YEAR}</span>
+              </div>
+            </div>
+
+            <div style={{...card,marginBottom:12}}>
+              <button onClick={()=>setShowAllTimeTotals(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"none",border:"none",cursor:"pointer",padding:0,marginBottom:showAllTimeTotals?12:0}}>
+                <SectionLabel>All-Time Totals</SectionLabel>
+                <span style={{fontSize:12,color:"#3a4460",marginTop:-10}}>{showAllTimeTotals?"▲":"▼"}</span>
+              </button>
+              {showAllTimeTotals&&[
                 ["Total Earned (Gross)", fmt(ts.gross), "#7c6fff"],
                 ["Total Net Received",   fmt(ts.net),   "#4a9eff"],
                 ["Total Tax Paid",       fmt(ts.tax),   "#ff6b8a"],
@@ -812,12 +897,12 @@ export default function App() {
                 ["Total Student Loan",   fmt(ts.sl),    "#ffb84a"],
                 ["Total Bonuses",        fmt(ts.bonus), "#c84aff"],
                 ["Total Overtime Pay",   fmt(ts.ot),    "#4affd4"],
-              ].map(([l,v,c])=>(
-                <div key={l} style={row}><span style={{color:"#8892b0"}}>{l}</span><span style={{fontSize:12,fontWeight:700,color:c}}>{v}</span></div>
+              ].map(([l,v,c],i,arr)=>(
+                <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
               ))}
             </div>
 
-            <div style={{...hdr,marginBottom:8}}>Historical Charts — tap to expand</div>
+            <div style={{fontSize:12,color:"#5a6480",fontWeight:600,marginBottom:8}}>Historical Charts</div>
             {[
               {title:"Gross Pay",    key:"gross", color:"#7c6fff"},
               {title:"Net Pay",      key:"net",   color:"#4a9eff"},
@@ -991,7 +1076,7 @@ export default function App() {
               </div>
             </div>
             <div style={card}>
-              <div style={{...hdr,marginBottom:14}}>Inputs</div>
+              <SectionLabel>Inputs</SectionLabel>
               <div style={{marginBottom:10}}>
                 <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}>
                   <span>Standard Hours</span><span style={{color:"#3a4460"}}>{getCurrentMonthHours()}hrs this month</span>
@@ -1026,7 +1111,7 @@ export default function App() {
               </label>
             </div>
             <div style={card}>
-              <div style={{...hdr,marginBottom:12}}>Gross Breakdown</div>
+              <SectionLabel>Gross Breakdown</SectionLabel>
               {[
                 ["Standard Pay", ci.stdHrs+"hrs x £"+(ci.perfAllowance?PAY.oteRate:PAY.baseRate), fmt(cr.stdPay), "#e8eaf0"],
                 ["Overtime Pay", ci.otHrs+"hrs x £"+PAY.otRate, fmt(cr.otPay), "#4affd4"],
@@ -1044,7 +1129,7 @@ export default function App() {
               </div>
             </div>
             <div style={card}>
-              <div style={{...hdr,marginBottom:12}}>Deductions</div>
+              <SectionLabel>Deductions</SectionLabel>
               {[
                 ["Income Tax (20%)",  "Tax-free: "+fmt(PAY.taxFreeMonthly)+"/mo", fmt(cr.tax),  "#ff6b8a"],
                 ["National Insurance","8% to £4,189 | 2% above",                  fmt(cr.ni),   "#ff8c4a"],
@@ -1065,9 +1150,32 @@ export default function App() {
         )}
 
         {tab==="Pay Info"&&(
-          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {latest&&prevMonth&&(
+              <div style={card}>
+                <SectionLabel>This Month vs Last</SectionLabel>
+                {[
+                  ["Gross",  latest.gross,  prevMonth.gross,  "#7c6fff"],
+                  ["Net",    latest.net,    prevMonth.net,    "#4a9eff"],
+                  ["Tax",    latest.tax,    prevMonth.tax,    "#ff6b8a"],
+                  ["NI",     latest.ni,     prevMonth.ni,     "#ff8c4a"],
+                  ["NEST",   latest.nest,   prevMonth.nest,   "#00c88c"],
+                  ["Bonus",  latest.bonus,  prevMonth.bonus,  "#c84aff"],
+                  ["OT Pay", latest.ot,     prevMonth.ot,     "#4affd4"],
+                ].map(([l,cur,prev,c],i,arr)=>{
+                  const diff=cur-prev;
+                  return(
+                    <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<arr.length-1?"1px solid #1a1f2e":"none"}}>
+                      <span style={{fontSize:13,color:"#8892b0",width:60}}>{l}</span>
+                      <span style={{fontSize:13,fontWeight:700,color:c}}>{fmt(cur)}</span>
+                      <span style={{fontSize:12,fontWeight:600,color:diff===0?"#3a4460":diff>0?"#00c88c":"#ff6b8a",width:80,textAlign:"right"}}>{diff===0?"—":(diff>0?"+":"")+fmt(Math.abs(diff))}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <div style={card}>
-              <div style={{...hdr,marginBottom:14}}>Pay Rates</div>
+              <SectionLabel>Pay Rates</SectionLabel>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
                 {[
                   {label:"Base Rate",  value:"£"+PAY.baseRate+"/hr",      sub:"Standard hours",    accent:"#4a9eff"},
@@ -1088,7 +1196,7 @@ export default function App() {
               </div>
             </div>
             <div style={card}>
-              <div style={{...hdr,marginBottom:12}}>Employment Details</div>
+              <SectionLabel>Employment Details</SectionLabel>
               {[
                 ["Employer",           "JLI Trading Limited"],
                 ["Tax Code",           PAY.taxCode],
@@ -1096,13 +1204,15 @@ export default function App() {
                 ["NEST Pension",       "5% employee contribution"],
                 ["Student Loan",       "Plan 2 (30-year write-off)"],
                 ["Tax-Free Allowance", fmt(PAY.taxFreeMonthly)+"/mo"],
-              ].map(([l,v])=>(
-                <div key={l} style={row}><span style={{color:"#5a6480"}}>{l}</span><span style={{color:"#e8eaf0",fontWeight:600,textAlign:"right",maxWidth:"55%"}}>{v}</span></div>
+                ["Standard Day",       "8hrs 15min"],
+                ["This Month's Hours", getCurrentMonthHours()+"hrs"],
+              ].map(([l,v],i,arr)=>(
+                <StatRow key={l} label={l} value={v} last={i===arr.length-1}/>
               ))}
             </div>
             <div style={card}>
-              <div style={{...hdr,marginBottom:4}}>Performance Bonus Tiers</div>
-              <p style={{fontSize:11,color:"#3a4460",marginBottom:14}}>Based on team average performance % each month</p>
+              <SectionLabel>Performance Bonus Tiers</SectionLabel>
+              <p style={{fontSize:12,color:"#3a4460",marginBottom:14,marginTop:0}}>Based on team average performance % each month</p>
               {PAY.bonusTiers.map((tier,i)=>{
                 const colors=["#3a4460","#4a9eff","#7c6fff","#c84aff","#ffb84a","#00c88c"];
                 return(
@@ -1121,12 +1231,9 @@ export default function App() {
               </div>
             </div>
             <div style={card}>
-              <div style={{...hdr,marginBottom:12}}>Recent Bonus History</div>
-              {history.slice(-10).reverse().map(r=>(
-                <div key={r.month} style={row}>
-                  <span style={{color:"#5a6480"}}>{r.month}</span>
-                  <span style={{fontWeight:600,color:r.bonus>=240?"#00c88c":r.bonus>=200?"#ffb84a":r.bonus>=160?"#7c6fff":r.bonus>0?"#4a9eff":"#3a4460"}}>{r.bonus>0?fmt(r.bonus):"—"}</span>
-                </div>
+              <SectionLabel>Recent Bonus History</SectionLabel>
+              {allSorted.slice(-10).reverse().map((r,i,arr)=>(
+                <StatRow key={r.month} label={r.month} color={r.bonus>=240?"#00c88c":r.bonus>=200?"#ffb84a":r.bonus>=160?"#7c6fff":r.bonus>0?"#4a9eff":"#3a4460"} value={r.bonus>0?fmt(r.bonus):"—"} last={i===arr.length-1}/>
               ))}
             </div>
           </div>
@@ -1134,7 +1241,11 @@ export default function App() {
 
         {tab==="Payslips"&&(
           <div>
-            {deleteConfirm&&(
+            <div style={{marginBottom:12,position:"relative"}}>
+              <input placeholder="Search e.g. Jan 2025…" value={payslipSearch} onChange={e=>setPayslipSearch(e.target.value)}
+                style={{...inp,paddingLeft:36,background:"#141824"}}/>
+              <span style={{position:"absolute",top:"50%",left:12,transform:"translateY(-50%)",fontSize:14,pointerEvents:"none"}}>🔍</span>
+            </div>
               <div style={{background:"#2a0f15",border:"1px solid #ff4a6a",borderRadius:10,padding:"16px 14px",marginBottom:14}}>
                 <div style={{fontSize:13,fontWeight:700,color:"#ff4a6a",marginBottom:8}}>Delete {deleteConfirm}?</div>
                 <div style={{fontSize:11,color:"#8a4050",marginBottom:14}}>This will permanently remove this payslip from your history.</div>
@@ -1145,55 +1256,57 @@ export default function App() {
               </div>
             )}
             <div style={{...card,padding:0,overflow:"hidden",marginBottom:10}}>
-              <div style={{display:"grid",gridTemplateColumns:"70px 1fr 1fr 1fr 1fr 1fr 28px",padding:"10px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase"}}>
+              <div style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr 28px",padding:"10px",background:"#0d1117",fontSize:10,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase"}}>
                 <span>Month</span>
                 <span style={{textAlign:"right"}}>Gross</span><span style={{textAlign:"right"}}>Net</span>
                 <span style={{textAlign:"right"}}>Tax</span><span style={{textAlign:"right"}}>NI</span><span style={{textAlign:"right"}}>NEST</span><span></span>
               </div>
               <div style={{maxHeight:"50vh",overflowY:"auto"}}>
-                {[...history].reverse().map((r,i)=>(
+                {filteredHistory.map((r,i)=>(
                   <div key={r.month}>
-                    <div
-                      onClick={()=>setExpandedPayslip(expandedPayslip===r.month?null:r.month)}
-                      style={{display:"grid",gridTemplateColumns:"70px 1fr 1fr 1fr 1fr 1fr 28px",padding:"8px 10px",fontSize:10,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"pointer",alignItems:"center"}}>
-                      <span style={{fontWeight:600,color:"#8892b0"}}>{r.month}</span>
+                    <div onClick={()=>setExpandedPayslip(expandedPayslip===r.month?null:r.month)}
+                      style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr 28px",padding:"10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"pointer",alignItems:"center"}}>
+                      <span style={{fontSize:12,fontWeight:600,color:"#8892b0"}}>{r.month}</span>
                       <span style={{textAlign:"right",color:"#7c6fff"}}>{fmt(r.gross)}</span>
                       <span style={{textAlign:"right",color:"#4a9eff",fontWeight:700}}>{fmt(r.net)}</span>
                       <span style={{textAlign:"right",color:"#ff6b8a"}}>{fmt(r.tax)}</span>
                       <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(r.ni)}</span>
                       <span style={{textAlign:"right",color:"#00c88c"}}>{fmt(r.nest)}</span>
-                      <button
-                        onClick={e=>{e.stopPropagation();setDeleteConfirm(r.month);}}
-                        style={{background:"none",border:"none",color:"#3a4460",fontSize:13,cursor:"pointer",padding:0,textAlign:"center"}}
-                        title="Delete payslip">🗑</button>
+                      <button onClick={e=>{e.stopPropagation();setDeleteConfirm(r.month);}}
+                        style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
                     </div>
                     {expandedPayslip===r.month&&(
-                      <div style={{background:"#0d1525",borderBottom:"1px solid #1e2535",padding:"10px 12px"}}>
-                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:10,fontSize:10}}>
-                          <div style={{color:"#5a6480"}}>Bonus: <span style={{color:"#c84aff",fontWeight:700}}>{r.bonus>0?fmt(r.bonus):"—"}</span></div>
-                          <div style={{color:"#5a6480"}}>OT Pay: <span style={{color:"#4affd4",fontWeight:700}}>{r.ot>0?fmt(r.ot):"—"}</span></div>
-                          <div style={{color:"#5a6480"}}>Std Loan: <span style={{color:"#ffb84a",fontWeight:700}}>{r.sl>0?fmt(r.sl):"—"}</span></div>
+                      <div style={{background:"#0d1525",borderBottom:"1px solid #1e2535",padding:"12px 14px"}}>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                          {[
+                            ["Bonus",    r.bonus>0?fmt(r.bonus):"—","#c84aff"],
+                            ["OT Pay",   r.ot>0?fmt(r.ot):"—",    "#4affd4"],
+                            ["Std Loan", r.sl>0?fmt(r.sl):"—",    "#ffb84a"],
+                          ].map(([l,v,c])=>(
+                            <div key={l} style={{background:"#111827",borderRadius:8,padding:"9px",textAlign:"center"}}>
+                              <div style={{fontSize:10,color:"#5a6480",marginBottom:3}}>{l}</div>
+                              <div style={{fontSize:13,fontWeight:700,color:c}}>{v}</div>
+                            </div>
+                          ))}
                         </div>
-                        <textarea
-                          placeholder="Add a note for this month…"
-                          value={notes[r.month]||""}
+                        <textarea placeholder="Add a note for this month…" value={notes[r.month]||""}
                           onChange={e=>{const n={...notes,[r.month]:e.target.value};updNotes(n);}}
-                          style={{width:"100%",boxSizing:"border-box",background:"#111827",border:"1px solid #2a3050",borderRadius:6,color:"#8892b0",fontSize:11,padding:"8px",resize:"vertical",minHeight:56,fontFamily:"inherit"}}
-                        />
+                          style={{width:"100%",boxSizing:"border-box",background:"#111827",border:"1px solid #2a3050",borderRadius:8,color:"#8892b0",fontSize:12,padding:"10px",resize:"vertical",minHeight:60,fontFamily:"inherit",lineHeight:1.5}}/>
                       </div>
                     )}
                   </div>
                 ))}
+                {filteredHistory.length===0&&<div style={{padding:"32px",textAlign:"center",color:"#3a4460",fontSize:13}}>No payslips match "{payslipSearch}"</div>}
               </div>
             </div>
             <div style={{...card,padding:0,overflow:"hidden",marginBottom:10}}>
-              <div style={{display:"grid",gridTemplateColumns:"70px 1fr 1fr 1fr",padding:"10px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase"}}>
+              <div style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr",padding:"10px",background:"#0d1117",fontSize:10,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase"}}>
                 <span>Month</span><span style={{textAlign:"right"}}>St. Loan</span><span style={{textAlign:"right"}}>Bonus</span><span style={{textAlign:"right"}}>Overtime</span>
               </div>
-              <div style={{maxHeight:"50vh",overflowY:"auto"}}>
-                {[...history].reverse().map((r,i)=>(
-                  <div key={r.month} style={{display:"grid",gridTemplateColumns:"70px 1fr 1fr 1fr",padding:"8px 10px",fontSize:10,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e"}}>
-                    <span style={{fontWeight:600,color:"#8892b0"}}>{r.month}</span>
+              <div style={{maxHeight:"40vh",overflowY:"auto"}}>
+                {filteredHistory.map((r,i)=>(
+                  <div key={r.month} style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr",padding:"10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e"}}>
+                    <span style={{fontSize:12,fontWeight:600,color:"#8892b0"}}>{r.month}</span>
                     <span style={{textAlign:"right",color:"#ffb84a"}}>{r.sl>0?fmt(r.sl):"—"}</span>
                     <span style={{textAlign:"right",color:"#c84aff"}}>{r.bonus>0?fmt(r.bonus):"—"}</span>
                     <span style={{textAlign:"right",color:"#4affd4"}}>{r.ot>0?fmt(r.ot):"—"}</span>
@@ -1201,7 +1314,7 @@ export default function App() {
                 ))}
               </div>
             </div>
-            <div style={{...card,display:"grid",gridTemplateColumns:"70px 1fr 1fr 1fr 1fr 1fr",fontSize:10,fontWeight:700}}>
+            <div style={{...card,display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr",fontSize:11,fontWeight:700}}>
               <span style={{color:"#5a6480"}}>TOTALS</span>
               <span style={{textAlign:"right",color:"#7c6fff"}}>{fmt(ts.gross)}</span>
               <span style={{textAlign:"right",color:"#4a9eff"}}>{fmt(ts.net)}</span>
@@ -1243,18 +1356,15 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <div style={{fontSize:9,color:"#3a4460",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>Deductions</div>
+                  <SectionLabel>Deductions</SectionLabel>
                   {[
-                    ["Income Tax",   fmt(fy.tax),  "#ff6b8a"],
-                    ["National Insurance", fmt(fy.ni), "#ff8c4a"],
-                    ["NEST Pension", fmt(fy.nest), "#ffb84a"],
-                    ["Student Loan", fmt(fy.sl),   "#c84aff"],
-                    ["OT Pay",       fmt(fy.ot),   "#4affd4"],
-                  ].map(([l,v,c])=>(
-                    <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1a1f2e",fontSize:11}}>
-                      <span style={{color:"#5a6480"}}>{l}</span>
-                      <span style={{color:c,fontWeight:600}}>{v}</span>
-                    </div>
+                    ["Income Tax",         fmt(fy.tax),  "#ff6b8a"],
+                    ["National Insurance", fmt(fy.ni),   "#ff8c4a"],
+                    ["NEST Pension",       fmt(fy.nest), "#ffb84a"],
+                    ["Student Loan",       fmt(fy.sl),   "#c84aff"],
+                    ["Overtime Pay",       fmt(fy.ot),   "#4affd4"],
+                  ].map(([l,v,c],i,arr)=>(
+                    <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
                   ))}
                   <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0 0",fontSize:12,fontWeight:700}}>
                     <span style={{color:"#8892b0"}}>Total Deductions</span>
@@ -1392,10 +1502,12 @@ export default function App() {
                   <span>Date</span><span>Day</span><span style={{textAlign:"right"}}>Hours</span><span style={{textAlign:"right"}}>Wkdy OT</span><span style={{textAlign:"right"}}>Wknd OT</span>
                 </div>
                 <div style={{maxHeight:"60vh",overflowY:"auto"}}>
-                  {accumulated.days.map((d,i)=>{
+                  {accumulated.days
+                    .filter(d=>parseHM(d.hours)>0)
+                    .map((d,i)=>{
                     const isWeekend=d.day.toLowerCase().startsWith("sat")||d.day.toLowerCase().startsWith("sun");
                     return(
-                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"8px 10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px 10px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
                         <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
                         <span style={{color:isWeekend?"#ffb84a":"#5a6480",fontWeight:isWeekend?700:400}}>{d.day}</span>
                         <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{d.hours}</span>
@@ -1429,8 +1541,8 @@ export default function App() {
               },0);
               if(fyRows.length===0) return null;
               return(
-                <div style={{...card,marginBottom:14,border:"1px solid #4affd4"}}>
-                  <div style={{fontSize:9,color:"#4affd4",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>Financial Year OT Tracker — {fyLabel}</div>
+                <div style={{...card,marginBottom:14,border:"1px solid #2a4a4a"}}>
+                  <SectionLabel>FY Overtime Tracker — {fyLabel}</SectionLabel>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
                     {[
                       {label:"Total OT Pay",value:fmt(fyOTPay),accent:"#4affd4"},
@@ -1445,12 +1557,9 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <div style={{fontSize:9,color:"#3a4460",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>Month-by-Month OT Pay</div>
-                  {fyRows.map((r,i)=>(
-                    <div key={r.month} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1a1f2e",fontSize:11}}>
-                      <span style={{color:"#5a6480"}}>{r.month}</span>
-                      <span style={{color:"#4affd4",fontWeight:600}}>{r.ot>0?fmt(r.ot):"—"}</span>
-                    </div>
+                  <SectionLabel>Month by Month</SectionLabel>
+                  {fyRows.map((r,i,arr)=>(
+                    <StatRow key={r.month} label={r.month} value={r.ot>0?fmt(r.ot):"—"} color={r.ot>0?"#4affd4":"#3a4460"} last={i===arr.length-1}/>
                   ))}
                 </div>
               );
@@ -1463,6 +1572,11 @@ export default function App() {
         )}
 
       </div>
+
+      <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.5.0</span>
+      </div>
+
     </div>
   );
 }
