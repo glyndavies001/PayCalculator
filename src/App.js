@@ -309,7 +309,9 @@ function StatRow({label,value,color,last}) {
 function inferPerfAllowance(r) {
   if (typeof r.perfAllowance === "boolean") return r.perfAllowance;
   return (r.bonus || 0) > 0;
-}({title,data,dataKey,color}) {
+}
+
+function CollapsibleChart({title,data,dataKey,color}) {
   const [open,setOpen]=useState(false);
   return (
     <div style={{border:"1px solid #1e2535",borderRadius:10,overflow:"hidden",marginBottom:8}}>
