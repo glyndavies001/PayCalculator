@@ -298,6 +298,8 @@ export default function App() {
   const [uploadErr,setUploadErr]=useState(null);
   const [pending,setPending]=useState(null);
   const [importMsg,setImportMsg]=useState(null);
+  const [multiResults,setMultiResults]=useState([]);
+  const [uploadProgress,setUploadProgress]=useState(null);
 
   const latest=history[history.length-1];
   const shGlyn=sharedBills.reduce((s,b)=>s+billShares(b).glyn,0);
@@ -331,27 +333,43 @@ export default function App() {
   const setC=useCallback((k,v)=>{setCi(p=>{const n={...p,[k]:v};save(SK.calcInputs,n);return n;});},[]);
 
   const handleUpload=async e=>{
-    const file=e.target.files[0];if(!file)return;
-    setUploading(true);setUploadRes(null);setUploadErr(null);setPending(null);
-    try {
-      const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
-      const resp=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",
-        headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:[
-          {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
-          {type:"text",text:'Extract payslip data. Return ONLY JSON:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00}\nmonth=payment month/year, ot=total overtime, sl=student loan, nest=pension, bonus=performance bonus.'}
-        ]}]})
+    const files=Array.from(e.target.files);if(!files.length)return;
+    setUploading(true);setUploadRes(null);setUploadErr(null);setPending(null);setMultiResults([]);
+    const results=[];
+    const successful=[];
+    for(let i=0;i<files.length;i++){
+      const file=files[i];
+      setUploadProgress(`Reading ${i+1} of ${files.length}…`);
+      try {
+        const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
+        const resp=await fetch("https://api.anthropic.com/v1/messages",{
+          method:"POST",
+          headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:[
+            {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
+            {type:"text",text:'Extract payslip data. Return ONLY JSON:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00}\nmonth=payment month/year, ot=total overtime, sl=student loan, nest=pension, bonus=performance bonus.'}
+          ]}]})
+        });
+        const data=await resp.json();
+        if(data.error) throw new Error(data.error.message);
+        const parsed=JSON.parse(data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim());
+        successful.push(parsed);
+        results.push({ok:true,parsed});
+      } catch(err){results.push({ok:false,name:file.name,err:err.message||"Unknown error"});}
+    }
+    if(successful.length>0){
+      setHistory(prev=>{
+        let h=[...prev];
+        successful.forEach(p=>{const exists=h.find(x=>x.month===p.month);h=exists?h.map(x=>x.month===p.month?p:x):[...h,p];});
+        const sorted=sortH(h);save(SK.history,sorted);return sorted;
       });
-      const data=await resp.json();
-      if(data.error) throw new Error("API error: "+data.error.type+" - "+data.error.message);
-      const parsed=JSON.parse(data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim());
-      setC("bonus",parsed.bonus);
-      setC("perfAllowance",parsed.bonus>=160);
-      setPending(parsed);
-      setUploadRes(parsed.month+" - Gross "+fmt(parsed.gross)+", Net "+fmt(parsed.net));
-    } catch(err){setUploadErr(err.message||"Unknown error");}
-    setUploading(false);e.target.value="";
+      const last=successful[successful.length-1];
+      setC("bonus",last.bonus);setC("perfAllowance",last.bonus>=160);
+    }
+    setMultiResults(results);
+    setUploadProgress(null);
+    setUploading(false);
+    e.target.value="";
   };
 
   const confirmAdd=()=>{
@@ -876,28 +894,28 @@ export default function App() {
           <div>
           <div style={{...card,textAlign:"center",marginBottom:14}}>
             <div style={{fontSize:32,marginBottom:10}}>📄</div>
-            <h2 style={{margin:"0 0 6px",fontSize:16,color:"#e8eaf0"}}>Upload Payslip</h2>
-            <p style={{fontSize:12,color:"#5a6480",marginBottom:24}}>Select a payslip PDF. Pay Calc will update automatically with the latest bonus and allowance.</p>
-            <label style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:"pointer"}}>
-              <input type="file" accept=".pdf" onChange={handleUpload} style={{display:"none"}} disabled={uploading}/>
+            <h2 style={{margin:"0 0 6px",fontSize:16,color:"#e8eaf0"}}>Upload Payslips</h2>
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:24}}>Select one or more payslip PDFs. They'll be read and added to your history automatically.</p>
+            <label style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer"}}>
+              <input type="file" accept=".pdf" multiple onChange={handleUpload} style={{display:"none"}} disabled={uploading}/>
               {uploading
-                ?<div><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>Reading payslip…</div></div>
-                :<div><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDF</div></div>
+                ?<div><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing…"}</div></div>
+                :<div><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
               }
             </label>
-            {uploadErr&&<div style={{marginTop:16,padding:"12px",background:"#2a0f15",border:"1px solid #5a1a2a",borderRadius:8,color:"#ff6b8a",fontSize:12}}>⚠ {uploadErr}</div>}
-            {uploadRes&&pending&&(
-              <div style={{marginTop:16,padding:16,background:"#0a1a10",border:"1px solid #1a4030",borderRadius:10,textAlign:"left"}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted</div>
-                {[["Month",pending.month],["Date",pending.date],["Gross",fmt(pending.gross)],["Net",fmt(pending.net)],["Tax",fmt(pending.tax)],["NI",fmt(pending.ni)],["NEST",fmt(pending.nest)],["Student Loan",fmt(pending.sl)],["Bonus",fmt(pending.bonus)],["Overtime",fmt(pending.ot)]].map(([l,v])=>(
-                  <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:12}}>
-                    <span style={{color:"#5a8070"}}>{l}</span><span style={{color:"#e8eaf0",fontWeight:600}}>{v}</span>
+            {multiResults.length>0&&(
+              <div style={{marginTop:16,textAlign:"left"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
+                  ✓ {multiResults.filter(r=>r.ok).length} of {multiResults.length} added
+                </div>
+                {multiResults.map((r,i)=>(
+                  <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:12}}>
+                    {r.ok
+                      ?<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}</span><span style={{color:"#8892b0"}}>Gross {fmt(r.parsed.gross)} · Net {fmt(r.parsed.net)}</span></div>
+                      :<div style={{color:"#ff6b8a"}}>⚠ {r.name} — {r.err}</div>
+                    }
                   </div>
                 ))}
-                <div style={{display:"flex",gap:8,marginTop:14}}>
-                  <button onClick={confirmAdd} style={{flex:1,background:"#00c88c",color:"#000",border:"none",borderRadius:8,padding:"10px",fontSize:13,fontWeight:700,cursor:"pointer"}}>Add to History</button>
-                  <button onClick={()=>{setPending(null);setUploadRes(null);}} style={{flex:1,background:"#1e2535",color:"#8892b0",border:"none",borderRadius:8,padding:"10px",fontSize:13,fontWeight:600,cursor:"pointer"}}>Discard</button>
-                </div>
               </div>
             )}
           </div>
