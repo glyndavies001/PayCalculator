@@ -465,6 +465,19 @@ export default function App() {
   const shHollie=sharedBills.reduce((s,b)=>s+billShares(b).hollie,0);
   const glOnly=glynBills.reduce((s,b)=>s+b.total,0);
   const totalOut=shGlyn+glOnly;
+
+  // Effective tier: must be computed before cr
+  const effectiveTierIdx=useMemo(()=>{
+    if(tierOverride!==null) return tierOverride;
+    if(!latest) return 0;
+    const bonus=latest.bonus||0;
+    for(let i=PAY.bonusTiers.length-1;i>=0;i--){
+      if(bonus>=PAY.bonusTiers[i].bonus&&PAY.bonusTiers[i].bonus>0) return i;
+    }
+    return 0;
+  },[tierOverride,latest]);
+  const effectiveAllowance=PAY.bonusTiers[effectiveTierIdx].allowance;
+
   const cr=useMemo(()=>calcPay({...ci, _allowanceOverride: effectiveAllowance}),[ci, effectiveAllowance]);
   const surplus=cr.net-totalOut;
 
@@ -737,20 +750,6 @@ export default function App() {
     const days=Math.ceil((pd-new Date())/(1000*60*60*24));
     return {date:pd.toLocaleDateString("en-GB",{day:"numeric",month:"short"}),days};
   },[]);
-
-  // Effective tier: manual override takes priority, otherwise infer from latest payslip bonus
-  const effectiveTierIdx=useMemo(()=>{
-    if(tierOverride!==null) return tierOverride;
-    if(!latest) return 0;
-    const bonus=latest.bonus||0;
-    // Find highest tier whose bonus the payslip bonus matches or exceeds
-    for(let i=PAY.bonusTiers.length-1;i>=0;i--){
-      if(bonus>=PAY.bonusTiers[i].bonus&&PAY.bonusTiers[i].bonus>0) return i;
-    }
-    return 0;
-  },[tierOverride,latest]);
-
-  const effectiveAllowance=PAY.bonusTiers[effectiveTierIdx].allowance;
 
   const slProgress=useMemo(()=>{
     const elapsed=new Date().getFullYear()-SL_START_YEAR;
