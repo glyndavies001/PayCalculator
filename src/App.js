@@ -139,6 +139,7 @@ const SK = {
   calcInputs:   "vaulted_calc",
   timesheets:   "vaulted_timesheets",   // accumulated weekly timesheet data for current month
   tsLastUpload: "vaulted_ts_last",      // ISO date string of last timesheet upload
+  notes:        "vaulted_notes",        // { "Mon YYYY": "note text" }
 };
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
@@ -206,7 +207,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const TABS = ["Dashboard","Budget","Pay Calc","Pay Info","Payslips","Upload"];
+const TABS = ["Dashboard","Budget","Pay Calc","Pay Info","Payslips","Timesheet","Tax Year","Upload"];
 const RANGES = ["3M","6M","12M","2Y","All"];
 
 function sortH(arr) {
@@ -221,6 +222,52 @@ function fyAvgNet(history) {
   const fyStart = now.getMonth()>=3 ? new Date(now.getFullYear(),3,1) : new Date(now.getFullYear()-1,3,1);
   const fy = history.filter(r=>{const[mo,yr]=r.month.split(" ");return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;});
   return fy.length>0 ? fy.reduce((s,r)=>s+r.net,0)/fy.length : 0;
+}
+
+function getMissingMonths(history) {
+  if(history.length<2) return [];
+  const sorted = sortH(history);
+  const missing = [];
+  for(let i=0;i<sorted.length-1;i++){
+    const [ma,ya]=sorted[i].month.split(" ");
+    const [mb,yb]=sorted[i+1].month.split(" ");
+    let mo=MONTHS.indexOf(ma), yr=parseInt(ya);
+    while(true){
+      mo++; if(mo>11){mo=0;yr++;}
+      if(yr===parseInt(yb)&&mo===MONTHS.indexOf(mb)) break;
+      missing.push(MONTHS[mo]+" "+yr);
+    }
+  }
+  return missing;
+}
+
+function groupByFY(history) {
+  // Returns array of {label, months, gross, net, tax, ni, nest, sl, bonus, ot}
+  const fyMap = {};
+  history.forEach(r=>{
+    const [mo,yr]=r.month.split(" ");
+    const monthIdx=MONTHS.indexOf(mo);
+    const yearNum=parseInt(yr);
+    const fyYear = monthIdx>=3 ? yearNum : yearNum-1;
+    const key=fyYear+"-"+(fyYear+1);
+    if(!fyMap[key]) fyMap[key]={label:"Apr "+fyYear+" – Mar "+(fyYear+1),fyYear,gross:0,net:0,tax:0,ni:0,nest:0,sl:0,bonus:0,ot:0,months:0};
+    fyMap[key].gross+=r.gross; fyMap[key].net+=r.net; fyMap[key].tax+=r.tax;
+    fyMap[key].ni+=r.ni; fyMap[key].nest+=r.nest; fyMap[key].sl+=r.sl;
+    fyMap[key].bonus+=r.bonus; fyMap[key].ot+=r.ot; fyMap[key].months++;
+  });
+  return Object.values(fyMap).sort((a,b)=>b.fyYear-a.fyYear);
+}
+
+function getCurrentFYOT(history) {
+  const now = new Date();
+  const fyStart = now.getMonth()>=3 ? new Date(now.getFullYear(),3,1) : new Date(now.getFullYear()-1,3,1);
+  return history.filter(r=>{
+    const[mo,yr]=r.month.split(" ");
+    return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;
+  }).reduce((s,r)=>({
+    otPay: s.otPay+(r.ot||0),
+    // estimate OT hours from pay — weekday OT at £17.40, but we only have £ so show £
+  }),{otPay:0});
 }
 
 function CollapsibleChart({title,data,dataKey,color}) {
@@ -339,6 +386,9 @@ export default function App() {
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
   const [uploadProgress,setUploadProgress]=useState(null);
+  const [notes,setNotes]=useState(()=>load(SK.notes,{}));
+  const [expandedPayslip,setExpandedPayslip]=useState(null);
+  const [deleteConfirm,setDeleteConfirm]=useState(null);
 
   // Timesheet state
   const [tsUploading,setTsUploading]=useState(false);
@@ -348,9 +398,8 @@ export default function App() {
   const [tsLastUpload,setTsLastUpload]=useState(()=>load(SK.tsLastUpload,null));
   const [accumulated,setAccumulated]=useState(()=>{
     const stored=load(SK.timesheets,null);
-    // Reset if new pay period
-    if(stored && shouldResetTimesheet(stored.lastUpload)) return {stdHrs:0,otHrs:0,weekendOtHrs:0,weeks:[],lastUpload:null};
-    return stored||{stdHrs:0,otHrs:0,weekendOtHrs:0,weeks:[],lastUpload:null};
+    if(stored && shouldResetTimesheet(stored.lastUpload)) return {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+    return stored||{otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
   });
   const showTsReminder=shouldShowTimesheetReminder(tsLastUpload);
 
@@ -384,6 +433,8 @@ export default function App() {
   const updGC=c=>{setGlynCats(c);save(SK.glynCats,c);};
   const updGBC=bc=>{setGlynBillCats(bc);save(SK.glynBillCats,bc);};
   const setC=useCallback((k,v)=>{setCi(p=>{const n={...p,[k]:v};save(SK.calcInputs,n);return n;});},[]);
+  const updNotes=n=>{setNotes(n);save(SK.notes,n);};
+  const deletePayslip=month=>{updH(history.filter(h=>h.month!==month));setDeleteConfirm(null);setExpandedPayslip(null);};
 
   const handleUpload=async e=>{
     const files=Array.from(e.target.files);if(!files.length)return;
@@ -452,7 +503,7 @@ export default function App() {
   };
 
   const exportData=()=>{
-    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,exportedAt:new Date().toISOString()};
+    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,exportedAt:new Date().toISOString()};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
     const url=URL.createObjectURL(blob);
     const a=document.createElement("a");
@@ -474,6 +525,7 @@ export default function App() {
         if(d.glynCats){updGC(d.glynCats);}
         if(d.glynBillCats){updGBC(d.glynBillCats);}
         if(d.calcInputs){setCi(d.calcInputs);save(SK.calcInputs,d.calcInputs);}
+        if(d.notes){updNotes(d.notes);}
         setImportMsg("✓ Data restored successfully");
       } catch{setImportMsg("⚠ Invalid backup file");}
     };
@@ -559,26 +611,32 @@ export default function App() {
   const confirmTimesheet = () => {
     if (!tsPending) return;
     const now = new Date().toISOString();
+    const STD = 8.25;
+    const enrichedDays = tsPending.days.map(d => {
+      const hrs = parseHM(d.hours);
+      const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
+      const otHrs = isWeekend ? 0 : Math.max(0, Math.round((hrs - STD) * 100) / 100);
+      const wkOtHrs = isWeekend ? hrs : 0;
+      return { ...d, hrs, otHrs, wkOtHrs };
+    });
     const newAcc = {
-      stdHrs: Math.round((accumulated.stdHrs + tsPending.totals.stdHrs) * 100) / 100,
       otHrs: Math.round((accumulated.otHrs + tsPending.totals.otHrs) * 100) / 100,
       weekendOtHrs: Math.round((accumulated.weekendOtHrs + tsPending.totals.weekendOtHrs) * 100) / 100,
       weeks: [...accumulated.weeks, { uploadedAt: now, ...tsPending.totals }],
+      days: [...(accumulated.days||[]), ...enrichedDays],
       lastUpload: now,
     };
     setAccumulated(newAcc);
     save(SK.timesheets, newAcc);
     setTsLastUpload(now);
     save(SK.tsLastUpload, now);
-    // Apply to Pay Calc
-    setC("stdHrs", newAcc.stdHrs);
     setC("otHrs", newAcc.otHrs);
     setC("weekendOtHrs", newAcc.weekendOtHrs);
     setTsPending(null);
   };
 
   const resetTimesheet = () => {
-    const empty = { stdHrs: 0, otHrs: 0, weekendOtHrs: 0, weeks: [], lastUpload: null };
+    const empty = { otHrs: 0, weekendOtHrs: 0, weeks: [], days: [], lastUpload: null };
     setAccumulated(empty);
     save(SK.timesheets, empty);
     setTsResults([]);
@@ -592,6 +650,17 @@ export default function App() {
   const row={display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12};
 
   const allSorted=useMemo(()=>sortH(history),[history]);
+
+  const missingMonths=useMemo(()=>getMissingMonths(history),[history]);
+
+  const budgetVsActual=useMemo(()=>{
+    // Last 12 months of history vs Pay Calc estimate
+    return sortH(history).slice(-12).map(r=>({
+      month:r.month,
+      actual:r.net,
+      estimated:cr.net,
+    }));
+  },[history,cr.net]);
 
   return (
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
@@ -624,6 +693,17 @@ export default function App() {
                 <div>
                   <div style={{fontSize:12,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
                   <div style={{fontSize:11,color:"#8a7040",marginTop:2}}>{tsLastUpload?`Last uploaded ${Math.floor((new Date()-new Date(tsLastUpload))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} · Tap to upload</div>
+                </div>
+              </div>
+            )}
+            {missingMonths.length>0&&(
+              <div style={{background:"#1a0f1a",border:"1px solid #c84aff",borderRadius:10,padding:"12px 14px",marginBottom:14}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                  <span style={{fontSize:16}}>📭</span>
+                  <span style={{fontSize:12,fontWeight:700,color:"#c84aff"}}>Missing payslips detected</span>
+                </div>
+                <div style={{fontSize:11,color:"#8a5080",lineHeight:1.8}}>
+                  {missingMonths.join(", ")}
                 </div>
               </div>
             )}
@@ -663,6 +743,30 @@ export default function App() {
                   <Line type="monotone" dataKey="net" stroke="#4a9eff" strokeWidth={2} dot={false} name="Net Pay"/>
                 </LineChart>
               </ResponsiveContainer>
+            </div>
+
+            <div style={{...card,marginBottom:14}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#8892b0",marginBottom:4}}>Budget vs Actual Net Pay</div>
+              <div style={{fontSize:10,color:"#3a4460",marginBottom:10}}>Current Pay Calc estimate vs actual received — last 12 months</div>
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={budgetVsActual} margin={{top:4,right:4,left:0,bottom:0}}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
+                  <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(budgetVsActual.length/6)-1)}/>
+                  <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
+                  <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
+                  <Bar dataKey="estimated" fill="#2a3a5a" name="Estimated" radius={[2,2,0,0]}/>
+                  <Bar dataKey="actual" fill="#4a9eff" name="Actual" radius={[2,2,0,0]}/>
+                </BarChart>
+              </ResponsiveContainer>
+              {budgetVsActual.length>0&&(()=>{
+                const last=budgetVsActual[budgetVsActual.length-1];
+                const diff=last.actual-last.estimated;
+                return(
+                  <div style={{marginTop:8,fontSize:11,color:"#5a6480",textAlign:"center"}}>
+                    Last month ({last.month}): <span style={{color:diff>=0?"#00c88c":"#ff6b8a",fontWeight:700}}>{diff>=0?"+":""}{fmt(Math.abs(diff))} {diff>=0?"above":"below"} estimate</span>
+                  </div>
+                );
+              })()}
             </div>
 
             <div style={{...card,marginBottom:14}}>
@@ -1011,21 +1115,54 @@ export default function App() {
 
         {tab==="Payslips"&&(
           <div>
+            {deleteConfirm&&(
+              <div style={{background:"#2a0f15",border:"1px solid #ff4a6a",borderRadius:10,padding:"16px 14px",marginBottom:14}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#ff4a6a",marginBottom:8}}>Delete {deleteConfirm}?</div>
+                <div style={{fontSize:11,color:"#8a4050",marginBottom:14}}>This will permanently remove this payslip from your history.</div>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>deletePayslip(deleteConfirm)} style={{flex:1,background:"#ff4a6a",border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Delete</button>
+                  <button onClick={()=>setDeleteConfirm(null)} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px",cursor:"pointer"}}>Cancel</button>
+                </div>
+              </div>
+            )}
             <div style={{...card,padding:0,overflow:"hidden",marginBottom:10}}>
-              <div style={{display:"grid",gridTemplateColumns:"70px 1fr 1fr 1fr 1fr 1fr",padding:"10px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase"}}>
+              <div style={{display:"grid",gridTemplateColumns:"70px 1fr 1fr 1fr 1fr 1fr 28px",padding:"10px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase"}}>
                 <span>Month</span>
                 <span style={{textAlign:"right"}}>Gross</span><span style={{textAlign:"right"}}>Net</span>
-                <span style={{textAlign:"right"}}>Tax</span><span style={{textAlign:"right"}}>NI</span><span style={{textAlign:"right"}}>NEST</span>
+                <span style={{textAlign:"right"}}>Tax</span><span style={{textAlign:"right"}}>NI</span><span style={{textAlign:"right"}}>NEST</span><span></span>
               </div>
               <div style={{maxHeight:"50vh",overflowY:"auto"}}>
                 {[...history].reverse().map((r,i)=>(
-                  <div key={r.month} style={{display:"grid",gridTemplateColumns:"70px 1fr 1fr 1fr 1fr 1fr",padding:"8px 10px",fontSize:10,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e"}}>
-                    <span style={{fontWeight:600,color:"#8892b0"}}>{r.month}</span>
-                    <span style={{textAlign:"right",color:"#7c6fff"}}>{fmt(r.gross)}</span>
-                    <span style={{textAlign:"right",color:"#4a9eff",fontWeight:700}}>{fmt(r.net)}</span>
-                    <span style={{textAlign:"right",color:"#ff6b8a"}}>{fmt(r.tax)}</span>
-                    <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(r.ni)}</span>
-                    <span style={{textAlign:"right",color:"#00c88c"}}>{fmt(r.nest)}</span>
+                  <div key={r.month}>
+                    <div
+                      onClick={()=>setExpandedPayslip(expandedPayslip===r.month?null:r.month)}
+                      style={{display:"grid",gridTemplateColumns:"70px 1fr 1fr 1fr 1fr 1fr 28px",padding:"8px 10px",fontSize:10,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"pointer",alignItems:"center"}}>
+                      <span style={{fontWeight:600,color:"#8892b0"}}>{r.month}</span>
+                      <span style={{textAlign:"right",color:"#7c6fff"}}>{fmt(r.gross)}</span>
+                      <span style={{textAlign:"right",color:"#4a9eff",fontWeight:700}}>{fmt(r.net)}</span>
+                      <span style={{textAlign:"right",color:"#ff6b8a"}}>{fmt(r.tax)}</span>
+                      <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(r.ni)}</span>
+                      <span style={{textAlign:"right",color:"#00c88c"}}>{fmt(r.nest)}</span>
+                      <button
+                        onClick={e=>{e.stopPropagation();setDeleteConfirm(r.month);}}
+                        style={{background:"none",border:"none",color:"#3a4460",fontSize:13,cursor:"pointer",padding:0,textAlign:"center"}}
+                        title="Delete payslip">🗑</button>
+                    </div>
+                    {expandedPayslip===r.month&&(
+                      <div style={{background:"#0d1525",borderBottom:"1px solid #1e2535",padding:"10px 12px"}}>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:10,fontSize:10}}>
+                          <div style={{color:"#5a6480"}}>Bonus: <span style={{color:"#c84aff",fontWeight:700}}>{r.bonus>0?fmt(r.bonus):"—"}</span></div>
+                          <div style={{color:"#5a6480"}}>OT Pay: <span style={{color:"#4affd4",fontWeight:700}}>{r.ot>0?fmt(r.ot):"—"}</span></div>
+                          <div style={{color:"#5a6480"}}>Std Loan: <span style={{color:"#ffb84a",fontWeight:700}}>{r.sl>0?fmt(r.sl):"—"}</span></div>
+                        </div>
+                        <textarea
+                          placeholder="Add a note for this month…"
+                          value={notes[r.month]||""}
+                          onChange={e=>{const n={...notes,[r.month]:e.target.value};updNotes(n);}}
+                          style={{width:"100%",boxSizing:"border-box",background:"#111827",border:"1px solid #2a3050",borderRadius:6,color:"#8892b0",fontSize:11,padding:"8px",resize:"vertical",minHeight:56,fontFamily:"inherit"}}
+                        />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1053,6 +1190,60 @@ export default function App() {
               <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(ts.ni)}</span>
               <span style={{textAlign:"right",color:"#00c88c"}}>{fmt(ts.nest)}</span>
             </div>
+            <p style={{fontSize:10,color:"#3a4460",textAlign:"center",marginTop:8}}>Tap a row to expand · add notes or delete</p>
+          </div>
+        )}
+
+        {tab==="Tax Year"&&(
+          <div>
+            <div style={{...card,marginBottom:14,background:"linear-gradient(135deg,#0f1a10,#0d1117)",border:"1px solid #00c88c"}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>Tax Year Summaries</div>
+              <p style={{fontSize:11,color:"#3a4460",margin:0}}>Apr – Mar breakdown from your payslip history</p>
+            </div>
+            {groupByFY(history).map((fy,i)=>{
+              const isCurrent=i===0;
+              return(
+                <div key={fy.label} style={{...card,marginBottom:12,border:"1px solid "+(isCurrent?"#00c88c":"#1e2535")}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:700,color:isCurrent?"#00c88c":"#8892b0"}}>{fy.label}</div>
+                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{fy.months} month{fy.months!==1?"s":""} recorded{isCurrent?" · current year":""}</div>
+                    </div>
+                    {isCurrent&&<span style={{background:"#0a2a15",border:"1px solid #00c88c",borderRadius:12,fontSize:9,fontWeight:700,color:"#00c88c",padding:"3px 8px",letterSpacing:1}}>CURRENT</span>}
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:10}}>
+                    {[
+                      {label:"Total Gross",value:fmt(fy.gross),accent:"#7c6fff"},
+                      {label:"Total Net",  value:fmt(fy.net),  accent:"#4a9eff"},
+                      {label:"Avg Net/Mo", value:fmt(fy.net/fy.months),accent:"#00c88c"},
+                      {label:"Total Bonus",value:fmt(fy.bonus),accent:"#c84aff"},
+                    ].map(k=>(
+                      <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"9px",textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:3}}>{k.label}</div>
+                        <div style={{fontSize:14,fontWeight:700,color:k.accent}}>{k.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:9,color:"#3a4460",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>Deductions</div>
+                  {[
+                    ["Income Tax",   fmt(fy.tax),  "#ff6b8a"],
+                    ["National Insurance", fmt(fy.ni), "#ff8c4a"],
+                    ["NEST Pension", fmt(fy.nest), "#ffb84a"],
+                    ["Student Loan", fmt(fy.sl),   "#c84aff"],
+                    ["OT Pay",       fmt(fy.ot),   "#4affd4"],
+                  ].map(([l,v,c])=>(
+                    <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1a1f2e",fontSize:11}}>
+                      <span style={{color:"#5a6480"}}>{l}</span>
+                      <span style={{color:c,fontWeight:600}}>{v}</span>
+                    </div>
+                  ))}
+                  <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0 0",fontSize:12,fontWeight:700}}>
+                    <span style={{color:"#8892b0"}}>Total Deductions</span>
+                    <span style={{color:"#ff4a6a"}}>{fmt(fy.tax+fy.ni+fy.nest+fy.sl)}</span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -1088,24 +1279,7 @@ export default function App() {
 
           <div style={{...card,marginBottom:14}}>
             <div style={{fontSize:9,color:"#ffb84a",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Weekly Timesheet</div>
-            <p style={{fontSize:12,color:"#5a6480",marginBottom:14,lineHeight:1.6}}>Screenshot your timesheet email and upload here. Hours will be calculated and applied to Pay Calc automatically. Uploads accumulate across the month.</p>
-
-            {accumulated.weeks.length>0&&(
-              <div style={{background:"#0d1117",borderRadius:8,padding:"10px 12px",marginBottom:14}}>
-                <div style={{fontSize:10,color:"#ffb84a",fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>This Month So Far</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:8}}>
-                  {[["Std Hrs",accumulated.stdHrs,"#4a9eff"],["Weekday OT",accumulated.otHrs,"#4affd4"],["Weekend OT",accumulated.weekendOtHrs,"#ffb84a"]].map(([l,v,c])=>(
-                    <div key={l} style={{background:"#141824",borderRadius:6,padding:"8px",textAlign:"center"}}>
-                      <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
-                      <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{fontSize:10,color:"#3a4460",marginBottom:6}}>{accumulated.weeks.length} week{accumulated.weeks.length!==1?"s":""} uploaded</div>
-                <button onClick={resetTimesheet} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:600,padding:"6px 12px",cursor:"pointer",width:"100%"}}>Reset for New Month</button>
-              </div>
-            )}
-
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:14,lineHeight:1.6}}>Screenshot your timesheet email and upload here. Hours will be calculated and applied to Pay Calc automatically.</p>
             <label style={{display:"block",background:"#0d1117",border:"2px dashed "+(showTsReminder?"#ffb84a":"#2a3050"),borderRadius:10,padding:"20px 16px",cursor:tsUploading?"not-allowed":"pointer",marginBottom:12}}>
               <input type="file" accept="image/*" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
               {tsUploading
@@ -1113,7 +1287,6 @@ export default function App() {
                 :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
               }
             </label>
-
             {tsPending&&(
               <div style={{background:"#0d1a10",border:"1px solid #1a4030",borderRadius:10,padding:14,marginBottom:12}}>
                 <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted — {tsPending.days.length} days</div>
@@ -1126,8 +1299,8 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:12}}>
-                  {[["Std Hrs",tsPending.totals.stdHrs,"#4a9eff"],["Weekday OT",tsPending.totals.otHrs,"#4affd4"],["Weekend OT",tsPending.totals.weekendOtHrs,"#ffb84a"]].map(([l,v,c])=>(
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+                  {[["Weekday OT",tsPending.totals.otHrs,"#4affd4"],["Weekend OT",tsPending.totals.weekendOtHrs,"#ffb84a"]].map(([l,v,c])=>(
                     <div key={l} style={{background:"#0a1a10",borderRadius:6,padding:"8px",textAlign:"center"}}>
                       <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
                       <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
@@ -1158,6 +1331,112 @@ export default function App() {
               </div>
             )}
           </div>
+          </div>
+        )}
+
+        {tab==="Timesheet"&&(
+          <div>
+            {/* Summary cards */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+              {[
+                {label:"Weekday OT",value:(accumulated.otHrs||0)+"h",accent:"#4affd4"},
+                {label:"Weekend OT",value:(accumulated.weekendOtHrs||0)+"h",accent:"#ffb84a"},
+              ].map(k=>(
+                <div key={k.label} style={{...card,textAlign:"center",padding:"12px 8px"}}>
+                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
+                  <div style={{fontSize:22,fontWeight:700,color:k.accent}}>{k.value}</div>
+                  <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>this month</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Daily breakdown */}
+            {accumulated.days&&accumulated.days.length>0?(
+              <div style={{...card,padding:0,overflow:"hidden",marginBottom:14}}>
+                <div style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase"}}>
+                  <span>Date</span><span>Day</span><span style={{textAlign:"right"}}>Hours</span><span style={{textAlign:"right"}}>Wkdy OT</span><span style={{textAlign:"right"}}>Wknd OT</span>
+                </div>
+                <div style={{maxHeight:"60vh",overflowY:"auto"}}>
+                  {accumulated.days.map((d,i)=>{
+                    const isWeekend=d.day.toLowerCase().startsWith("sat")||d.day.toLowerCase().startsWith("sun");
+                    return(
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"8px 10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
+                        <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
+                        <span style={{color:isWeekend?"#ffb84a":"#5a6480",fontWeight:isWeekend?700:400}}>{d.day}</span>
+                        <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{d.hours}</span>
+                        <span style={{textAlign:"right",color:"#4affd4",fontWeight:600}}>{d.otHrs>0?"+"+d.otHrs+"h":"—"}</span>
+                        <span style={{textAlign:"right",color:"#ffb84a",fontWeight:600}}>{d.wkOtHrs>0?d.wkOtHrs+"h":"—"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ):(
+              <div style={{...card,textAlign:"center",padding:"32px 16px",marginBottom:14}}>
+                <div style={{fontSize:32,marginBottom:10}}>📋</div>
+                <div style={{fontSize:13,color:"#5a6480"}}>No timesheets uploaded yet this month</div>
+                <div style={{fontSize:11,color:"#3a4460",marginTop:6}}>Go to Upload tab to add your weekly timesheet</div>
+              </div>
+            )}
+
+            {/* Weeks uploaded */}
+            {accumulated.weeks&&accumulated.weeks.length>0&&(
+              <div style={{...card,marginBottom:14}}>
+                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>Weeks Uploaded</div>
+                {accumulated.weeks.map((w,i)=>(
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12}}>
+                    <span style={{color:"#5a6480"}}>Week {i+1} — {new Date(w.uploadedAt).toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span>
+                    <span style={{color:"#4affd4",fontWeight:600}}>{w.otHrs}h OT · <span style={{color:"#ffb84a"}}>{w.weekendOtHrs}h wknd</span></span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(()=>{
+              // FY OT tracker from payslip history
+              const now=new Date();
+              const fyStart=now.getMonth()>=3?new Date(now.getFullYear(),3,1):new Date(now.getFullYear()-1,3,1);
+              const fyYear=fyStart.getFullYear();
+              const fyLabel="Apr "+fyYear+" – Mar "+(fyYear+1);
+              const fyRows=history.filter(r=>{const[mo,yr]=r.month.split(" ");return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;});
+              const fyOTPay=fyRows.reduce((s,r)=>s+(r.ot||0),0);
+              const fyOTHrsEst=Math.round(fyOTPay/PAY.otRate*100)/100;
+              const fyWkndPayEst=fyRows.reduce((s,r)=>{
+                // Weekend OT can't be split from total OT in stored data, show total OT pay
+                return s;
+              },0);
+              if(fyRows.length===0) return null;
+              return(
+                <div style={{...card,marginBottom:14,border:"1px solid #4affd4"}}>
+                  <div style={{fontSize:9,color:"#4affd4",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>Financial Year OT Tracker — {fyLabel}</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+                    {[
+                      {label:"Total OT Pay",value:fmt(fyOTPay),accent:"#4affd4"},
+                      {label:"Est. OT Hours",value:fyOTHrsEst+"h",accent:"#00c88c",sub:"at £"+PAY.otRate+"/hr avg"},
+                      {label:"Months Tracked",value:fyRows.length,accent:"#7c6fff"},
+                      {label:"Avg OT/Month",value:fmt(fyOTPay/fyRows.length),accent:"#ffb84a"},
+                    ].map(k=>(
+                      <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{k.label}</div>
+                        <div style={{fontSize:16,fontWeight:700,color:k.accent}}>{k.value}</div>
+                        {k.sub&&<div style={{fontSize:9,color:"#3a4460",marginTop:2}}>{k.sub}</div>}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:9,color:"#3a4460",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>Month-by-Month OT Pay</div>
+                  {fyRows.map((r,i)=>(
+                    <div key={r.month} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1a1f2e",fontSize:11}}>
+                      <span style={{color:"#5a6480"}}>{r.month}</span>
+                      <span style={{color:"#4affd4",fontWeight:600}}>{r.ot>0?fmt(r.ot):"—"}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
+            <button onClick={resetTimesheet} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"12px",cursor:"pointer"}}>
+              Reset for New Month
+            </button>
           </div>
         )}
 
