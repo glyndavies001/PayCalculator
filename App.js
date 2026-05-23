@@ -2,16 +2,6 @@ import React, { useState, useMemo, useRef, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 import ANTHROPIC_API_KEY from "./apikey";
 
-// DEV DIAGNOSTIC — remove once bug is found
-window.onerror = (msg, src, line, col, err) => {
-  document.body.style.cssText = "background:#1a0000;color:#ff6b6b;padding:20px;font-family:monospace;font-size:13px;white-space:pre-wrap;word-break:break-all";
-  document.body.innerHTML = "<strong>⚠ JS Error</strong>\n\n" + msg + "\n\nFile: " + src + "\nLine: " + line + "\n\n" + (err && err.stack ? err.stack : "");
-};
-window.onunhandledrejection = (e) => {
-  document.body.style.cssText = "background:#1a0000;color:#ff6b6b;padding:20px;font-family:monospace;font-size:13px;white-space:pre-wrap;word-break:break-all";
-  document.body.innerHTML = "<strong>⚠ Unhandled Promise Rejection</strong>\n\n" + (e.reason && e.reason.stack ? e.reason.stack : String(e.reason));
-};
-
 function getWorkingDaysInMonth(year, month) {
   const days = new Date(year, month + 1, 0).getDate();
   let count = 0;
