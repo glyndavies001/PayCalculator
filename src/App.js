@@ -17,22 +17,32 @@ function getCurrentMonthHours() {
 }
 
 const PAY = {
-  baseRate: 14.50, oteRate: 15.50, otRate: 17.40, weekendOtRate: 21.75,
+  baseRate: 14.50, oteRate: 16.84, otRate: 17.40, weekendOtRate: 21.75,
   taxFreeMonthly: 1047.50, niPrimaryThreshold: 1048, niUpperThreshold: 4189,
   slThreshold: 2372, nestRate: 0.05, taxCode: "C1257L", niCategory: "A",
-  additionalAllowance: 1.00,
   bonusTiers: [
-    { label: "Tier 1", range: "<80%",   bonus: 0   },
-    { label: "Tier 2", range: "80-84%", bonus: 0   },
-    { label: "Tier 3", range: "85-89%", bonus: 0   },
-    { label: "Tier 4", range: "90-94%", bonus: 0   },
-    { label: "Tier 5", range: "95-99%", bonus: 160 },
-    { label: "Tier 6", range: "100%+",  bonus: 240 },
+    { label: "Tier 1", range: "<80%",      bonus: 0,   allowance: 0.00 },
+    { label: "Tier 2", range: "80-84.99%", bonus: 80,  allowance: 0.20 },
+    { label: "Tier 3", range: "85-89.99%", bonus: 120, allowance: 0.40 },
+    { label: "Tier 4", range: "90-94.99%", bonus: 160, allowance: 0.60 },
+    { label: "Tier 5", range: "95-99.99%", bonus: 200, allowance: 0.80 },
+    { label: "Tier 6", range: "100%+",     bonus: 240, allowance: 1.00 },
   ],
 };
 
-function calcPay({ stdHrs, otHrs, weekendOtHrs, bonus, perfAllowance }) {
-  const rate = PAY.baseRate + (perfAllowance ? PAY.additionalAllowance : 0);
+function getAllowanceForBonus(bonus) {
+  // Find the matching tier by bonus amount; default to 0 if not found
+  const tier = PAY.bonusTiers.slice().reverse().find(t => bonus >= t.bonus && t.bonus > 0);
+  return tier ? tier.allowance : 0;
+}
+
+function calcPay({ stdHrs, otHrs, weekendOtHrs, bonus, perfAllowance, _allowanceOverride }) {
+  const allowance = _allowanceOverride !== undefined
+    ? _allowanceOverride
+    : perfAllowance !== undefined
+      ? (perfAllowance ? getAllowanceForBonus(bonus) || 1.00 : 0)
+      : getAllowanceForBonus(bonus);
+  const rate = PAY.baseRate + allowance;
   const stdPay = stdHrs * rate;
   const otPay = otHrs * PAY.otRate;
   const wkPay = weekendOtHrs * PAY.weekendOtRate;
@@ -140,6 +150,7 @@ const SK = {
   timesheets:   "vaulted_timesheets",   // accumulated weekly timesheet data for current month
   tsLastUpload: "vaulted_ts_last",      // ISO date string of last timesheet upload
   notes:        "vaulted_notes",        // { "Mon YYYY": "note text" }
+  tierOverride: "vaulted_tier_override", // { tierIdx: 0-5, month: "Mon YYYY" }
 };
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
@@ -293,7 +304,12 @@ function StatRow({label,value,color,last}) {
   );
 }
 
-function CollapsibleChart({title,data,dataKey,color}) {
+// The allowance is entirely determined by the tier bonus — they're linked.
+// So inferring perfAllowance just means checking if a bonus was paid.
+function inferPerfAllowance(r) {
+  if (typeof r.perfAllowance === "boolean") return r.perfAllowance;
+  return (r.bonus || 0) > 0;
+}({title,data,dataKey,color}) {
   const [open,setOpen]=useState(false);
   return (
     <div style={{border:"1px solid #1e2535",borderRadius:10,overflow:"hidden",marginBottom:8}}>
@@ -415,6 +431,19 @@ export default function App() {
   const [payslipSearch,setPayslipSearch]=useState("");
   const [showAllTimeTotals,setShowAllTimeTotals]=useState(false);
 
+  // Tier override — resets if stored month doesn't match current month
+  const currentMonthStr = MONTHS[new Date().getMonth()]+" "+new Date().getFullYear();
+  const [tierOverride,setTierOverride]=useState(()=>{
+    const stored=load(SK.tierOverride,null);
+    if(stored && stored.month===currentMonthStr) return stored.tierIdx;
+    return null; // null = auto (inferred from latest payslip)
+  });
+  const saveTierOverride=(tierIdx)=>{
+    const val=tierIdx===null?null:{tierIdx,month:currentMonthStr};
+    setTierOverride(tierIdx);
+    save(SK.tierOverride,val);
+  };
+
   // Timesheet state
   const [tsUploading,setTsUploading]=useState(false);
   const [tsProgress,setTsProgress]=useState(null);
@@ -434,7 +463,7 @@ export default function App() {
   const shHollie=sharedBills.reduce((s,b)=>s+billShares(b).hollie,0);
   const glOnly=glynBills.reduce((s,b)=>s+b.total,0);
   const totalOut=shGlyn+glOnly;
-  const cr=useMemo(()=>calcPay(ci),[ci]);
+  const cr=useMemo(()=>calcPay({...ci, _allowanceOverride: effectiveAllowance}),[ci, effectiveAllowance]);
   const surplus=cr.net-totalOut;
 
   const chartData=useMemo(()=>{
@@ -483,6 +512,8 @@ export default function App() {
         const data=await resp.json();
         if(data.error) throw new Error(data.error.message);
         const parsed=JSON.parse(data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim());
+        // Allowance is active whenever a performance bonus was paid (they're the same tier)
+        parsed.perfAllowance = (parsed.bonus || 0) > 0;
         successful.push(parsed);
         results.push({ok:true,parsed});
       } catch(err){results.push({ok:false,name:file.name,err:err.message||"Unknown error"});}
@@ -494,7 +525,8 @@ export default function App() {
         const sorted=sortH(h);save(SK.history,sorted);return sorted;
       });
       const last=successful[successful.length-1];
-      setC("bonus",last.bonus);setC("perfAllowance",last.bonus>=160);
+      setC("bonus", last.bonus);
+      setC("perfAllowance", last.perfAllowance);
     }
     setMultiResults(results);
     setUploadProgress(null);
@@ -703,6 +735,20 @@ export default function App() {
     const days=Math.ceil((pd-new Date())/(1000*60*60*24));
     return {date:pd.toLocaleDateString("en-GB",{day:"numeric",month:"short"}),days};
   },[]);
+
+  // Effective tier: manual override takes priority, otherwise infer from latest payslip bonus
+  const effectiveTierIdx=useMemo(()=>{
+    if(tierOverride!==null) return tierOverride;
+    if(!latest) return 0;
+    const bonus=latest.bonus||0;
+    // Find highest tier whose bonus the payslip bonus matches or exceeds
+    for(let i=PAY.bonusTiers.length-1;i>=0;i--){
+      if(bonus>=PAY.bonusTiers[i].bonus&&PAY.bonusTiers[i].bonus>0) return i;
+    }
+    return 0;
+  },[tierOverride,latest]);
+
+  const effectiveAllowance=PAY.bonusTiers[effectiveTierIdx].allowance;
 
   const slProgress=useMemo(()=>{
     const elapsed=new Date().getFullYear()-SL_START_YEAR;
@@ -1105,15 +1151,43 @@ export default function App() {
                 </div>
                 <input type="number" value={ci.bonus} onChange={e=>setC("bonus",parseFloat(e.target.value)||0)} style={numI}/>
               </div>
-              <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"#8892b0",cursor:"pointer",padding:"8px 0"}}>
-                <input type="checkbox" checked={ci.perfAllowance} onChange={e=>setC("perfAllowance",e.target.checked)} style={{width:16,height:16}}/>
-                Performance allowance active (+£{PAY.additionalAllowance}/hr)
-              </label>
+              <div style={{marginTop:4}}>
+                <label style={{fontSize:13,color:"#5a6480",display:"block",marginBottom:8}}>Performance Tier</label>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:8}}>
+                  {PAY.bonusTiers.map((tier,i)=>{
+                    const isActive=effectiveTierIdx===i;
+                    const isAuto=tierOverride===null&&isActive;
+                    const colors=["#3a4460","#4a9eff","#7c6fff","#c84aff","#ffb84a","#00c88c"];
+                    return(
+                      <button key={i} onClick={()=>saveTierOverride(tierOverride===i&&i===effectiveTierIdx?null:i)} style={{
+                        background:isActive?colors[i]+"22":"#1e2535",
+                        border:"1px solid "+(isActive?colors[i]:"#2a3050"),
+                        borderRadius:8,padding:"8px 4px",cursor:"pointer",textAlign:"center"
+                      }}>
+                        <div style={{fontSize:11,fontWeight:700,color:isActive?colors[i]:"#5a6480"}}>{tier.label}</div>
+                        <div style={{fontSize:10,color:isActive?colors[i]:"#3a4460",marginTop:2}}>+£{tier.allowance.toFixed(2)}/hr</div>
+                        {isAuto&&<div style={{fontSize:9,color:colors[i],marginTop:2,opacity:0.8}}>auto</div>}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:"#5a6480"}}>
+                  <span>Effective rate: <span style={{color:"#e8eaf0",fontWeight:700}}>£{(PAY.baseRate+effectiveAllowance).toFixed(2)}/hr</span></span>
+                  {tierOverride!==null&&(
+                    <button onClick={()=>saveTierOverride(null)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",textDecoration:"underline"}}>
+                      Reset to auto
+                    </button>
+                  )}
+                </div>
+                {tierOverride!==null&&(
+                  <div style={{fontSize:11,color:"#ffb84a",marginTop:6}}>⚠ Manual override active — resets next month</div>
+                )}
+              </div>
             </div>
             <div style={card}>
               <SectionLabel>Gross Breakdown</SectionLabel>
               {[
-                ["Standard Pay", ci.stdHrs+"hrs x £"+(ci.perfAllowance?PAY.oteRate:PAY.baseRate), fmt(cr.stdPay), "#e8eaf0"],
+                ["Standard Pay", ci.stdHrs+"hrs × £"+(PAY.baseRate+effectiveAllowance).toFixed(2), fmt(cr.stdPay), "#e8eaf0"],
                 ["Overtime Pay", ci.otHrs+"hrs x £"+PAY.otRate, fmt(cr.otPay), "#4affd4"],
                 ["Weekend OT",   ci.weekendOtHrs+"hrs x £"+PAY.weekendOtRate, fmt(cr.wkPay), "#00c88c"],
                 ["Perf. Bonus",  "", fmt(cr.bonus), "#ffb84a"],
@@ -1218,17 +1292,16 @@ export default function App() {
                 return(
                   <div key={tier.label} style={{background:"#0d1117",borderRadius:8,padding:"10px 14px",borderLeft:"3px solid "+colors[i],marginBottom:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <div>
-                      <div style={{fontSize:13,fontWeight:700,color:tier.bonus===0?"#3a4460":colors[i]}}>{tier.bonus===0?"No Bonus":fmt(tier.bonus)}</div>
-                      <div style={{fontSize:11,color:"#5a6480",marginTop:2}}>{tier.label}</div>
+                      <div style={{fontSize:13,fontWeight:700,color:tier.bonus===0?"#3a4460":colors[i]}}>{tier.label} · {tier.range}</div>
+                      <div style={{fontSize:11,color:"#5a6480",marginTop:3}}>{tier.bonus===0?"No bonus":"Bonus: "+fmt(tier.bonus)}</div>
                     </div>
-                    <div style={{background:"#1a1f2e",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700,color:colors[i]}}>{tier.range}</div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:13,fontWeight:700,color:tier.allowance>0?colors[i]:"#3a4460"}}>+£{tier.allowance.toFixed(2)}/hr</div>
+                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>allowance</div>
+                    </div>
                   </div>
                 );
               })}
-              <div style={{background:"#0d1117",borderRadius:8,padding:12,borderLeft:"3px solid #00c88c",marginTop:8}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",marginBottom:4}}>Additional Hourly Allowance</div>
-                <div style={{fontSize:12,color:"#8892b0",lineHeight:1.6}}>When team hits <span style={{color:"#e8eaf0",fontWeight:600}}>99.96%+</span>, an extra <span style={{color:"#00c88c",fontWeight:700}}>£{PAY.additionalAllowance}/hr</span> is added the following month.</div>
-              </div>
             </div>
             <div style={card}>
               <SectionLabel>Recent Bonus History</SectionLabel>
@@ -1322,6 +1395,38 @@ export default function App() {
               <span style={{textAlign:"right",color:"#00c88c"}}>{fmt(ts.nest)}</span>
             </div>
             <p style={{fontSize:10,color:"#3a4460",textAlign:"center",marginTop:8}}>Tap a row to expand · add notes or delete</p>
+
+            {latest&&(()=>{
+              const active = inferPerfAllowance(latest);
+              const allowanceRate = getAllowanceForBonus(latest.bonus||0);
+              const [mo,yr] = latest.month.split(" ");
+              const moIdx = MONTHS.indexOf(mo);
+              const nextMo = MONTHS[(moIdx+1)%12];
+              const nextYr = moIdx===11 ? parseInt(yr)+1 : parseInt(yr);
+              const tier = PAY.bonusTiers.slice().reverse().find(t=>(latest.bonus||0)>=t.bonus&&t.bonus>0)||PAY.bonusTiers[0];
+              return(
+                <div style={{marginTop:12,background:active?"#0a1a10":"#1a0f0a",border:"1px solid "+(active?"#00c88c":"#ff8c4a"),borderRadius:12,padding:"14px 16px"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                    <span style={{fontSize:18}}>{active?"✅":"❌"}</span>
+                    <span style={{fontSize:13,fontWeight:700,color:active?"#00c88c":"#ff8c4a"}}>
+                      Performance Allowance — {nextMo} {nextYr}
+                    </span>
+                  </div>
+                  <div style={{fontSize:12,color:"#8892b0",lineHeight:1.7}}>
+                    Your <span style={{color:"#e8eaf0",fontWeight:600}}>{latest.month}</span> payslip shows a <span style={{color:"#c84aff",fontWeight:700}}>{fmt(latest.bonus||0)}</span> bonus
+                    {" "}(<span style={{color:"#e8eaf0"}}>{tier.label} · {tier.range}</span>).
+                    {active
+                      ? <> The <span style={{color:"#00c88c",fontWeight:700}}>+£{allowanceRate.toFixed(2)}/hr</span> allowance will apply to every hour worked in <span style={{color:"#e8eaf0",fontWeight:600}}>{nextMo} {nextYr}</span>. Pay Calc updated.</>
+                      : <> No performance allowance applies for <span style={{color:"#e8eaf0",fontWeight:600}}>{nextMo} {nextYr}</span> — a bonus is needed to unlock the hourly allowance.</>
+                    }
+                  </div>
+                  <button onClick={()=>setC("perfAllowance",!ci.perfAllowance)}
+                    style={{marginTop:10,background:"#1e2535",border:"1px solid #2a3050",borderRadius:8,color:"#5a6480",fontSize:12,padding:"7px 14px",cursor:"pointer"}}>
+                    Override in Pay Calc: mark as {ci.perfAllowance?"inactive":"active"}
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -1573,7 +1678,7 @@ export default function App() {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.5.0</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.5.4</span>
       </div>
 
     </div>
