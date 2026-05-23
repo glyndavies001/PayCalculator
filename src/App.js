@@ -2,6 +2,21 @@ import React, { useState, useMemo, useRef, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 import ANTHROPIC_API_KEY from "./apikey";
 
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  componentDidCatch(error, info) { this.setState({ error, info }); }
+  render() {
+    if (this.state.error) return (
+      <div style={{padding:20,background:"#1a0000",color:"#ff6b6b",fontSize:12,wordBreak:"break-all",fontFamily:"monospace",whiteSpace:"pre-wrap"}}>
+        <strong style={{fontSize:14}}>⚠ App Error</strong>{"\n\n"}
+        {this.state.error.toString()}{"\n\n"}
+        {this.state.info?.componentStack}
+      </div>
+    );
+    return this.props.children;
+  }
+}
+
 function getWorkingDaysInMonth(year, month) {
   const days = new Date(year, month + 1, 0).getDate();
   let count = 0;
@@ -388,6 +403,7 @@ export default function App() {
   const allSorted=useMemo(()=>sortH(history),[history]);
 
   return (
+    <ErrorBoundary>
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
 
       <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"16px 14px 0",position:"sticky",top:0,zIndex:100}}>
@@ -873,5 +889,6 @@ export default function App() {
 
       </div>
     </div>
+    </ErrorBoundary>
   );
 }
