@@ -969,7 +969,7 @@ export default function App() {
 
   // Poll /api/timesheet — 5s when items pending, 60s when empty
   React.useEffect(() => {
-    if (!tsSecret || locked) return;
+    if (!tsSecret || !user) return;
     let intervalMs = 60000;
     let timer = null;
 
@@ -1002,7 +1002,7 @@ export default function App() {
 
     poll();
     return () => { if (timer) clearTimeout(timer); };
-  }, [tsSecret, locked]);
+  }, [tsSecret, user]);
 
   // ── Monthly timesheet history + discrepancy checker ─────────────────────
   const [monthlyTs, setMonthlyTs] = useState([]);
@@ -1102,7 +1102,7 @@ export default function App() {
   // Fire notifications once per session after unlock
   const notifFiredRef = React.useRef(false);
   React.useEffect(() => {
-    if (locked || notifFiredRef.current || Notification.permission !== "granted") return;
+    if (!user || notifFiredRef.current || Notification.permission !== "granted") return;
     notifFiredRef.current = true;
     if (isTomorrowPayday()) {
       sendNotification("💰 Payday tomorrow!", "Your pay should land tomorrow — check Vaulted for your estimate.", "payday");
@@ -1110,7 +1110,7 @@ export default function App() {
     if (shouldFireTimesheetNotif(tsLastUpload)) {
       sendNotification("📋 Timesheet reminder", "It's Monday — don't forget to upload your weekly timesheet.", "timesheet");
     }
-  }, [locked]);
+  }, [user]);
 
   // Onboarding handled by Supabase auth — no separate state needed
 
