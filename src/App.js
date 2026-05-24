@@ -1021,6 +1021,7 @@ export default function App() {
 
   // ── Named Scenarios ──────────────────────────────────────────────────────
   const [scenarios, setScenarios] = useState(() => load(SK.scenarios, []));
+  const [expandedMonth, setExpandedMonth] = useState(null);
   const [scenarioName, setScenarioName] = useState("");
   const [showScenarios, setShowScenarios] = useState(false);
   const saveScenario = () => {
@@ -2654,7 +2655,6 @@ const calcTimesheetTotals = days => {
 
             {/* Monthly timesheet history */}
             {monthlyTs.length > 0 && (()=>{
-              const [expandedMonth, setExpandedMonth] = React.useState(null);
               return (
                 <div style={{...card,padding:0,overflow:"hidden",marginBottom:14}}>
                   <div style={{padding:"10px 12px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -2781,7 +2781,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.8.2</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.8.3</span>
       </div>
 
     </div>
