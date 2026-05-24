@@ -720,9 +720,17 @@ export default function App() {
     return () => { clearInterval(check); window.removeEventListener("mousemove",bump); window.removeEventListener("touchstart",bump); window.removeEventListener("click",bump); };
   }, [locked]);
 
-  // Background/visibility lock
+  // Background/visibility lock — only lock if hidden for longer than 10 minutes
   React.useEffect(() => {
-    const onVis = () => { if (document.hidden) setLocked(true); };
+    let hiddenAt = null;
+    const onVis = () => {
+      if (document.hidden) {
+        hiddenAt = Date.now();
+      } else {
+        if (hiddenAt && Date.now() - hiddenAt > LOCK_TIMEOUT_MS) setLocked(true);
+        hiddenAt = null;
+      }
+    };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
@@ -879,29 +887,42 @@ export default function App() {
     }
   }, []);
 
-  // Poll /api/timesheet every 60s when app is open and unlocked
+  // Poll /api/timesheet — 5s when items pending, 60s when empty
   React.useEffect(() => {
     if (!tsSecret || locked) return;
+    let intervalMs = 60000;
+    let timer = null;
+
     const poll = async () => {
       try {
-        const res = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
+        const secret = localStorage.getItem("vaulted_ts_secret") || tsSecret;
+        const res = await fetch(`/api/timesheet?token=${encodeURIComponent(secret)}`);
         const data = await res.json();
         if (data.status === "pending" && data.data) {
           const { emailId, days } = data.data;
-          if (emailId === tsLastEmail) return; // already applied
-          applyTimesheetDays(days, emailId, data.data.meta || null);
-          // Confirm receipt so server clears it
-          await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
-          setTsAutoMsg({ text: "✅ Timesheet auto-imported", ok: true });
-          sendNotification("📋 Timesheet imported", "Your JLI timesheet has been automatically added to Vaulted.", "ts-auto");
-          setTimeout(() => setTsAutoMsg(null), 5000);
+          const lastEmail = localStorage.getItem("vaulted_ts_last_email") || "";
+          if (emailId === lastEmail) {
+            // Already applied — clear from queue and move on
+            await fetch(`/api/timesheet?token=${encodeURIComponent(secret)}`, { method: "DELETE" });
+          } else {
+            applyTimesheetDays(days, emailId, data.data.meta || null);
+            await fetch(`/api/timesheet?token=${encodeURIComponent(secret)}`, { method: "DELETE" });
+            setTsAutoMsg({ text: "✅ Timesheet auto-imported", ok: true });
+            sendNotification("📋 Timesheet imported", "Your JLI timesheet has been automatically added to Vaulted.", "ts-auto");
+            setTimeout(() => setTsAutoMsg(null), 4000);
+          }
+          // More items — poll again in 5s
+          if ((data.remaining || 1) > 1) intervalMs = 5000;
+        } else {
+          intervalMs = 60000;
         }
-      } catch { /* silent — offline or not configured */ }
+      } catch { /* silent */ }
+      timer = setTimeout(poll, intervalMs);
     };
-    poll(); // run immediately on mount
-    const interval = setInterval(poll, 60000);
-    return () => clearInterval(interval);
-  }, [tsSecret, locked, tsLastEmail, applyTimesheetDays]);
+
+    poll();
+    return () => { if (timer) clearTimeout(timer); };
+  }, [tsSecret, locked]);
 
   // ── Monthly timesheet history + discrepancy checker ─────────────────────
   const [monthlyTs, setMonthlyTs] = useState(() => load(SK.monthlyTs, []));
@@ -2781,7 +2802,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.8.3</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.8.4</span>
       </div>
 
     </div>
