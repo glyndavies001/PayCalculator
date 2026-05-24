@@ -771,14 +771,24 @@ export default function App() {
     loadAll();
   }, [user]);
 
-  // Real-time subscriptions
+  // Real-time subscriptions (Supabase v2 syntax)
   React.useEffect(() => {
     if (!user) return;
-    const payslipSub = supabase.from("payslips").on("*", () => db.getPayslips(user.id).then(p => setHistory(p.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);})))).subscribe();
-    const sharedSub = supabase.from("shared_bills").on("*", () => db.getSharedBills().then(b => setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), isCarGlyn: r.is_car_glyn }))))).subscribe();
-    const glynSub = supabase.from("glyn_bills").on("*", () => db.getGlynBills().then(b => setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))).subscribe();
-    const leaveSub = supabase.from("leave_logs").on("*", () => db.getLeaveLogs(user.id).then(setLeaveLogs)).subscribe();
-    return () => { payslipSub.unsubscribe(); sharedSub.unsubscribe(); glynSub.unsubscribe(); leaveSub.unsubscribe(); };
+    const channel = supabase.channel("vaulted-sync")
+      .on("postgres_changes", { event: "*", schema: "public", table: "payslips" }, () =>
+        db.getPayslips(user.id).then(p => setHistory(p.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);})))
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "shared_bills" }, () =>
+        db.getSharedBills().then(b => setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), isCarGlyn: r.is_car_glyn }))))
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "glyn_bills" }, () =>
+        db.getGlynBills().then(b => setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "leave_logs" }, () =>
+        db.getLeaveLogs(user.id).then(setLeaveLogs)
+      )
+      .subscribe();
+    return () => supabase.removeChannel(channel);
   }, [user]);
 
   const handleSignOut = async () => { await supabase.auth.signOut(); setUser(null); setHistory([]); };
