@@ -1,14 +1,22 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
-import { createClient } from "@supabase/supabase-js";
-
 // API calls routed through Vercel serverless proxy
 const API_PROXY = "/api/claude";
 
-// Supabase client
-const SUPABASE_URL = "https://yfbarahnwcrwewtpithb.supabase.co";
-const SUPABASE_KEY = "sb_publishable_ItUAbr04KIijWuO-JWgDNg_J5YCwaqK";
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// Supabase stub — testing if import causes blank page
+const supabase = {
+  auth: {
+    getSession: async () => ({ data: { session: null } }),
+    onAuthStateChange: () => ({ data: { subscription: { unsubscribe: ()=>{} } } }),
+    signInWithPassword: async () => ({ data: null, error: { message: "Supabase not loaded" } }),
+    signUp: async () => ({ error: { message: "Supabase not loaded" } }),
+    signOut: async () => {},
+    resetPasswordForEmail: async () => {},
+  },
+  from: () => ({ select: ()=>({ eq: ()=>({ order: ()=>({ data: [] }), single: ()=>({ data: null }) }) }), upsert: ()=>({}), delete: ()=>({ eq: ()=>({ eq: ()=>({}) }) }) }),
+  channel: () => ({ on: function(){ return this; }, subscribe: ()=>({}) }),
+  removeChannel: ()=>{},
+};
 
 function getWorkingDaysInMonth(year, month) {
   const days = new Date(year, month + 1, 0).getDate();
