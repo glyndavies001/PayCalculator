@@ -1501,6 +1501,7 @@ const calcTimesheetTotals = days => {
 
 
   return (
+    <ErrorBoundary>
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
       {/* Auto-import toast */}
       {tsAutoMsg && (
@@ -2779,5 +2780,6 @@ const calcTimesheetTotals = days => {
       </div>
 
     </div>
+    </ErrorBoundary>
   );
 }
