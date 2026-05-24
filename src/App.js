@@ -168,7 +168,11 @@ const SK = {
   notifPerm:    "vaulted_notif_perm",      // "granted" | "denied" | "dismissed"
   onboarded:    "vaulted_onboarded",       // true once onboarding is complete
   leaveSettings:"vaulted_leave_settings",  // { baseEntitlement, serviceDays, startYear }
-  leaveLogs:    "vaulted_leave_logs",      // [{ id, date, days, label }]
+  leaveLogs:    "vaulted_leave_logs",      // [{ id, date, hours, label }]
+  tsSecret:     "vaulted_ts_secret",       // TIMESHEET_SECRET value for polling
+  tsLastEmail:  "vaulted_ts_last_email",   // last processed email ID (avoid duplicates)
+  monthlyTs:    "vaulted_monthly_ts",      // [{ period, month, totalHrs, stdHrs, otHrs, wkndHrs, holHrs, days, emailId }]
+  discrepancies:"vaulted_discrepancies",   // [{ month, status, items, ts, payslip, checked }]
 };
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
@@ -431,20 +435,27 @@ function getLeaveYear() {
   return new Date().getFullYear(); // Jan–Dec
 }
 
-function effectiveEntitlement(baseEntitlement, serviceDays) {
+const STD_DAY_HRS = 8.25; // standard working day in hours
+
+function effectiveEntitlementDays(baseEntitlement, serviceDays) {
   // Service days are added June 1st each year, capped at 6
   const now = new Date();
-  const juneFirst = new Date(now.getFullYear(), 5, 1); // June 1
+  const juneFirst = new Date(now.getFullYear(), 5, 1);
   const serviceAdded = now >= juneFirst ? Math.min(serviceDays, 6) : Math.min(Math.max(serviceDays - 1, 0), 6);
   return baseEntitlement + serviceAdded;
+}
+
+function effectiveEntitlement(baseEntitlement, serviceDays) {
+  // Returns entitlement in hours
+  return Math.round(effectiveEntitlementDays(baseEntitlement, serviceDays) * STD_DAY_HRS * 100) / 100;
 }
 
 function logsForYear(logs, year) {
   return logs.filter(l => new Date(l.date).getFullYear() === year);
 }
 
-function daysTakenInYear(logs, year) {
-  return logsForYear(logs, year).reduce((s, l) => s + l.days, 0);
+function hoursTakenInYear(logs, year) {
+  return Math.round(logsForYear(logs, year).reduce((s, l) => s + (l.hours || 0), 0) * 100) / 100;
 }
 
 // ── Push notification helpers ────────────────────────────────────────────────
@@ -729,17 +740,17 @@ export default function App() {
   // ── Annual Leave ─────────────────────────────────────────────────────────
   const [leaveSettings, setLeaveSettings] = useState(() => load(SK.leaveSettings, { baseEntitlement: 29, serviceDays: 4, startYear: 2022 }));
   const [leaveLogs, setLeaveLogs] = useState(() => load(SK.leaveLogs, []));
-  const [leaveForm, setLeaveForm] = useState({ date: "", days: "1", label: "" });
+  const [leaveForm, setLeaveForm] = useState({ date: "", hours: "8.25", label: "" });
   const [leaveEditSettings, setLeaveEditSettings] = useState(false);
   const [leaveDraftSettings, setLeaveDraftSettings] = useState(null);
 
   const saveLeaveLog = () => {
-    if (!leaveForm.date || !leaveForm.days) return;
+    if (!leaveForm.date || !leaveForm.hours) return;
     haptic("success");
-    const entry = { id: Date.now(), date: leaveForm.date, days: parseFloat(leaveForm.days), label: leaveForm.label.trim() };
+    const entry = { id: Date.now(), date: leaveForm.date, hours: parseFloat(leaveForm.hours), label: leaveForm.label.trim() };
     const updated = [...leaveLogs, entry].sort((a,b) => new Date(b.date) - new Date(a.date));
     setLeaveLogs(updated); save(SK.leaveLogs, updated);
-    setLeaveForm({ date: "", days: "1", label: "" });
+    setLeaveForm({ date: "", hours: "8.25", label: "" });
   };
 
   const deleteLeaveLog = (id) => {
@@ -764,6 +775,201 @@ export default function App() {
     save(SK.notifPerm, result);
     return result;
   };
+
+  // ── Timesheet auto-import polling ────────────────────────────────────────
+  const [tsSecret, setTsSecret] = useState(() => load(SK.tsSecret, ""));
+  const [tsLastEmail, setTsLastEmail] = useState(() => load(SK.tsLastEmail, ""));
+  const [tsAutoMsg, setTsAutoMsg] = useState(null); // { text, ok } — brief status toast
+
+  const applyTimesheetDays = React.useCallback((days, emailId) => {
+    const STD = 8.25;
+    const enrichedDays = days.map(d => {
+      const { isHoliday, isHalf } = normaliseHoliday(d.holiday);
+      const hrs = isHoliday ? 0 : parseHM(d.hours);
+      const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
+      const otHrs = (isHoliday || isWeekend) ? 0 : Math.max(0, Math.round((hrs - STD) * 100) / 100);
+      const wkOtHrs = (!isHoliday && isWeekend) ? hrs : 0;
+      return { ...d, hrs, otHrs, wkOtHrs, isHoliday, isHalf };
+    });
+
+    // Auto-log holidays to leave
+    const holidayDays = enrichedDays.filter(d => d.isHoliday);
+    if (holidayDays.length > 0) {
+      setLeaveLogs(prev => {
+        const newEntries = holidayDays.map(d => {
+          const [dd, mm] = d.date.split("/").map(Number);
+          const year = new Date().getFullYear();
+          const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
+          const hours = d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS;
+          return { id: Date.now() + Math.random(), date: dateStr, hours, label: "Annual Leave (auto)" };
+        });
+        const merged = [...prev, ...newEntries]
+          .filter((e, i, arr) => arr.findIndex(x => x.date === e.date) === i)
+          .sort((a, b) => new Date(b.date) - new Date(a.date));
+        save(SK.leaveLogs, merged);
+        return merged;
+      });
+    }
+
+    // Merge into accumulated timesheet
+    setAccumulated(prev => {
+      const seen = new Set();
+      const merged = [...(prev.days || []), ...enrichedDays]
+        .sort((a, b) => {
+          const [ad, am] = (a.date || "").split("/").map(Number);
+          const [bd, bm] = (b.date || "").split("/").map(Number);
+          return am !== bm ? am - bm : ad - bd;
+        })
+        .filter(d => {
+          const key = d.date + "_" + d.day;
+          if (seen.has(key)) return false;
+          seen.add(key); return true;
+        });
+      const totalOtHrs  = Math.round(merged.reduce((s, d) => s + (d.otHrs  || 0), 0) * 100) / 100;
+      const totalWkndHrs= Math.round(merged.reduce((s, d) => s + (d.wkOtHrs|| 0), 0) * 100) / 100;
+      const now = new Date().toISOString();
+      const newAcc = { otHrs: totalOtHrs, weekendOtHrs: totalWkndHrs, weeks: [...(prev.weeks||[]), { uploadedAt: now }], days: merged, lastUpload: now };
+      save(SK.timesheets, newAcc);
+      return newAcc;
+    });
+
+    setTsLastUpload(new Date().toISOString());
+    save(SK.tsLastUpload, new Date().toISOString());
+    setTsLastEmail(emailId);
+    save(SK.tsLastEmail, emailId);
+    setC("otHrs", 0);
+
+    // If monthly timesheet, save to history and run discrepancy check
+    if (meta && meta.isMonthly) {
+      const STD = 8.25;
+      let stdHrs = 0, otHrs = 0, wkndHrs = 0, holHrs = 0;
+      days.forEach(d => {
+        if (d.isHoliday) { holHrs += d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS; return; }
+        const hrs = parseHM(d.hours);
+        const isWknd = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
+        if (isWknd) { wkndHrs += hrs; }
+        else if (hrs <= STD) { stdHrs += hrs; }
+        else { stdHrs += STD; otHrs += Math.round((hrs - STD) * 100) / 100; }
+      });
+      const entry = {
+        emailId,
+        period: meta.period,
+        month: meta.payMonth,
+        totalHrs: meta.totalHrs,
+        stdHrs: Math.round(stdHrs * 100) / 100,
+        otHrs:  Math.round(otHrs  * 100) / 100,
+        wkndHrs:Math.round(wkndHrs* 100) / 100,
+        holHrs: Math.round(holHrs * 100) / 100,
+        days,
+        savedAt: new Date().toISOString(),
+      };
+      saveMonthlyTs(entry);
+    }
+  }, []);
+
+  // Poll /api/timesheet every 60s when app is open and unlocked
+  React.useEffect(() => {
+    if (!tsSecret || locked) return;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
+        const data = await res.json();
+        if (data.status === "pending" && data.data) {
+          const { emailId, days } = data.data;
+          if (emailId === tsLastEmail) return; // already applied
+          applyTimesheetDays(days, emailId, data.data.meta || null);
+          // Confirm receipt so server clears it
+          await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
+          setTsAutoMsg({ text: "✅ Timesheet auto-imported", ok: true });
+          sendNotification("📋 Timesheet imported", "Your JLI timesheet has been automatically added to Vaulted.", "ts-auto");
+          setTimeout(() => setTsAutoMsg(null), 5000);
+        }
+      } catch { /* silent — offline or not configured */ }
+    };
+    poll(); // run immediately on mount
+    const interval = setInterval(poll, 60000);
+    return () => clearInterval(interval);
+  }, [tsSecret, locked, tsLastEmail, applyTimesheetDays]);
+
+  // ── Monthly timesheet history + discrepancy checker ─────────────────────
+  const [monthlyTs, setMonthlyTs] = useState(() => load(SK.monthlyTs, []));
+  const [discrepancies, setDiscrepancies] = useState(() => load(SK.discrepancies, []));
+
+  const saveMonthlyTs = (entry) => {
+    setMonthlyTs(prev => {
+      const updated = [...prev.filter(m => m.emailId !== entry.emailId && m.period !== entry.period), entry]
+        .sort((a, b) => new Date(b.period.split(" to ")[0]) - new Date(a.period.split(" to ")[0]));
+      save(SK.monthlyTs, updated);
+      return updated;
+    });
+    // After saving monthly ts, check if we can run discrepancy check against a payslip
+    checkDiscrepancy(entry, history);
+  };
+
+  const checkDiscrepancy = (tsEntry, hist) => {
+    if (!tsEntry || !tsEntry.month) return;
+    const payslip = hist.find(h => h.month === tsEntry.month);
+    if (!payslip) return; // payslip not yet uploaded — will recheck when payslip arrives
+
+    const allowance = PAY.bonusTiers[5].allowance; // Tier 6 default; ideally from tierOverride
+    const expected = calcPay({
+      stdHrs: tsEntry.stdHrs,
+      otHrs: tsEntry.otHrs,
+      weekendOtHrs: tsEntry.wkndHrs,
+      bonus: payslip.bonus, // use actual bonus from payslip
+      _allowanceOverride: allowance,
+    });
+
+    const THRESH = 1.00; // £1 tolerance for rounding
+    const items = [];
+    const diff = (label, exp, act, unit="£") => {
+      const d = Math.abs(exp - act);
+      if (d > THRESH) items.push({ label, expected: exp, actual: act, diff: exp - act, unit });
+    };
+
+    diff("Gross Pay",   Math.round(expected.gross * 100)/100, payslip.gross);
+    diff("Net Pay",     Math.round(expected.net   * 100)/100, payslip.net);
+    diff("Income Tax",  Math.round(expected.tax   * 100)/100, payslip.tax);
+    diff("NI",          Math.round(expected.ni    * 100)/100, payslip.ni);
+    diff("NEST",        Math.round(expected.nest  * 100)/100, payslip.nest);
+    diff("Student Loan",Math.round(expected.sl    * 100)/100, payslip.sl);
+
+    const result = {
+      month: tsEntry.month,
+      period: tsEntry.period,
+      status: items.length === 0 ? "ok" : "discrepancy",
+      items,
+      ts: { stdHrs: tsEntry.stdHrs, otHrs: tsEntry.otHrs, wkndHrs: tsEntry.wkndHrs, totalHrs: tsEntry.totalHrs },
+      payslip: { gross: payslip.gross, net: payslip.net, tax: payslip.tax, ni: payslip.ni },
+      expected: { gross: Math.round(expected.gross*100)/100, net: Math.round(expected.net*100)/100 },
+      checkedAt: new Date().toISOString(),
+    };
+
+    setDiscrepancies(prev => {
+      const updated = [...prev.filter(d => d.month !== tsEntry.month), result]
+        .sort((a, b) => new Date(b.checkedAt) - new Date(a.checkedAt));
+      save(SK.discrepancies, updated);
+      return updated;
+    });
+
+    if (items.length > 0) {
+      sendNotification(
+        "⚠️ Pay discrepancy — " + tsEntry.month,
+        items.length + " item" + (items.length>1?"s":"") + " don't match your timesheet. Check Vaulted.",
+        "discrepancy-" + tsEntry.month
+      );
+    }
+  };
+
+  // Re-run discrepancy check when a new payslip is uploaded for a month we have a timesheet for
+  React.useEffect(() => {
+    if (!history.length || !monthlyTs.length) return;
+    monthlyTs.forEach(ts => {
+      if (!ts.month) return;
+      const alreadyChecked = discrepancies.find(d => d.month === ts.month);
+      if (!alreadyChecked) checkDiscrepancy(ts, history);
+    });
+  }, [history]);
 
   // PWA install prompt
   const [pwaPrompt, setPwaPrompt] = React.useState(null);
@@ -1001,10 +1207,22 @@ export default function App() {
     return Math.round((h + m / 60) * 100) / 100;
   };
 
-  const calcTimesheetTotals = days => {
+  // Normalise whatever JLI puts in the Holiday column into a standard value.
+// Returns: { isHoliday: bool, isHalf: bool, rawValue: string }
+// Designed to handle format changes without code updates.
+function normaliseHoliday(val) {
+  if (!val || val.trim() === "" || val.trim() === "-") return { isHoliday: false, isHalf: false, rawValue: val || "" };
+  const v = val.trim().toLowerCase();
+  // Half day signals
+  const isHalf = v.includes("half") || v === "0.5" || v === "4h" || v.includes("am") || v.includes("pm") || v.includes("morning") || v.includes("afternoon");
+  return { isHoliday: true, isHalf, rawValue: val.trim() };
+}
+
+const calcTimesheetTotals = days => {
     let stdHrs = 0, otHrs = 0, weekendOtHrs = 0;
     const STD = 8.25; // 8h 15m
     days.forEach(d => {
+      if (d.holiday && d.holiday !== "") return; // skip holiday rows for hour totals
       const hrs = parseHM(d.hours);
       const dayLower = d.day.toLowerCase();
       const isWeekend = dayLower.startsWith("sat") || dayLower.startsWith("sun");
@@ -1035,15 +1253,19 @@ export default function App() {
       setTsProgress(`Reading image ${i + 1} of ${files.length}…`);
       try {
         const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
+        const isPdf = file.type === "application/pdf" || file.name.endsWith(".pdf");
         const mediaType = file.type || "image/jpeg";
+        const contentBlock = isPdf
+          ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
+          : { type: "image", source: { type: "base64", media_type: mediaType, data: b64 } };
         const resp = await fetch(API_PROXY, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "claude-sonnet-4-20250514", max_tokens: 1000,
             messages: [{ role: "user", content: [
-              { type: "image", source: { type: "base64", media_type: mediaType, data: b64 } },
-              { type: "text", text: 'This is a work timesheet. Extract each row as JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m"},{"date":"DD/MM","day":"Tue","hours":"9h 30m"}]\nInclude every row that has a day and hours value. Use the hours column value exactly as shown.' }
+              contentBlock,
+              { type: "text", text: 'This is a JLI work timesheet email. Extract each row as a JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m","holiday":""},{"date":"DD/MM","day":"Mon","hours":"0h 00m","holiday":"Full Day"}]\nRules:\n- Include ALL rows including weekends, holidays, and zero-hour days\n- "holiday" field: copy the EXACT text from the Holiday column. If the column is empty or shows "-", use "" (empty string). Do NOT normalise or reword it — preserve whatever text JLI put there (e.g. "Full Day", "Half Day", "Annual Leave", "AL", "H", "0.5" etc)\n- Holiday rows typically have "-" for In/Out and "0h 00m" for hours\n- Use the hours column value exactly as shown' }
             ]}]
           })
         });
@@ -1071,12 +1293,32 @@ export default function App() {
     const now = new Date().toISOString();
     const STD = 8.25;
     const enrichedDays = tsPending.days.map(d => {
-      const hrs = parseHM(d.hours);
+      const { isHoliday, isHalf } = normaliseHoliday(d.holiday);
+      const hrs = isHoliday ? 0 : parseHM(d.hours);
       const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
-      const otHrs = isWeekend ? 0 : Math.max(0, Math.round((hrs - STD) * 100) / 100);
-      const wkOtHrs = isWeekend ? hrs : 0;
-      return { ...d, hrs, otHrs, wkOtHrs };
+      const otHrs = (isHoliday || isWeekend) ? 0 : Math.max(0, Math.round((hrs - STD) * 100) / 100);
+      const wkOtHrs = (!isHoliday && isWeekend) ? hrs : 0;
+      return { ...d, hrs, otHrs, wkOtHrs, isHoliday, isHalf };
     });
+
+    // Auto-log holiday rows to annual leave
+    const holidayDays = enrichedDays.filter(d => d.isHoliday);
+    if (holidayDays.length > 0) {
+      const newLeaveEntries = holidayDays.map(d => {
+        const [dd, mm] = d.date.split("/").map(Number);
+        const year = new Date().getFullYear();
+        const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
+        const hours = d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS;
+        return { id: Date.now() + Math.random(), date: dateStr, hours, label: "Annual Leave (from timesheet)" };
+      });
+      setLeaveLogs(prev => {
+        const merged = [...prev, ...newLeaveEntries].filter((entry, idx, arr) =>
+          arr.findIndex(e => e.date === entry.date) === idx
+        ).sort((a, b) => new Date(b.date) - new Date(a.date));
+        save(SK.leaveLogs, merged);
+        return merged;
+      });
+    }
     const sortAndDedup = days => {
       const seen = new Set();
       return [...days]
@@ -1253,6 +1495,12 @@ export default function App() {
 
   return (
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
+      {/* Auto-import toast */}
+      {tsAutoMsg && (
+        <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:999,background:tsAutoMsg.ok?"#0a1a10":"#1a0a10",border:"1px solid "+(tsAutoMsg.ok?"#00c88c":"#ff4a6a"),borderRadius:10,padding:"10px 18px",fontSize:13,fontWeight:600,color:tsAutoMsg.ok?"#00c88c":"#ff6b8a",boxShadow:"0 4px 20px #000a",whiteSpace:"nowrap"}}>
+          {tsAutoMsg.text}
+        </div>
+      )}
 
       <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"14px 14px 0",position:"sticky",top:0,zIndex:100}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -1290,6 +1538,19 @@ export default function App() {
 
         {tab==="Dashboard"&&(
           <div>
+            {discrepancies.filter(d=>d.status==="discrepancy").length>0&&(
+              <div onClick={()=>{haptic();setTab("Timesheet");}} style={{background:"#1a0a0a",border:"1px solid #ff4a6a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <span style={{fontSize:20}}>⚠️</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#ff6b8a"}}>Pay discrepancy detected</div>
+                  <div style={{fontSize:11,color:"#8a3040",marginTop:2}}>
+                    {discrepancies.filter(d=>d.status==="discrepancy").map(d=>d.month).join(", ")} · Tap to review
+                  </div>
+                </div>
+                <span style={{fontSize:11,color:"#ff6b8a",fontWeight:700}}>Review →</span>
+              </div>
+            )}
+
             {!pwaInstalled && pwaPrompt && (
               <div onClick={triggerInstall} style={{background:"#0a1520",border:"1px solid #4a9eff44",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>📲</span>
@@ -2041,8 +2302,8 @@ export default function App() {
         {tab==="Leave"&&(()=>{
           const year = getLeaveYear();
           const entitlement = effectiveEntitlement(leaveSettings.baseEntitlement, leaveSettings.serviceDays);
-          const taken = daysTakenInYear(leaveLogs, year);
-          const remaining = entitlement - taken;
+          const taken = hoursTakenInYear(leaveLogs, year);
+          const remaining = Math.round((entitlement - taken) * 100) / 100;
           const pct = Math.min(100, Math.round((taken / entitlement) * 100));
           const remainPct = 100 - pct;
           const yearLogs = logsForYear(leaveLogs, year);
@@ -2068,7 +2329,7 @@ export default function App() {
                     </div>
                   ))}
                   <div style={{fontSize:11,color:"#3a4460",marginBottom:12,lineHeight:1.6}}>
-                    Service days are added on June 1st each year. Current effective entitlement after June 1st: <span style={{color:"#4a9eff",fontWeight:700}}>{leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)} days</span>
+                    Service days are added on June 1st each year. Current effective entitlement after June 1st: <span style={{color:"#4a9eff",fontWeight:700}}>{Math.round((leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)) * STD_DAY_HRS * 100)/100}h ({leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)} days × {STD_DAY_HRS}h)</span>
                   </div>
                   <div style={{display:"flex",gap:8}}>
                     <button onClick={()=>{haptic();setLeaveEditSettings(false);}} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:"#5a6480",fontSize:13,fontWeight:600,padding:"11px",cursor:"pointer"}}>Cancel</button>
@@ -2080,9 +2341,9 @@ export default function App() {
                   {/* Summary cards */}
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
                     {[
-                      {label:"Entitlement", value:entitlement+" days", accent:"#4a9eff"},
-                      {label:"Taken",        value:taken+" days",       accent:"#ff8c4a"},
-                      {label:"Remaining",    value:remaining+" days",   accent:remaining>5?"#00c88c":remaining>0?"#ffb84a":"#ff4a6a"},
+                      {label:"Entitlement", value:entitlement+"h", sub:"≈ "+Math.round(entitlement/STD_DAY_HRS*10)/10+"d", accent:"#4a9eff"},
+                      {label:"Taken",        value:taken+"h",       sub:"≈ "+Math.round(taken/STD_DAY_HRS*10)/10+"d", accent:"#ff8c4a"},
+                      {label:"Remaining",    value:remaining+"h",   sub:"≈ "+Math.round(remaining/STD_DAY_HRS*10)/10+"d", accent:remaining>STD_DAY_HRS?"#00c88c":remaining>0?"#ffb84a":"#ff4a6a"},
                     ].map(k=>(
                       <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
                         <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>{k.label}</div>
@@ -2101,8 +2362,8 @@ export default function App() {
                       <div style={{width:pct+"%",height:"100%",background:"linear-gradient(90deg,#ff8c4a88,#ff8c4a)",borderRadius:99,transition:"width 0.4s"}}/>
                     </div>
                     <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#3a4460"}}>
-                      <span>{taken} days taken</span>
-                      <span>{remaining} days remaining of {entitlement}</span>
+                      <span>{taken}h taken</span>
+                      <span>{remaining}h remaining of {entitlement}h</span>
                     </div>
                     <button onClick={()=>{haptic();setLeaveDraftSettings({...leaveSettings});setLeaveEditSettings(true);}}
                       style={{marginTop:12,background:"none",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"7px 14px",cursor:"pointer",width:"100%"}}>
@@ -2121,9 +2382,9 @@ export default function App() {
                     <input type="date" value={leaveForm.date} onChange={e=>setLeaveForm(f=>({...f,date:e.target.value}))} style={inp2}/>
                   </div>
                   <div>
-                    <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Days</label>
-                    <input type="number" min="0.5" max="30" step="0.5" value={leaveForm.days}
-                      onChange={e=>setLeaveForm(f=>({...f,days:e.target.value}))} style={inp2}/>
+                    <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Hours</label>
+                    <input type="number" min="0.25" max="240" step="0.25" value={leaveForm.hours}
+                      onChange={e=>setLeaveForm(f=>({...f,hours:e.target.value}))} style={inp2}/>
                   </div>
                 </div>
                 <div style={{marginBottom:10}}>
@@ -2133,8 +2394,8 @@ export default function App() {
                     onKeyDown={e=>e.key==="Enter"&&saveLeaveLog()}
                     style={inp2}/>
                 </div>
-                <button onClick={saveLeaveLog} disabled={!leaveForm.date||!leaveForm.days}
-                  style={{width:"100%",background:leaveForm.date&&leaveForm.days?"#00c88c":"#1e2535",border:"none",borderRadius:8,color:leaveForm.date&&leaveForm.days?"#000":"#3a4460",fontSize:13,fontWeight:700,padding:"12px",cursor:leaveForm.date&&leaveForm.days?"pointer":"default",transition:"background 0.2s"}}>
+                <button onClick={saveLeaveLog} disabled={!leaveForm.date||!leaveForm.hours}
+                  style={{width:"100%",background:leaveForm.date&&leaveForm.hours?"#00c88c":"#1e2535",border:"none",borderRadius:8,color:leaveForm.date&&leaveForm.hours?"#000":"#3a4460",fontSize:13,fontWeight:700,padding:"12px",cursor:leaveForm.date&&leaveForm.hours?"pointer":"default",transition:"background 0.2s"}}>
                   + Log Leave
                 </button>
               </div>
@@ -2148,14 +2409,14 @@ export default function App() {
                   {yearLogs.map((l,i)=>(
                     <div key={l.id} style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
                       <span style={{color:"#8892b0"}}>{new Date(l.date).toLocaleDateString("en-GB",{day:"2-digit",month:"short"})}</span>
-                      <span style={{textAlign:"center",color:"#ff8c4a",fontWeight:700}}>{l.days}d</span>
+                      <span style={{textAlign:"center",color:"#ff8c4a",fontWeight:700}}>{l.hours}h</span>
                       <span style={{color:"#5a6480",fontSize:11}}>{l.label||"—"}</span>
                       <button onClick={()=>deleteLeaveLog(l.id)} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
                     </div>
                   ))}
                   <div style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:12,fontWeight:700,background:"#0d1117",borderTop:"2px solid #2a3050"}}>
                     <span style={{color:"#5a6480",fontSize:10,textTransform:"uppercase",letterSpacing:0.5}}>Total</span>
-                    <span style={{textAlign:"center",color:"#ff8c4a"}}>{taken}d</span>
+                    <span style={{textAlign:"center",color:"#ff8c4a"}}>{taken}h</span>
                     <span></span><span></span>
                   </div>
                 </div>
@@ -2203,7 +2464,7 @@ export default function App() {
             <div style={{fontSize:9,color:"#ffb84a",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Weekly Timesheet</div>
             <p style={{fontSize:12,color:"#5a6480",marginBottom:14,lineHeight:1.6}}>Screenshot your timesheet email and upload here. Hours will be calculated and applied to Pay Calc automatically.</p>
             <label style={{display:"block",background:"#0d1117",border:"2px dashed "+(showTsReminder?"#ffb84a":"#2a3050"),borderRadius:10,padding:"20px 16px",cursor:tsUploading?"not-allowed":"pointer",marginBottom:12}}>
-              <input type="file" accept="image/*" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
+              <input type="file" accept="image/*,application/pdf" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
               {tsUploading
                 ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#ffb84a",fontSize:13}}>{tsProgress||"Processing…"}</div></div>
                 :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
@@ -2254,6 +2515,26 @@ export default function App() {
           </div>
 
           <div style={{...card,marginBottom:14}}>
+            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Auto Timesheet Import</div>
+            <div style={{fontSize:12,color:"#8892b0",marginBottom:10,lineHeight:1.6}}>
+              Paste your <span style={{color:"#4affd4",fontWeight:600}}>TIMESHEET_SECRET</span> from Vercel to enable automatic timesheet import from Gmail.
+            </div>
+            <input
+              type="password"
+              placeholder="Paste secret here…"
+              value={tsSecret}
+              onChange={e=>{setTsSecret(e.target.value);save(SK.tsSecret,e.target.value);}}
+              style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px",fontFamily:"inherit",marginBottom:8}}
+            />
+            {tsSecret ? (
+              <div style={{fontSize:11,color:"#00c88c"}}>✅ Secret saved — polling every 60s</div>
+            ) : (
+              <div style={{fontSize:11,color:"#3a4460"}}>No secret set — auto-import disabled</div>
+            )}
+            {tsLastEmail && <div style={{fontSize:10,color:"#3a4460",marginTop:4}}>Last email ID: {tsLastEmail.slice(0,12)}…</div>}
+          </div>
+
+          <div style={{...card,marginBottom:14}}>
             <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Notifications</div>
             {notifPerm === "granted" ? (
               <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#0a1a10",borderRadius:8,border:"1px solid #1a4030"}}>
@@ -2299,18 +2580,25 @@ export default function App() {
         {tab==="Timesheet"&&(
           <div>
             {/* Summary cards */}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-              {[
-                {label:"Weekday OT",value:(accumulated.otHrs||0)+"h",accent:"#4affd4"},
-                {label:"Weekend OT",value:(accumulated.weekendOtHrs||0)+"h",accent:"#ffb84a"},
-              ].map(k=>(
-                <div key={k.label} style={{...card,textAlign:"center",padding:"12px 8px"}}>
-                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
-                  <div style={{fontSize:22,fontWeight:700,color:k.accent}}>{k.value}</div>
-                  <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>this month</div>
+            {(()=>{
+              const holDays=(accumulated.days||[]).filter(d=>d.isHoliday);
+              const holCount=Math.round(holDays.reduce((s,d)=>s+(d.isHalf?STD_DAY_HRS/2:STD_DAY_HRS),0)*100)/100;
+              return(
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                  {[
+                    {label:"Weekday OT",value:(accumulated.otHrs||0)+"h",accent:"#4affd4"},
+                    {label:"Weekend OT",value:(accumulated.weekendOtHrs||0)+"h",accent:"#ffb84a"},
+                    {label:"Holiday",value:holCount+"h",accent:"#00c88c"},
+                  ].map(k=>(
+                    <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
+                      <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
+                      <div style={{fontSize:20,fontWeight:700,color:k.accent}}>{k.value}</div>
+                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>this month</div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              );
+            })()}
 
             {/* Daily breakdown */}
             {accumulated.days&&accumulated.days.length>0?(
@@ -2320,9 +2608,18 @@ export default function App() {
                 </div>
                 <div style={{maxHeight:"60vh",overflowY:"auto"}}>
                   {accumulated.days
-                    .filter(d=>parseHM(d.hours)>0)
                     .map((d,i)=>{
                     const isWeekend=d.day.toLowerCase().startsWith("sat")||d.day.toLowerCase().startsWith("sun");
+                    const isHol=d.isHoliday||false;
+                    if(isHol) return(
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px",fontSize:12,background:"#0d1a10",borderBottom:"1px solid #1a2e1a",alignItems:"center",borderLeft:"3px solid #00c88c"}}>
+                        <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
+                        <span style={{color:"#00c88c",fontWeight:700}}>{d.day}</span>
+                        <span style={{textAlign:"right",color:"#00c88c",fontWeight:700,fontSize:11}}>{d.holiday}</span>
+                        <span style={{textAlign:"right",color:"#3a6040",fontSize:10}}>leave</span>
+                        <span style={{textAlign:"right",color:"#3a6040"}}>—</span>
+                      </div>
+                    );
                     return(
                       <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px 10px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
                         <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
@@ -2342,6 +2639,87 @@ export default function App() {
                 <div style={{fontSize:11,color:"#3a4460",marginTop:6}}>Go to Upload tab to add your weekly timesheet</div>
               </div>
             )}
+
+            {/* Monthly timesheet history */}
+            {monthlyTs.length > 0 && (()=>{
+              const [expandedMonth, setExpandedMonth] = React.useState(null);
+              return (
+                <div style={{...card,padding:0,overflow:"hidden",marginBottom:14}}>
+                  <div style={{padding:"10px 12px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span>Monthly Timesheet History</span>
+                    <span style={{color:"#7c6fff"}}>{monthlyTs.length} months</span>
+                  </div>
+                  {monthlyTs.map((m, i) => {
+                    const disc = discrepancies.find(d => d.month === m.month);
+                    const isOk = disc && disc.status === "ok";
+                    const hasIssue = disc && disc.status === "discrepancy";
+                    const expanded = expandedMonth === m.month;
+                    return (
+                      <div key={m.emailId||i}>
+                        <div onClick={()=>{haptic();setExpandedMonth(expanded?null:m.month);}}
+                          style={{display:"grid",gridTemplateColumns:"80px 1fr 60px 28px",padding:"10px 12px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center",cursor:"pointer"}}>
+                          <span style={{color:"#8892b0",fontWeight:600,fontSize:11}}>{m.month||m.period.slice(0,5)}</span>
+                          <span style={{color:"#5a6480",fontSize:10}}>{m.totalHrs} · {m.otHrs}h OT · {m.wkndHrs}h wknd</span>
+                          <span style={{textAlign:"right",fontSize:11,fontWeight:700,color:hasIssue?"#ff6b8a":isOk?"#00c88c":"#3a4460"}}>
+                            {hasIssue?"⚠️ "+disc.items.length+" issue"+(disc.items.length>1?"s":""):isOk?"✅ OK":"—"}
+                          </span>
+                          <span style={{textAlign:"right",color:"#3a4460",fontSize:12}}>{expanded?"▲":"▼"}</span>
+                        </div>
+                        {expanded && (
+                          <div style={{background:"#0d1117",borderBottom:"1px solid #1e2535",padding:"12px 14px"}}>
+                            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:10}}>
+                              {[
+                                ["Std Hrs",  m.stdHrs+"h",  "#e8eaf0"],
+                                ["OT Hrs",   m.otHrs+"h",   "#4affd4"],
+                                ["Wknd Hrs", m.wkndHrs+"h", "#ffb84a"],
+                                ["Hol Hrs",  m.holHrs+"h",  "#00c88c"],
+                                ["Total",    m.totalHrs,    "#7c6fff"],
+                                ["Period",   m.period ? m.period.replace("2026-","").replace(/-/g,"/") : "—", "#5a6480"],
+                              ].map(([l,v,c])=>(
+                                <div key={l} style={{background:"#111827",borderRadius:6,padding:"7px",textAlign:"center"}}>
+                                  <div style={{fontSize:9,color:"#3a4460",textTransform:"uppercase",letterSpacing:0.5,marginBottom:3}}>{l}</div>
+                                  <div style={{fontSize:12,fontWeight:700,color:c}}>{v}</div>
+                                </div>
+                              ))}
+                            </div>
+                            {disc && disc.status === "discrepancy" && (
+                              <div style={{background:"#1a0a0a",borderRadius:8,padding:"10px 12px",border:"1px solid #3a1a1a"}}>
+                                <div style={{fontSize:11,fontWeight:700,color:"#ff6b8a",marginBottom:8}}>⚠️ Pay discrepancies found</div>
+                                {disc.items.map((item,j)=>(
+                                  <div key={j} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #2a1a1a",fontSize:11}}>
+                                    <span style={{color:"#8892b0"}}>{item.label}</span>
+                                    <span>
+                                      <span style={{color:"#5a6480"}}>exp </span>
+                                      <span style={{color:"#e8eaf0",fontWeight:600}}>{fmt(item.expected)}</span>
+                                      <span style={{color:"#3a4460"}}> · got </span>
+                                      <span style={{color:item.diff>0?"#ff6b8a":"#4affd4",fontWeight:700}}>{fmt(item.actual)}</span>
+                                      <span style={{color:item.diff>0?"#ff4a6a":"#00c88c",fontSize:10,marginLeft:4}}>{item.diff>0?"↓":"↑"}{fmt(Math.abs(item.diff))}</span>
+                                    </span>
+                                  </div>
+                                ))}
+                                <div style={{fontSize:10,color:"#5a3030",marginTop:8,lineHeight:1.6}}>
+                                  These are estimates based on your stored rates. Rounding differences under £1 are ignored. If a gap is large, raise it with payroll.
+                                </div>
+                              </div>
+                            )}
+                            {disc && disc.status === "ok" && (
+                              <div style={{background:"#0a1a10",borderRadius:8,padding:"10px 12px",border:"1px solid #1a3a1a",fontSize:11,color:"#00c88c"}}>
+                                ✅ Pay matches timesheet within tolerance — no issues found
+                              </div>
+                            )}
+                            {!disc && (
+                              <div style={{fontSize:11,color:"#3a4460",textAlign:"center",padding:"6px 0"}}>
+                                Payslip for {m.month||"this period"} not yet uploaded — discrepancy check will run automatically once it arrives
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
 
             {(()=>{
               // FY OT tracker from payslip history
@@ -2391,7 +2769,7 @@ export default function App() {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.7.0</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.8.1</span>
       </div>
 
     </div>
