@@ -406,6 +406,9 @@ function StatRow({label,value,color,last}) {
       <span style={{fontSize:13,color:"#8892b0"}}>{label}</span>
       <span style={{fontSize:13,fontWeight:700,color:color||"#e8eaf0"}}>{value}</span>
     </div>
+    </div>
+    </div>
+    </div>
   );
 }
 
@@ -438,6 +441,9 @@ function CollapsibleChart({title,data,dataKey,color}) {
         </div>
       )}
     </div>
+    </div>
+    </div>
+    </div>
   );
 }
 
@@ -462,6 +468,9 @@ function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,on
       )}
       {!isGlynOnly&&<><span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(sh.glyn)}</span><span style={{textAlign:"right",color:"#c84aff",fontWeight:600}}>{fmt(sh.hollie)}</span></>}
       <button onClick={onDelete} style={{background:"none",border:"none",color:"#3a4460",fontSize:12,cursor:"pointer",padding:0,textAlign:"center"}}>✕</button>
+    </div>
+    </div>
+    </div>
     </div>
   );
 }
@@ -498,6 +507,9 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
           onEditBlur={v=>onBillBlur(b.id,v)} onDelete={()=>onBillDelete(b.id)}
           onDragStart={()=>{dragBill.current=b.id;}}/>
       ))}
+    </div>
+    </div>
+    </div>
     </div>
   );
 }
@@ -660,6 +672,9 @@ function LoginScreen({ onLogin }) {
           {!isSignUp && <button onClick={handleReset} style={{background:"none",border:"none",color:"#3a4460",cursor:"pointer",fontSize:12}}>Forgot password?</button>}
         </div>
       </div>
+    </div>
+    </div>
+    </div>
     </div>
   );
 }
@@ -1501,7 +1516,6 @@ const calcTimesheetTotals = days => {
 
 
   return (
-    <ErrorBoundary>
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
       {/* Auto-import toast */}
       {tsAutoMsg && (
@@ -2780,9 +2794,8 @@ const calcTimesheetTotals = days => {
       </div>
 
     </div>
-      </div>
-      </div>
     </div>
-    </ErrorBoundary>
+    </div>
+    </div>
   );
 }
