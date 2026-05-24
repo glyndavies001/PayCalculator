@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
-import ANTHROPIC_API_KEY from "./apikey";
+// API calls routed through Vercel serverless proxy
+const API_PROXY = "/api/claude";
 
 function getWorkingDaysInMonth(year, month) {
   const days = new Date(year, month + 1, 0).getDate();
@@ -97,7 +98,17 @@ const INITIAL_HISTORY = [
   { month: "Aug 2025", date: "29/08/2025", gross: 2760.96, net: 2157.68, tax: 342.6,  ni: 137.04, nest: 89.64, sl: 34, bonus: 160, ot: 120.29 },
   { month: "Oct 2025", date: "29/10/2025", gross: 3125.28, net: 2372.48, tax: 415.4,  ni: 166.18, nest: 104.22,sl: 67, bonus: 160, ot: 158.09 },
   { month: "Nov 2025", date: "28/11/2025", gross: 2794.04, net: 2177.39, tax: 349,    ni: 139.68, nest: 90.97, sl: 37, bonus: 200, ot: 88.2   },
+  { month: "Sep 2022", date: "30/09/2022", gross: 2195.26, net: 1746.83, tax: 229.4,  ni: 152.01, nest: 67.02, sl: 0,  bonus: 100, ot: 342.12 },
+  { month: "Dec 2022", date: "30/12/2022", gross: 2089.44, net: 1693.29, tax: 208.4,  ni: 124.97, nest: 62.78, sl: 0,  bonus: 100, ot: 149.44 },
+  { month: "Jun 2023", date: "30/06/2023", gross: 2339.91, net: 1848.68, tax: 258.4,  ni: 155.03, nest: 72.8,  sl: 5,  bonus: 100, ot: 219.91 },
+  { month: "Jan 2025", date: "29/01/2025", gross: 2763.27, net: 2150.31, tax: 343,    ni: 137.22, nest: 89.74, sl: 43, bonus: 200, ot: 96.6   },
+  { month: "Feb 2025", date: "28/02/2025", gross: 2899.87, net: 2230.32, tax: 370.2,  ni: 148.15, nest: 95.2,  sl: 56, bonus: 200, ot: 193.2  },
+  { month: "Mar 2025", date: "31/03/2025", gross: 2944.13, net: 2256.27, tax: 379.2,  ni: 151.69, nest: 96.97, sl: 60, bonus: 250, ot: 267.46 },
+  { month: "Jul 2025", date: "29/07/2025", gross: 2657.41, net: 2096.36, tax: 321.8,  ni: 128.75, nest: 85.5,  sl: 25, bonus: 200, ot: 30.74  },
+  { month: "Sep 2025", date: "29/09/2025", gross: 3345.11, net: 2501.93, tax: 459.4,  ni: 183.77, nest: 113.01,sl: 87, bonus: 160, ot: 259.06 },
+  { month: "Dec 2025", date: "22/12/2025", gross: 2678.41, net: 2108.44, tax: 326.2,  ni: 130.43, nest: 86.34, sl: 27, bonus: 200, ot: 51.74  },
   { month: "Jan 2026", date: "29/01/2026", gross: 2798.53, net: 2179.34, tax: 350,    ni: 140.04, nest: 91.15, sl: 38, bonus: 200, ot: 85.34  },
+  { month: "Feb 2026", date: "27/02/2026", gross: 3212.55, net: 2423.88, tax: 432.8,  ni: 173.16, nest: 107.71,sl: 75, bonus: 160, ot: 328.94 },
   { month: "Mar 2026", date: "30/03/2026", gross: 2860.71, net: 2216.46, tax: 362.6,  ni: 145.02, nest: 93.63, sl: 43, bonus: 240, ot: 83.16  },
   { month: "Apr 2026", date: "29/04/2026", gross: 2957.36, net: 2280.31, tax: 381.8,  ni: 152.75, nest: 97.5,  sl: 45, bonus: 240, ot: 117.48 },
 ];
@@ -115,7 +126,7 @@ const INITIAL_SHARED_BILLS = [
   { id: 9,  name: "Netflix",            total: 12.99,  isCarGlyn: false },
   { id: 10, name: "Disney+",            total: 9.99,   isCarGlyn: false },
   { id: 11, name: "Spotify",            total: 17.99,  isCarGlyn: false },
-  { id: 12, name: "Car 🚗",             total: 316.02, isCarGlyn: true  },
+  { id: 12, name: "Car 🚗",             total: 416.02, isCarGlyn: true  },
   { id: 13, name: "Barclays Hoover",    total: 100.64, isCarGlyn: false },
   { id: 14, name: "Medivet",            total: 17.5,   isCarGlyn: false },
   { id: 15, name: "Pet Insurance",      total: 4.97,   isCarGlyn: false },
@@ -128,7 +139,7 @@ const INITIAL_GLYN_BILLS = [
   { id: 103, name: "Tesco",          total: 15    },
   { id: 104, name: "Julia",          total: 15.5  },
   { id: 105, name: "Google One",     total: 1.59  },
-  { id: 106, name: "Lloyds CC",      total: 67.87 },
+  { id: 106, name: "Lloyds CC",      total: 91.26 },
   { id: 107, name: "Ocean CC",       total: 26.95 },
 ];
 
@@ -147,10 +158,13 @@ const SK = {
   glynCats:     "vaulted_gcats",
   glynBillCats: "vaulted_gbillcats",
   calcInputs:   "vaulted_calc",
-  timesheets:   "vaulted_timesheets",   // accumulated weekly timesheet data for current month
-  tsLastUpload: "vaulted_ts_last",      // ISO date string of last timesheet upload
-  notes:        "vaulted_notes",        // { "Mon YYYY": "note text" }
-  tierOverride: "vaulted_tier_override", // { tierIdx: 0-5, month: "Mon YYYY" }
+  timesheets:   "vaulted_timesheets",
+  tsLastUpload: "vaulted_ts_last",
+  notes:        "vaulted_notes",
+  tierOverride: "vaulted_tier_override",
+  pinHash:      "vaulted_pin_hash",        // SHA-256 hash of 4-digit PIN
+  webAuthnCred: "vaulted_webauthn_cred",   // stored credential ID for biometric
+  scenarios:    "vaulted_scenarios",       // named Pay Calc scenarios
 };
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
@@ -397,6 +411,176 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
   );
 }
 
+
+// ── Security helpers ─────────────────────────────────────────────────────────
+
+async function hashPIN(pin) {
+  const enc = new TextEncoder().encode(pin + "vaulted_salt_2024");
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+async function verifyPIN(pin, storedHash) {
+  const h = await hashPIN(pin);
+  return h === storedHash;
+}
+
+async function registerBiometric(credId) {
+  // Store credential ID (base64)
+  try {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: "Vaulted" },
+        user: { id: new TextEncoder().encode("glyn"), name: "glyn", displayName: "Glyn" },
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+        authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
+        timeout: 30000,
+      }
+    });
+    return btoa(String.fromCharCode(...new Uint8Array(cred.rawId)));
+  } catch { return null; }
+}
+
+async function verifyBiometric(credentialId) {
+  try {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const rawId = Uint8Array.from(atob(credentialId), c => c.charCodeAt(0));
+    await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        allowCredentials: [{ type: "public-key", id: rawId }],
+        userVerification: "required",
+        timeout: 30000,
+      }
+    });
+    return true;
+  } catch { return false; }
+}
+
+const LAST_ACTIVE_KEY = "vaulted_last_active";
+const LOCK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+function LockScreen({ pinHash, credId, onUnlock, onSetup }) {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [bioBusy, setBioBusy] = useState(false);
+  const [bioFails, setBioFails] = useState(0);
+  const [mode, setMode] = useState("bio"); // "bio" | "pin"
+  const [setupStep, setSetupStep] = useState("pin1"); // "pin1"|"pin2"|"bio"
+  const [pin1, setPin1] = useState("");
+  const isSetup = !pinHash;
+
+  const tryBio = async () => {
+    if (!credId || bioFails >= 3) { setMode("pin"); return; }
+    setBioBusy(true);
+    const ok = await verifyBiometric(credId);
+    setBioBusy(false);
+    if (ok) { onUnlock(); }
+    else {
+      const f = bioFails + 1;
+      setBioFails(f);
+      if (f >= 3) { setMode("pin"); setError("Biometric failed 3 times — enter PIN"); }
+      else setError(`Biometric failed (${f}/3)`);
+    }
+  };
+
+  // Auto-trigger biometric on mount if available
+  useState(() => { if (!isSetup && credId && bioFails === 0) tryBio(); }, []);
+
+  const handlePinDigit = async (d) => {
+    const newPin = pin + d;
+    setPin(newPin);
+    setError("");
+    if (newPin.length === 4) {
+      if (isSetup) {
+        if (setupStep === "pin1") { setPin1(newPin); setPin(""); setSetupStep("pin2"); }
+        else if (setupStep === "pin2") {
+          if (newPin !== pin1) { setError("PINs don't match — try again"); setPin(""); setSetupStep("pin1"); setPin1(""); }
+          else { setPin(""); setSetupStep("bio"); }
+        }
+      } else {
+        const ok = await verifyPIN(newPin, pinHash);
+        if (ok) { onUnlock(); }
+        else { setError("Incorrect PIN"); setPin(""); }
+      }
+    }
+  };
+
+  const handleSetupBio = async (skip) => {
+    const hash = await hashPIN(pin1);
+    if (skip) { onSetup(hash, null); return; }
+    const cred = await registerBiometric();
+    onSetup(hash, cred);
+  };
+
+  const bg = { minHeight:"100vh", background:"#0d0f14", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", fontFamily:"'DM Sans','Segoe UI',sans-serif", padding:"24px 20px" };
+  const dot = (filled) => ({ width:14, height:14, borderRadius:"50%", background:filled?"#4a9eff":"#1e2535", border:"1px solid"+(filled?"#4a9eff":"#2a3050"), display:"inline-block", margin:"0 6px" });
+  const btn = (label, onClick, accent, small) => (
+    <button onClick={onClick} style={{ background:accent||"#1e2535", border:"1px solid"+(accent||"#2a3050"), borderRadius:12, color:accent?"#000":"#8892b0", fontSize:small?13:20, fontWeight:700, padding:small?"10px 20px":"22px 0", cursor:"pointer", width:small?"auto":"100%" }}>
+      {label}
+    </button>
+  );
+
+  if (isSetup && setupStep === "bio") {
+    return (
+      <div style={bg}>
+        <div style={{fontSize:48,marginBottom:16}}>🔐</div>
+        <h2 style={{color:"#fff",fontSize:20,fontWeight:800,letterSpacing:2,marginBottom:8}}>Enable Biometrics?</h2>
+        <p style={{color:"#5a6480",fontSize:13,textAlign:"center",marginBottom:32,lineHeight:1.6}}>Use fingerprint or Face ID to unlock Vaulted instantly. Your PIN is always available as a fallback.</p>
+        <div style={{display:"flex",flexDirection:"column",gap:12,width:"100%",maxWidth:300}}>
+          <button onClick={()=>handleSetupBio(false)} style={{background:"#4a9eff",border:"none",borderRadius:12,color:"#000",fontSize:15,fontWeight:700,padding:"16px",cursor:"pointer"}}>Enable Biometrics</button>
+          <button onClick={()=>handleSetupBio(true)} style={{background:"#1e2535",border:"1px solid #2a3050",borderRadius:12,color:"#5a6480",fontSize:14,padding:"14px",cursor:"pointer"}}>Skip — PIN only</button>
+        </div>
+      </div>
+    );
+  }
+
+  const showingPin = isSetup || mode === "pin";
+  const pinLabel = isSetup ? (setupStep==="pin1" ? "Create your 4-digit PIN" : "Confirm your PIN") : "Enter PIN";
+
+  return (
+    <div style={bg}>
+      <div style={{fontSize:48,marginBottom:16}}>{bioBusy?"⏳":"🔒"}</div>
+      <h1 style={{margin:"0 0 4px",fontSize:22,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
+      <p style={{color:"#5a6480",fontSize:13,marginBottom:32,marginTop:4}}>{showingPin ? pinLabel : "Touch the sensor or use PIN"}</p>
+
+      {error && <div style={{color:"#ff6b8a",fontSize:13,marginBottom:16,background:"#2a0f15",padding:"8px 16px",borderRadius:8,border:"1px solid #5a1a2a"}}>{error}</div>}
+
+      {showingPin && (
+        <>
+          <div style={{display:"flex",justifyContent:"center",marginBottom:28}}>
+            {[0,1,2,3].map(i=><span key={i} style={dot(i<pin.length)}/>)}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,maxWidth:260,width:"100%",marginBottom:16}}>
+            {[1,2,3,4,5,6,7,8,9,"",0,"⌫"].map((d,i)=>(
+              d===""?<div key={i}/>:
+              <button key={i} onClick={()=>d==="⌫"?setPin(p=>p.slice(0,-1)):handlePinDigit(String(d))}
+                style={{background:"#141824",border:"1px solid #1e2535",borderRadius:12,color:"#e8eaf0",fontSize:22,fontWeight:600,padding:"18px 0",cursor:"pointer",lineHeight:1}}>
+                {d}
+              </button>
+            ))}
+          </div>
+          {!isSetup && credId && bioFails < 3 && (
+            <button onClick={()=>setMode("bio")} style={{background:"none",border:"none",color:"#4a9eff",fontSize:13,cursor:"pointer",marginTop:8}}>Use biometrics instead</button>
+          )}
+        </>
+      )}
+
+      {!showingPin && !bioBusy && (
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
+          <button onClick={tryBio} style={{background:"#4a9eff22",border:"2px solid #4a9eff",borderRadius:50,padding:"24px",fontSize:36,cursor:"pointer",lineHeight:1}}>👆</button>
+          <p style={{color:"#5a6480",fontSize:12,margin:0}}>Touch sensor to unlock</p>
+          <button onClick={()=>setMode("pin")} style={{background:"none",border:"none",color:"#3a4460",fontSize:13,cursor:"pointer",textDecoration:"underline"}}>Use PIN instead</button>
+        </div>
+      )}
+
+      {bioBusy && <p style={{color:"#4a9eff",fontSize:14}}>Verifying…</p>}
+    </div>
+  );
+}
+
 export default function App() {
   const [tab,setTab]=useState("Dashboard");
   const [history,setHistory]=useState(()=>load(SK.history,INITIAL_HISTORY));
@@ -432,6 +616,56 @@ export default function App() {
   const [deleteConfirm,setDeleteConfirm]=useState(null);
   const [payslipSearch,setPayslipSearch]=useState("");
   const [showAllTimeTotals,setShowAllTimeTotals]=useState(false);
+
+  // ── Security / Lock ──────────────────────────────────────────────────────
+  const [pinHash, setPinHash] = useState(() => load(SK.pinHash, null));
+  const [webAuthnCred, setWebAuthnCred] = useState(() => load(SK.webAuthnCred, null));
+  const [locked, setLocked] = useState(true);
+  const lastActiveRef = useRef(Date.now());
+
+  // Inactivity lock
+  React.useEffect(() => {
+    const bump = () => { lastActiveRef.current = Date.now(); };
+    const check = setInterval(() => {
+      if (!locked && Date.now() - lastActiveRef.current > LOCK_TIMEOUT_MS) setLocked(true);
+    }, 30000);
+    window.addEventListener("mousemove", bump);
+    window.addEventListener("touchstart", bump);
+    window.addEventListener("click", bump);
+    return () => { clearInterval(check); window.removeEventListener("mousemove",bump); window.removeEventListener("touchstart",bump); window.removeEventListener("click",bump); };
+  }, [locked]);
+
+  // Background/visibility lock
+  React.useEffect(() => {
+    const onVis = () => { if (document.hidden) setLocked(true); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  const handleSetup = (hash, cred) => {
+    setPinHash(hash); save(SK.pinHash, hash);
+    setWebAuthnCred(cred); save(SK.webAuthnCred, cred);
+    setLocked(false);
+  };
+
+  const handleUnlock = () => { setLocked(false); lastActiveRef.current = Date.now(); };
+
+  // ── Named Scenarios ──────────────────────────────────────────────────────
+  const [scenarios, setScenarios] = useState(() => load(SK.scenarios, []));
+  const [scenarioName, setScenarioName] = useState("");
+  const [showScenarios, setShowScenarios] = useState(false);
+  const saveScenario = () => {
+    if (!scenarioName.trim()) return;
+    const s = { id: Date.now(), name: scenarioName.trim(), stdHrs: ci.stdHrs, otHrs: ci.otHrs, weekendOtHrs: ci.weekendOtHrs, bonus: ci.bonus, tierOverride: tierOverride };
+    const updated = [...scenarios.filter(x=>x.name!==s.name), s];
+    setScenarios(updated); save(SK.scenarios, updated); setScenarioName("");
+  };
+  const loadScenario = (s) => {
+    setCi(prev => { const n={...prev,stdHrs:s.stdHrs,otHrs:s.otHrs,weekendOtHrs:s.weekendOtHrs,bonus:s.bonus}; save(SK.calcInputs,n); return n; });
+    saveTierOverride(s.tierOverride);
+    setShowScenarios(false);
+  };
+  const deleteScenario = (id) => { const u=scenarios.filter(s=>s.id!==id); setScenarios(u); save(SK.scenarios,u); };
 
   // Tier override — resets if stored month doesn't match current month
   const currentMonthStr = MONTHS[new Date().getMonth()]+" "+new Date().getFullYear();
@@ -516,10 +750,10 @@ export default function App() {
       setUploadProgress(`Reading ${i+1} of ${files.length}…`);
       try {
         const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
-        const resp=await fetch("https://api.anthropic.com/v1/messages",{
+        const resp=await fetch(API_PROXY,{
           method:"POST",
-          headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:[
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:[
             {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
             {type:"text",text:'Extract payslip data. Return ONLY JSON:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00}\nmonth=payment month/year, ot=total overtime, sl=student loan, nest=pension, bonus=performance bonus.'}
           ]}]})
@@ -651,11 +885,11 @@ export default function App() {
       try {
         const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
         const mediaType = file.type || "image/jpeg";
-        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        const resp = await fetch(API_PROXY, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "claude-sonnet-4-6", max_tokens: 1000,
+            model: "claude-sonnet-4-20250514", max_tokens: 1000,
             messages: [{ role: "user", content: [
               { type: "image", source: { type: "base64", media_type: mediaType, data: b64 } },
               { type: "text", text: 'This is a work timesheet. Extract each row as JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m"},{"date":"DD/MM","day":"Tue","hours":"9h 30m"}]\nInclude every row that has a day and hours value. Use the hours column value exactly as shown.' }
@@ -763,6 +997,11 @@ export default function App() {
     return [...history].reverse().filter(r=>r.month.toLowerCase().includes(q));
   },[history,payslipSearch]);
 
+  // Show lock screen on fresh load / after inactivity
+  if (locked) {
+    return <LockScreen pinHash={pinHash} credId={webAuthnCred} onUnlock={handleUnlock} onSetup={handleSetup} />;
+  }
+
   return (
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
 
@@ -771,6 +1010,8 @@ export default function App() {
           <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}>
             <span style={{color:"#4a9eff"}}>V</span>AULTED
           </h1>
+          <button onClick={()=>setLocked(true)} title="Lock app"
+            style={{background:"none",border:"none",color:"#3a4460",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:11,color:"#5a6480"}}>{history.length} payslips</div>
             <div style={{fontSize:11,color:"#3a4460"}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> · {nextPayday.date}</div>
@@ -967,6 +1208,24 @@ export default function App() {
 
         {tab==="Budget"&&(
           <div>
+            {(()=>{
+              const savingsRate = cr.net > 0 ? Math.round((cr.net - totalOut) / cr.net * 100) : 0;
+              const srColor = savingsRate >= 20 ? "#00c88c" : savingsRate >= 10 ? "#ffb84a" : "#ff4a6a";
+              return (
+                <div style={{...card,marginBottom:12,background:"linear-gradient(135deg,#0a1520,#0d1117)",border:"1px solid #1e2535"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <span style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Savings Rate</span>
+                    <span style={{fontSize:22,fontWeight:800,color:srColor}}>{savingsRate}%</span>
+                  </div>
+                  <div style={{background:"#1e2535",borderRadius:99,height:8,overflow:"hidden",marginBottom:6}}>
+                    <div style={{width:Math.max(0,Math.min(100,savingsRate))+"%",height:"100%",background:`linear-gradient(90deg,${srColor}88,${srColor})`,borderRadius:99,transition:"width 0.3s"}}/>
+                  </div>
+                  <div style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>
+                    (Net Pay − Total Bills) ÷ Net Pay · <span style={{color:savingsRate>=0?"#00c88c":"#ff4a6a"}}>{fmt(Math.abs(surplus))} {surplus>=0?"saved":"overspent"}</span> per month
+                  </div>
+                </div>
+              );
+            })()}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
               {[
                 {label:"Shared (my half)",value:fmt(shGlyn),  accent:"#4a9eff"},
@@ -1132,11 +1391,17 @@ export default function App() {
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
                 <div>
-                  <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Overtime Hrs <span style={{color:"#3a4460"}}>@£{PAY.otRate}</span></label>
+                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Overtime Hrs <span style={{color:"#3a4460"}}>@£{PAY.otRate}</span></span><span style={{color:"#4affd4",fontWeight:700}}>{ci.otHrs}h</span></label>
+                  <input type="range" min={0} max={80} step={0.25} value={ci.otHrs}
+                    onChange={e=>setC("otHrs",parseFloat(e.target.value))}
+                    style={{width:"100%",accentColor:"#4affd4",marginBottom:6,cursor:"pointer"}}/>
                   <input type="number" value={ci.otHrs} onChange={e=>setC("otHrs",parseFloat(e.target.value)||0)} style={numI}/>
                 </div>
                 <div>
-                  <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Weekend OT <span style={{color:"#3a4460"}}>@£{PAY.weekendOtRate}</span></label>
+                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Weekend OT <span style={{color:"#3a4460"}}>@£{PAY.weekendOtRate}</span></span><span style={{color:"#00c88c",fontWeight:700}}>{ci.weekendOtHrs}h</span></label>
+                  <input type="range" min={0} max={40} step={0.25} value={ci.weekendOtHrs}
+                    onChange={e=>setC("weekendOtHrs",parseFloat(e.target.value))}
+                    style={{width:"100%",accentColor:"#00c88c",marginBottom:6,cursor:"pointer"}}/>
                   <input type="number" value={ci.weekendOtHrs} onChange={e=>setC("weekendOtHrs",parseFloat(e.target.value)||0)} style={numI}/>
                 </div>
               </div>
@@ -1185,6 +1450,40 @@ export default function App() {
                 )}
               </div>
             </div>
+            <div style={card}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <SectionLabel>Scenarios</SectionLabel>
+                <button onClick={()=>setShowScenarios(s=>!s)} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:6,color:"#7c6fff",fontSize:11,fontWeight:600,padding:"5px 10px",cursor:"pointer"}}>{showScenarios?"Hide":"Manage"}</button>
+              </div>
+              {showScenarios&&(
+                <div>
+                  {scenarios.length>0&&(
+                    <div style={{marginBottom:12}}>
+                      {scenarios.map(s=>(
+                        <div key={s.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 10px",background:"#111520",borderRadius:8,marginBottom:6,border:"1px solid #1e2535"}}>
+                          <div>
+                            <div style={{fontSize:13,fontWeight:600,color:"#e8eaf0"}}>{s.name}</div>
+                            <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{s.stdHrs}h std · {s.otHrs}h OT · {s.weekendOtHrs}h wknd · {s.bonus>0?"£"+s.bonus+" bonus":"no bonus"}</div>
+                          </div>
+                          <div style={{display:"flex",gap:6}}>
+                            <button onClick={()=>loadScenario(s)} style={{background:"#7c6fff22",border:"1px solid #7c6fff",borderRadius:6,color:"#7c6fff",fontSize:11,fontWeight:700,padding:"5px 10px",cursor:"pointer"}}>Load</button>
+                            <button onClick={()=>deleteScenario(s.id)} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{display:"flex",gap:8}}>
+                    <input placeholder="Scenario name…" value={scenarioName} onChange={e=>setScenarioName(e.target.value)}
+                      onKeyDown={e=>e.key==="Enter"&&saveScenario()}
+                      style={{...inp,flex:1,padding:"8px 10px",fontSize:12}}/>
+                    <button onClick={saveScenario} style={{background:"#7c6fff",border:"none",borderRadius:6,color:"#fff",fontWeight:700,fontSize:12,padding:"8px 14px",cursor:"pointer"}}>Save</button>
+                  </div>
+                  <p style={{fontSize:10,color:"#3a4460",marginTop:6,textAlign:"center"}}>Saves current hours, OT, weekend OT, bonus, and tier</p>
+                </div>
+              )}
+            </div>
+
             <div style={card}>
               <SectionLabel>Gross Breakdown</SectionLabel>
               {[
@@ -1329,36 +1628,46 @@ export default function App() {
                 </div>
               </div>
             <div style={{...card,padding:0,overflow:"hidden",marginBottom:10}}>
-              <div style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr 28px",padding:"10px",background:"#0d1117",fontSize:10,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase"}}>
+              <div style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"9px 10px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase"}}>
                 <span>Month</span>
-                <span style={{textAlign:"right"}}>Gross</span><span style={{textAlign:"right"}}>Net</span>
-                <span style={{textAlign:"right"}}>Tax</span><span style={{textAlign:"right"}}>NI</span><span style={{textAlign:"right"}}>NEST</span><span></span>
+                <span style={{textAlign:"right"}}>Gross / Net</span>
+                <span style={{textAlign:"right"}}>Tax / NI</span>
+                <span></span>
               </div>
-              <div style={{maxHeight:"50vh",overflowY:"auto"}}>
+              <div style={{maxHeight:"60vh",overflowY:"auto"}}>
                 {filteredHistory.map((r,i)=>(
                   <div key={r.month}>
                     <div onClick={()=>setExpandedPayslip(expandedPayslip===r.month?null:r.month)}
-                      style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr 28px",padding:"10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"pointer",alignItems:"center"}}>
+                      style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"pointer",alignItems:"center"}}>
                       <span style={{fontSize:12,fontWeight:600,color:"#8892b0"}}>{r.month}</span>
-                      <span style={{textAlign:"right",color:"#7c6fff"}}>{fmt(r.gross)}</span>
-                      <span style={{textAlign:"right",color:"#4a9eff",fontWeight:700}}>{fmt(r.net)}</span>
-                      <span style={{textAlign:"right",color:"#ff6b8a"}}>{fmt(r.tax)}</span>
-                      <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(r.ni)}</span>
-                      <span style={{textAlign:"right",color:"#00c88c"}}>{fmt(r.nest)}</span>
+                      <span style={{textAlign:"right"}}>
+                        <div style={{color:"#7c6fff",fontSize:11}}>{fmt(r.gross)}</div>
+                        <div style={{color:"#4a9eff",fontWeight:700,fontSize:12}}>{fmt(r.net)}</div>
+                      </span>
+                      <span style={{textAlign:"right"}}>
+                        <div style={{color:"#ff6b8a",fontSize:11}}>{fmt(r.tax)}</div>
+                        <div style={{color:"#ff8c4a",fontSize:11}}>{fmt(r.ni)}</div>
+                      </span>
                       <button onClick={e=>{e.stopPropagation();setDeleteConfirm(r.month);}}
                         style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
                     </div>
                     {expandedPayslip===r.month&&(
                       <div style={{background:"#0d1525",borderBottom:"1px solid #1e2535",padding:"12px 14px"}}>
-                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:8}}>
                           {[
-                            ["Bonus",    r.bonus>0?fmt(r.bonus):"—","#c84aff"],
-                            ["OT Pay",   r.ot>0?fmt(r.ot):"—",    "#4affd4"],
-                            ["Std Loan", r.sl>0?fmt(r.sl):"—",    "#ffb84a"],
+                            ["Gross",    fmt(r.gross),               "#7c6fff"],
+                            ["Net",      fmt(r.net),                 "#4a9eff"],
+                            ["Tax",      fmt(r.tax),                 "#ff6b8a"],
+                            ["NI",       fmt(r.ni),                  "#ff8c4a"],
+                            ["NEST",     r.nest>0?fmt(r.nest):"—",   "#00c88c"],
+                            ["Bonus",    r.bonus>0?fmt(r.bonus):"—", "#c84aff"],
+                            ["OT Pay",   r.ot>0?fmt(r.ot):"—",      "#4affd4"],
+                            ["St. Loan", r.sl>0?fmt(r.sl):"—",      "#ffb84a"],
+                            ["Date",     r.date||"—",                "#5a6480"],
                           ].map(([l,v,c])=>(
-                            <div key={l} style={{background:"#111827",borderRadius:8,padding:"9px",textAlign:"center"}}>
-                              <div style={{fontSize:10,color:"#5a6480",marginBottom:3}}>{l}</div>
-                              <div style={{fontSize:13,fontWeight:700,color:c}}>{v}</div>
+                            <div key={l} style={{background:"#111827",borderRadius:8,padding:"8px",textAlign:"center"}}>
+                              <div style={{fontSize:9,color:"#5a6480",marginBottom:3,textTransform:"uppercase",letterSpacing:0.5}}>{l}</div>
+                              <div style={{fontSize:12,fontWeight:700,color:c}}>{v}</div>
                             </div>
                           ))}
                         </div>
@@ -1370,32 +1679,21 @@ export default function App() {
                   </div>
                 ))}
                 {filteredHistory.length===0&&<div style={{padding:"32px",textAlign:"center",color:"#3a4460",fontSize:13}}>No payslips match "{payslipSearch}"</div>}
+                <div style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"10px",fontSize:11,fontWeight:700,background:"#0d1117",borderTop:"2px solid #2a3050"}}>
+                  <span style={{color:"#5a6480",fontSize:10,textTransform:"uppercase",letterSpacing:0.5}}>Totals</span>
+                  <span style={{textAlign:"right"}}>
+                    <div style={{color:"#7c6fff"}}>{fmt(ts.gross)}</div>
+                    <div style={{color:"#4a9eff"}}>{fmt(ts.net)}</div>
+                  </span>
+                  <span style={{textAlign:"right"}}>
+                    <div style={{color:"#ff6b8a"}}>{fmt(ts.tax)}</div>
+                    <div style={{color:"#ff8c4a"}}>{fmt(ts.ni)}</div>
+                  </span>
+                  <span></span>
+                </div>
               </div>
             </div>
-            <div style={{...card,padding:0,overflow:"hidden",marginBottom:10}}>
-              <div style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr",padding:"10px",background:"#0d1117",fontSize:10,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase"}}>
-                <span>Month</span><span style={{textAlign:"right"}}>St. Loan</span><span style={{textAlign:"right"}}>Bonus</span><span style={{textAlign:"right"}}>Overtime</span>
-              </div>
-              <div style={{maxHeight:"40vh",overflowY:"auto"}}>
-                {filteredHistory.map((r,i)=>(
-                  <div key={r.month} style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr",padding:"10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e"}}>
-                    <span style={{fontSize:12,fontWeight:600,color:"#8892b0"}}>{r.month}</span>
-                    <span style={{textAlign:"right",color:"#ffb84a"}}>{r.sl>0?fmt(r.sl):"—"}</span>
-                    <span style={{textAlign:"right",color:"#c84aff"}}>{r.bonus>0?fmt(r.bonus):"—"}</span>
-                    <span style={{textAlign:"right",color:"#4affd4"}}>{r.ot>0?fmt(r.ot):"—"}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div style={{...card,display:"grid",gridTemplateColumns:"72px 1fr 1fr 1fr 1fr 1fr",fontSize:11,fontWeight:700}}>
-              <span style={{color:"#5a6480"}}>TOTALS</span>
-              <span style={{textAlign:"right",color:"#7c6fff"}}>{fmt(ts.gross)}</span>
-              <span style={{textAlign:"right",color:"#4a9eff"}}>{fmt(ts.net)}</span>
-              <span style={{textAlign:"right",color:"#ff6b8a"}}>{fmt(ts.tax)}</span>
-              <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(ts.ni)}</span>
-              <span style={{textAlign:"right",color:"#00c88c"}}>{fmt(ts.nest)}</span>
-            </div>
-            <p style={{fontSize:10,color:"#3a4460",textAlign:"center",marginTop:8}}>Tap a row to expand · add notes or delete</p>
+            <p style={{fontSize:10,color:"#3a4460",textAlign:"center",marginTop:4,marginBottom:12}}>Tap a row to expand full detail · add notes or delete</p>
 
             {latest&&(()=>{
               const active = inferPerfAllowance(latest);
@@ -1679,7 +1977,7 @@ export default function App() {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.5.4</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.6.0</span>
       </div>
 
     </div>
