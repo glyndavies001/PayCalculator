@@ -1,7 +1,14 @@
-import React, { useState, useMemo, useRef, useCallback } from "react";
+import React, { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
+import { createClient } from "@supabase/supabase-js";
+
 // API calls routed through Vercel serverless proxy
 const API_PROXY = "/api/claude";
+
+// Supabase client
+const SUPABASE_URL = "https://yfbarahnwcrwewtpithb.supabase.co";
+const SUPABASE_KEY = "sb_publishable_ItUAbr04KIijWuO-JWgDNg_J5YCwaqK";
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 function getWorkingDaysInMonth(year, month) {
   const days = new Date(year, month + 1, 0).getDate();
@@ -148,31 +155,99 @@ function billShares(b) {
   return { glyn: b.total / 2, hollie: b.total / 2 };
 }
 
-// Storage keys — NEVER change these, doing so will lose user data
+// localStorage keys for device-only settings
 const SK = {
-  history:      "vaulted_history",
-  sharedBills:  "vaulted_shared_bills",
-  glynBills:    "vaulted_glyn_bills",
   cats:         "vaulted_cats",
   billCats:     "vaulted_billcats",
   glynCats:     "vaulted_gcats",
   glynBillCats: "vaulted_gbillcats",
-  calcInputs:   "vaulted_calc",
   timesheets:   "vaulted_timesheets",
   tsLastUpload: "vaulted_ts_last",
-  notes:        "vaulted_notes",
-  tierOverride: "vaulted_tier_override",
-  pinHash:      "vaulted_pin_hash",        // SHA-256 hash of 4-digit PIN
-  webAuthnCred: "vaulted_webauthn_cred",   // stored credential ID for biometric
-  scenarios:    "vaulted_scenarios",       // named Pay Calc scenarios
-  notifPerm:    "vaulted_notif_perm",      // "granted" | "denied" | "dismissed"
-  onboarded:    "vaulted_onboarded",       // true once onboarding is complete
-  leaveSettings:"vaulted_leave_settings",  // { baseEntitlement, serviceDays, startYear }
-  leaveLogs:    "vaulted_leave_logs",      // [{ id, date, hours, label }]
-  tsSecret:     "vaulted_ts_secret",       // TIMESHEET_SECRET value for polling
-  tsLastEmail:  "vaulted_ts_last_email",   // last processed email ID (avoid duplicates)
-  monthlyTs:    "vaulted_monthly_ts",      // [{ period, month, totalHrs, stdHrs, otHrs, wkndHrs, holHrs, days, emailId }]
-  discrepancies:"vaulted_discrepancies",   // [{ month, status, items, ts, payslip, checked }]
+  notifPerm:    "vaulted_notif_perm",
+  tsSecret:     "vaulted_ts_secret",
+  tsLastEmail:  "vaulted_ts_last_email",
+};
+
+// Supabase DB helpers
+const db = {
+  async getPayslips(userId) {
+    const { data } = await supabase.from("payslips").select("*").eq("user_id", userId).order("date", { ascending: false });
+    return (data || []).map(r => ({ month: r.month, date: r.date, gross: r.gross, net: r.net, tax: r.tax, ni: r.ni, nest: r.nest, sl: r.sl, bonus: r.bonus, ot: r.ot, note: r.note }));
+  },
+  async upsertPayslip(userId, p) {
+    await supabase.from("payslips").upsert({ user_id: userId, month: p.month, date: p.date, gross: p.gross, net: p.net, tax: p.tax, ni: p.ni, nest: p.nest, sl: p.sl, bonus: p.bonus, ot: p.ot, note: p.note || null }, { onConflict: "user_id,month" });
+  },
+  async deletePayslip(userId, month) {
+    await supabase.from("payslips").delete().eq("user_id", userId).eq("month", month);
+  },
+  async getSharedBills() {
+    const { data } = await supabase.from("shared_bills").select("*").order("bill_id");
+    return data || [];
+  },
+  async upsertSharedBill(b) {
+    await supabase.from("shared_bills").upsert({ bill_id: b.id, name: b.name, total: b.total, is_car_glyn: b.isCarGlyn || false }, { onConflict: "bill_id" });
+  },
+  async deleteSharedBill(billId) {
+    await supabase.from("shared_bills").delete().eq("bill_id", billId);
+  },
+  async getGlynBills() {
+    const { data } = await supabase.from("glyn_bills").select("*").order("bill_id");
+    return data || [];
+  },
+  async upsertGlynBill(b) {
+    await supabase.from("glyn_bills").upsert({ bill_id: b.id, name: b.name, total: b.total }, { onConflict: "bill_id" });
+  },
+  async deleteGlynBill(billId) {
+    await supabase.from("glyn_bills").delete().eq("bill_id", billId);
+  },
+  async getLeaveLogs(userId) {
+    const { data } = await supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false });
+    return (data || []).map(r => ({ id: r.id, date: r.date, hours: r.hours, label: r.label }));
+  },
+  async upsertLeaveLog(userId, entry) {
+    await supabase.from("leave_logs").upsert({ id: entry.id, user_id: userId, date: entry.date, hours: entry.hours, label: entry.label || null });
+  },
+  async deleteLeaveLog(id) {
+    await supabase.from("leave_logs").delete().eq("id", id);
+  },
+  async getLeaveSettings(userId) {
+    const { data } = await supabase.from("leave_settings").select("*").eq("user_id", userId).single();
+    return data ? { baseEntitlement: data.base_entitlement, serviceDays: data.service_days, startYear: data.start_year } : null;
+  },
+  async saveLeaveSettings(userId, s) {
+    await supabase.from("leave_settings").upsert({ user_id: userId, base_entitlement: s.baseEntitlement, service_days: s.serviceDays, start_year: s.startYear, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+  },
+  async getMonthlyTs(userId) {
+    const { data } = await supabase.from("monthly_timesheets").select("*").eq("user_id", userId).order("saved_at", { ascending: false });
+    return (data || []).map(r => ({ emailId: r.email_id, period: r.period, month: r.month, totalHrs: r.total_hrs, stdHrs: r.std_hrs, otHrs: r.ot_hrs, wkndHrs: r.wknd_hrs, holHrs: r.hol_hrs, days: r.days, savedAt: r.saved_at }));
+  },
+  async upsertMonthlyTs(userId, entry) {
+    await supabase.from("monthly_timesheets").upsert({ user_id: userId, email_id: entry.emailId, period: entry.period, month: entry.month, total_hrs: entry.totalHrs, std_hrs: entry.stdHrs, ot_hrs: entry.otHrs, wknd_hrs: entry.wkndHrs, hol_hrs: entry.holHrs, days: entry.days, saved_at: entry.savedAt }, { onConflict: "email_id" });
+  },
+  async getDiscrepancies(userId) {
+    const { data } = await supabase.from("discrepancies").select("*").eq("user_id", userId).order("checked_at", { ascending: false });
+    return (data || []).map(r => ({ month: r.month, period: r.period, status: r.status, items: r.items, ts: r.ts_data, payslip: r.payslip_data, expected: r.expected_data, checkedAt: r.checked_at }));
+  },
+  async upsertDiscrepancy(userId, d) {
+    await supabase.from("discrepancies").upsert({ user_id: userId, month: d.month, period: d.period, status: d.status, items: d.items, ts_data: d.ts, payslip_data: d.payslip, expected_data: d.expected, checked_at: d.checkedAt }, { onConflict: "user_id,month" });
+  },
+  async getScenarios(userId) {
+    const { data } = await supabase.from("scenarios").select("*").eq("user_id", userId).order("created_at");
+    return (data || []).map(r => ({ id: r.id, name: r.name, stdHrs: r.std_hrs, otHrs: r.ot_hrs, weekendOtHrs: r.weekend_ot_hrs, bonus: r.bonus, tierOverride: r.tier_override }));
+  },
+  async upsertScenario(userId, s) {
+    await supabase.from("scenarios").upsert({ id: s.id, user_id: userId, name: s.name, std_hrs: s.stdHrs, ot_hrs: s.otHrs, weekend_ot_hrs: s.weekendOtHrs, bonus: s.bonus, tier_override: s.tierOverride }, { onConflict: "user_id,name" });
+  },
+  async deleteScenario(id) {
+    await supabase.from("scenarios").delete().eq("id", id);
+  },
+  async getAppSettings(userId) {
+    const { data } = await supabase.from("app_settings").select("*").eq("user_id", userId).single();
+    return data || null;
+  },
+  async saveAppSettings(userId, settings) {
+    await supabase.from("app_settings").upsert({ user_id: userId, ...settings, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+  },
 };
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
@@ -497,186 +572,80 @@ function shouldFireTimesheetNotif(tsLastUpload) {
   return isMonday && daysSince >= 7;
 }
 
-// ── Security helpers ─────────────────────────────────────────────────────────
+// ── Auth helpers ─────────────────────────────────────────────────────────────
 
-async function hashPIN(pin) {
-  const enc = new TextEncoder().encode(pin + "vaulted_salt_2024");
-  const buf = await crypto.subtle.digest("SHA-256", enc);
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
-}
-
-async function verifyPIN(pin, storedHash) {
-  const h = await hashPIN(pin);
-  return h === storedHash;
-}
-
-async function registerBiometric(credId) {
-  // Store credential ID (base64)
-  try {
-    const challenge = crypto.getRandomValues(new Uint8Array(32));
-    const cred = await navigator.credentials.create({
-      publicKey: {
-        challenge,
-        rp: { name: "Vaulted" },
-        user: { id: new TextEncoder().encode("glyn"), name: "glyn", displayName: "Glyn" },
-        pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
-        authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
-        timeout: 30000,
-      }
-    });
-    return btoa(String.fromCharCode(...new Uint8Array(cred.rawId)));
-  } catch { return null; }
-}
-
-async function verifyBiometric(credentialId) {
-  try {
-    const challenge = crypto.getRandomValues(new Uint8Array(32));
-    const rawId = Uint8Array.from(atob(credentialId), c => c.charCodeAt(0));
-    await navigator.credentials.get({
-      publicKey: {
-        challenge,
-        allowCredentials: [{ type: "public-key", id: rawId }],
-        userVerification: "required",
-        timeout: 30000,
-      }
-    });
-    return true;
-  } catch { return false; }
-}
-
-const LAST_ACTIVE_KEY = "vaulted_last_active";
-const LOCK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-
-function LockScreen({ pinHash, credId, onUnlock, onSetup }) {
-  const [pin, setPin] = useState("");
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSignUp, setIsSignUp] = useState(false);
   const [error, setError] = useState("");
-  const [bioBusy, setBioBusy] = useState(false);
-  const [bioFails, setBioFails] = useState(0);
-  const [mode, setMode] = useState("bio"); // "bio" | "pin"
-  const [setupStep, setSetupStep] = useState("pin1"); // "pin1"|"pin2"|"bio"
-  const [pin1, setPin1] = useState("");
-  const isSetup = !pinHash;
-
-  const tryBio = async () => {
-    if (!credId || bioFails >= 3) { setMode("pin"); return; }
-    setBioBusy(true);
-    const ok = await verifyBiometric(credId);
-    setBioBusy(false);
-    if (ok) { onUnlock(); }
-    else {
-      const f = bioFails + 1;
-      setBioFails(f);
-      if (f >= 3) { setMode("pin"); setError("Biometric failed 3 times — enter PIN"); }
-      else setError(`Biometric failed (${f}/3)`);
-    }
-  };
-
-  // Auto-trigger biometric on mount if available
-  useState(() => { if (!isSetup && credId && bioFails === 0) tryBio(); }, []);
-
-  const handlePinDigit = async (d) => {
-    const newPin = pin + d;
-    setPin(newPin);
-    setError("");
-    if (newPin.length === 4) {
-      if (isSetup) {
-        if (setupStep === "pin1") { setPin1(newPin); setPin(""); setSetupStep("pin2"); }
-        else if (setupStep === "pin2") {
-          if (newPin !== pin1) { setError("PINs don't match — try again"); setPin(""); setSetupStep("pin1"); setPin1(""); }
-          else { setPin(""); setSetupStep("bio"); }
-        }
-      } else {
-        const ok = await verifyPIN(newPin, pinHash);
-        if (ok) { onUnlock(); }
-        else { setError("Incorrect PIN"); setPin(""); }
-      }
-    }
-  };
-
-  const handleSetupBio = async (skip) => {
-    const hash = await hashPIN(pin1);
-    if (skip) { onSetup(hash, null); return; }
-    const cred = await registerBiometric();
-    onSetup(hash, cred);
-  };
+  const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   const bg = { minHeight:"100vh", background:"#0d0f14", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", fontFamily:"'DM Sans','Segoe UI',sans-serif", padding:"24px 20px" };
-  const dot = (filled) => ({ width:14, height:14, borderRadius:"50%", background:filled?"#4a9eff":"#1e2535", border:"1px solid"+(filled?"#4a9eff":"#2a3050"), display:"inline-block", margin:"0 6px" });
-  const btn = (label, onClick, accent, small) => (
-    <button onClick={onClick} style={{ background:accent||"#1e2535", border:"1px solid"+(accent||"#2a3050"), borderRadius:12, color:accent?"#000":"#8892b0", fontSize:small?13:20, fontWeight:700, padding:small?"10px 20px":"22px 0", cursor:"pointer", width:small?"auto":"100%" }}>
-      {label}
-    </button>
-  );
+  const inp = { width:"100%", boxSizing:"border-box", background:"#141824", border:"1px solid #1e2535", borderRadius:10, color:"#e8eaf0", fontSize:14, padding:"13px 14px", fontFamily:"inherit", outline:"none", marginBottom:10 };
 
-  if (isSetup && setupStep === "bio") {
-    return (
-      <div style={bg}>
-        <div style={{fontSize:48,marginBottom:16}}>🔐</div>
-        <h2 style={{color:"#fff",fontSize:20,fontWeight:800,letterSpacing:2,marginBottom:8}}>Enable Biometrics?</h2>
-        <p style={{color:"#5a6480",fontSize:13,textAlign:"center",marginBottom:32,lineHeight:1.6}}>Use fingerprint or Face ID to unlock Vaulted instantly. Your PIN is always available as a fallback.</p>
-        <div style={{display:"flex",flexDirection:"column",gap:12,width:"100%",maxWidth:300}}>
-          <button onClick={()=>handleSetupBio(false)} style={{background:"#4a9eff",border:"none",borderRadius:12,color:"#000",fontSize:15,fontWeight:700,padding:"16px",cursor:"pointer"}}>Enable Biometrics</button>
-          <button onClick={()=>handleSetupBio(true)} style={{background:"#1e2535",border:"1px solid #2a3050",borderRadius:12,color:"#5a6480",fontSize:14,padding:"14px",cursor:"pointer"}}>Skip — PIN only</button>
-        </div>
-      </div>
-    );
-  }
+  const handleSubmit = async () => {
+    setError(""); setLoading(true);
+    try {
+      if (isSignUp) {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        setError("Check your email to confirm your account.");
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        onLogin(data.user);
+      }
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  };
 
-  const showingPin = isSetup || mode === "pin";
-  const pinLabel = isSetup ? (setupStep==="pin1" ? "Create your 4-digit PIN" : "Confirm your PIN") : "Enter PIN";
+  const handleReset = async () => {
+    if (!email) { setError("Enter your email first"); return; }
+    await supabase.auth.resetPasswordForEmail(email);
+    setResetSent(true);
+  };
 
   return (
     <div style={bg}>
-      <div style={{fontSize:48,marginBottom:16}}>{bioBusy?"⏳":"🔒"}</div>
+      <div style={{fontSize:48,marginBottom:16}}>🔐</div>
       <h1 style={{margin:"0 0 4px",fontSize:22,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
-      <p style={{color:"#5a6480",fontSize:13,marginBottom:32,marginTop:4}}>{showingPin ? pinLabel : "Touch the sensor or use PIN"}</p>
-
-      {error && <div style={{color:"#ff6b8a",fontSize:13,marginBottom:16,background:"#2a0f15",padding:"8px 16px",borderRadius:8,border:"1px solid #5a1a2a"}}>{error}</div>}
-
-      {showingPin && (
-        <>
-          <div style={{display:"flex",justifyContent:"center",marginBottom:28}}>
-            {[0,1,2,3].map(i=><span key={i} style={dot(i<pin.length)}/>)}
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,maxWidth:260,width:"100%",marginBottom:16}}>
-            {[1,2,3,4,5,6,7,8,9,"",0,"⌫"].map((d,i)=>(
-              d===""?<div key={i}/>:
-              <button key={i} onClick={()=>d==="⌫"?setPin(p=>p.slice(0,-1)):handlePinDigit(String(d))}
-                style={{background:"#141824",border:"1px solid #1e2535",borderRadius:12,color:"#e8eaf0",fontSize:22,fontWeight:600,padding:"18px 0",cursor:"pointer",lineHeight:1}}>
-                {d}
-              </button>
-            ))}
-          </div>
-          {!isSetup && credId && bioFails < 3 && (
-            <button onClick={()=>setMode("bio")} style={{background:"none",border:"none",color:"#4a9eff",fontSize:13,cursor:"pointer",marginTop:8}}>Use biometrics instead</button>
-          )}
-        </>
-      )}
-
-      {!showingPin && !bioBusy && (
-        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:16}}>
-          <button onClick={tryBio} style={{background:"#4a9eff22",border:"2px solid #4a9eff",borderRadius:50,padding:"24px",fontSize:36,cursor:"pointer",lineHeight:1}}>👆</button>
-          <p style={{color:"#5a6480",fontSize:12,margin:0}}>Touch sensor to unlock</p>
-          <button onClick={()=>setMode("pin")} style={{background:"none",border:"none",color:"#3a4460",fontSize:13,cursor:"pointer",textDecoration:"underline"}}>Use PIN instead</button>
+      <p style={{color:"#5a6480",fontSize:13,marginBottom:32}}>{isSignUp ? "Create your account" : "Sign in to continue"}</p>
+      {error && <div style={{color: error.includes("Check") ? "#00c88c" : "#ff6b8a",fontSize:13,marginBottom:14,background: error.includes("Check") ? "#0a1a10" : "#2a0f15",padding:"10px 16px",borderRadius:8,border:"1px solid "+(error.includes("Check")?"#1a4030":"#5a1a2a"),width:"100%",boxSizing:"border-box",textAlign:"center"}}>{error}</div>}
+      {resetSent && <div style={{color:"#00c88c",fontSize:13,marginBottom:14,textAlign:"center"}}>Password reset email sent!</div>}
+      <div style={{width:"100%",maxWidth:320}}>
+        <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} style={inp} onKeyDown={e=>e.key==="Enter"&&handleSubmit()}/>
+        {!resetSent && <input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} style={inp} onKeyDown={e=>e.key==="Enter"&&handleSubmit()}/>}
+        <button onClick={handleSubmit} disabled={loading}
+          style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:10,color:"#000",fontSize:15,fontWeight:700,padding:"14px",cursor:loading?"not-allowed":"pointer",marginBottom:10,opacity:loading?0.7:1}}>
+          {loading ? "Please wait…" : isSignUp ? "Create Account" : "Sign In"}
+        </button>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+          <button onClick={()=>{setIsSignUp(!isSignUp);setError("");}} style={{background:"none",border:"none",color:"#4a9eff",cursor:"pointer",fontSize:12}}>
+            {isSignUp ? "Already have an account?" : "Create account"}
+          </button>
+          {!isSignUp && <button onClick={handleReset} style={{background:"none",border:"none",color:"#3a4460",cursor:"pointer",fontSize:12}}>Forgot password?</button>}
         </div>
-      )}
-
-      {bioBusy && <p style={{color:"#4a9eff",fontSize:14}}>Verifying…</p>}
+      </div>
     </div>
   );
 }
 
 export default function App() {
   const [tab,setTab]=useState("Dashboard");
-  const [history,setHistory]=useState(()=>load(SK.history,INITIAL_HISTORY));
-  const [sharedBills,setSharedBills]=useState(()=>load(SK.sharedBills,INITIAL_SHARED_BILLS));
-  const [glynBills,setGlynBills]=useState(()=>load(SK.glynBills,INITIAL_GLYN_BILLS));
+  const [user,setUser]=useState(null);
+  const [authLoading,setAuthLoading]=useState(true);
+  const [dataLoading,setDataLoading]=useState(false);
+  const [history,setHistory]=useState([]);
+  const [sharedBills,setSharedBills]=useState(INITIAL_SHARED_BILLS);
+  const [glynBills,setGlynBills]=useState(INITIAL_GLYN_BILLS);
   const [cats,setCats]=useState(()=>load(SK.cats,[]));
   const [billCats,setBillCats]=useState(()=>load(SK.billCats,{}));
   const [glynCats,setGlynCats]=useState(()=>load(SK.glynCats,[]));
   const [glynBillCats,setGlynBillCats]=useState(()=>load(SK.glynBillCats,{}));
   const defCalc={stdHrs:getCurrentMonthHours(),otHrs:0,weekendOtHrs:0,bonus:240,perfAllowance:true};
-  const [ci,setCi]=useState(()=>load(SK.calcInputs,defCalc));
+  const [ci,setCi]=useState(defCalc);
   const [editSh,setEditSh]=useState(null);
   const [editGl,setEditGl]=useState(null);
   const [addSh,setAddSh]=useState(false);
@@ -696,81 +665,126 @@ export default function App() {
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
   const [uploadProgress,setUploadProgress]=useState(null);
-  const [notes,setNotes]=useState(()=>load(SK.notes,{}));
+  const [notes,setNotes]=useState({});
   const [expandedPayslip,setExpandedPayslip]=useState(null);
   const [deleteConfirm,setDeleteConfirm]=useState(null);
   const [payslipSearch,setPayslipSearch]=useState("");
   const [showAllTimeTotals,setShowAllTimeTotals]=useState(false);
 
-  // ── Security / Lock ──────────────────────────────────────────────────────
-  const [pinHash, setPinHash] = useState(() => load(SK.pinHash, null));
-  const [webAuthnCred, setWebAuthnCred] = useState(() => load(SK.webAuthnCred, null));
-  const [locked, setLocked] = useState(true);
-  const lastActiveRef = useRef(Date.now());
-
-  // Inactivity lock
+  // ── Supabase Auth ────────────────────────────────────────────────────────
   React.useEffect(() => {
-    const bump = () => { lastActiveRef.current = Date.now(); };
-    const check = setInterval(() => {
-      if (!locked && Date.now() - lastActiveRef.current > LOCK_TIMEOUT_MS) setLocked(true);
-    }, 30000);
-    window.addEventListener("mousemove", bump);
-    window.addEventListener("touchstart", bump);
-    window.addEventListener("click", bump);
-    return () => { clearInterval(check); window.removeEventListener("mousemove",bump); window.removeEventListener("touchstart",bump); window.removeEventListener("click",bump); };
-  }, [locked]);
-
-  // Background/visibility lock — only lock if hidden for longer than 10 minutes
-  React.useEffect(() => {
-    let hiddenAt = null;
-    const onVis = () => {
-      if (document.hidden) {
-        hiddenAt = Date.now();
-      } else {
-        if (hiddenAt && Date.now() - hiddenAt > LOCK_TIMEOUT_MS) setLocked(true);
-        hiddenAt = null;
-      }
-    };
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user || null);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user || null);
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
-  const handleSetup = async (hash, cred) => {
-    setPinHash(hash); save(SK.pinHash, hash);
-    setWebAuthnCred(cred); save(SK.webAuthnCred, cred);
-    // Request notification permission immediately after first-time setup
-    await requestAndSaveNotifPerm();
-    setLocked(false);
-  };
+  // Load all data from Supabase when user logs in
+  React.useEffect(() => {
+    if (!user) return;
+    setDataLoading(true);
+    const loadAll = async () => {
+      try {
+        const [payslips, sBills, gBills, lLogs, lSettings, mTs, discs, scens, appSettings] = await Promise.all([
+          db.getPayslips(user.id),
+          db.getSharedBills(),
+          db.getGlynBills(),
+          db.getLeaveLogs(user.id),
+          db.getLeaveSettings(user.id),
+          db.getMonthlyTs(user.id),
+          db.getDiscrepancies(user.id),
+          db.getScenarios(user.id),
+          db.getAppSettings(user.id),
+        ]);
 
-  const handleUnlock = () => { setLocked(false); lastActiveRef.current = Date.now(); };
+        // Payslips — merge with INITIAL_HISTORY for months not yet in DB
+        if (payslips.length > 0) {
+          setHistory(payslips.sort((a,b)=>{
+            const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
+            return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
+          }));
+        } else {
+          // First login — seed DB with INITIAL_HISTORY
+          const sorted = [...INITIAL_HISTORY].sort((a,b)=>{
+            const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
+            return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
+          });
+          setHistory(sorted);
+          for (const p of sorted) await db.upsertPayslip(user.id, p);
+        }
+
+        // Bills — merge with defaults if DB empty
+        if (sBills.length > 0) {
+          setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
+        } else {
+          for (const b of INITIAL_SHARED_BILLS) await db.upsertSharedBill(b);
+        }
+        if (gBills.length > 0) {
+          setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
+        } else {
+          for (const b of INITIAL_GLYN_BILLS) await db.upsertGlynBill(b);
+        }
+
+        if (lLogs.length > 0) setLeaveLogs(lLogs);
+        if (lSettings) setLeaveSettings(lSettings);
+        if (mTs.length > 0) setMonthlyTs(mTs);
+        if (discs.length > 0) setDiscrepancies(discs);
+        if (scens.length > 0) setScenarios(scens);
+        if (appSettings) {
+          if (appSettings.calc_inputs) setCi(appSettings.calc_inputs);
+          if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
+          if (appSettings.notes) setNotes(appSettings.notes);
+        }
+
+        await requestAndSaveNotifPerm();
+      } catch(e) { console.error("Data load error:", e); }
+      setDataLoading(false);
+    };
+    loadAll();
+  }, [user]);
+
+  // Real-time subscriptions
+  React.useEffect(() => {
+    if (!user) return;
+    const payslipSub = supabase.from("payslips").on("*", () => db.getPayslips(user.id).then(p => setHistory(p.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);})))).subscribe();
+    const sharedSub = supabase.from("shared_bills").on("*", () => db.getSharedBills().then(b => setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), isCarGlyn: r.is_car_glyn }))))).subscribe();
+    const glynSub = supabase.from("glyn_bills").on("*", () => db.getGlynBills().then(b => setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))).subscribe();
+    const leaveSub = supabase.from("leave_logs").on("*", () => db.getLeaveLogs(user.id).then(setLeaveLogs)).subscribe();
+    return () => { payslipSub.unsubscribe(); sharedSub.unsubscribe(); glynSub.unsubscribe(); leaveSub.unsubscribe(); };
+  }, [user]);
+
+  const handleSignOut = async () => { await supabase.auth.signOut(); setUser(null); setHistory([]); };
 
   // ── Annual Leave ─────────────────────────────────────────────────────────
-  const [leaveSettings, setLeaveSettings] = useState(() => load(SK.leaveSettings, { baseEntitlement: 29, serviceDays: 4, startYear: 2022 }));
-  const [leaveLogs, setLeaveLogs] = useState(() => load(SK.leaveLogs, []));
+  const [leaveSettings, setLeaveSettings] = useState({ baseEntitlement: 29, serviceDays: 4, startYear: 2022 });
+  const [leaveLogs, setLeaveLogs] = useState([]);
   const [leaveForm, setLeaveForm] = useState({ date: "", hours: "8.25", label: "" });
   const [leaveEditSettings, setLeaveEditSettings] = useState(false);
   const [leaveDraftSettings, setLeaveDraftSettings] = useState(null);
 
-  const saveLeaveLog = () => {
+  const saveLeaveLog = async () => {
     if (!leaveForm.date || !leaveForm.hours) return;
     haptic("success");
-    const entry = { id: Date.now(), date: leaveForm.date, hours: parseFloat(leaveForm.hours), label: leaveForm.label.trim() };
-    const updated = [...leaveLogs, entry].sort((a,b) => new Date(b.date) - new Date(a.date));
-    setLeaveLogs(updated); save(SK.leaveLogs, updated);
+    const entry = { id: Date.now().toString(), date: leaveForm.date, hours: parseFloat(leaveForm.hours), label: leaveForm.label.trim() };
+    if (user) await db.upsertLeaveLog(user.id, entry);
+    setLeaveLogs(prev => [...prev, entry].sort((a,b) => new Date(b.date) - new Date(a.date)));
     setLeaveForm({ date: "", hours: "8.25", label: "" });
   };
 
-  const deleteLeaveLog = (id) => {
+  const deleteLeaveLog = async (id) => {
     haptic("medium");
-    const updated = leaveLogs.filter(l => l.id !== id);
-    setLeaveLogs(updated); save(SK.leaveLogs, updated);
+    if (user) await db.deleteLeaveLog(id);
+    setLeaveLogs(prev => prev.filter(l => l.id !== id));
   };
 
-  const saveLeaveSettings = () => {
+  const saveLeaveSettings = async () => {
     haptic("success");
     setLeaveSettings(leaveDraftSettings);
-    save(SK.leaveSettings, leaveDraftSettings);
+    if (user) await db.saveLeaveSettings(user.id, leaveDraftSettings);
     setLeaveEditSettings(false);
   };
 
@@ -814,7 +828,8 @@ export default function App() {
         const merged = [...prev, ...newEntries]
           .filter((e, i, arr) => arr.findIndex(x => x.date === e.date) === i)
           .sort((a, b) => new Date(b.date) - new Date(a.date));
-        save(SK.leaveLogs, merged);
+        // Upsert new entries to Supabase
+        if (user) newEntries.forEach(e => db.upsertLeaveLog(user.id, e).catch(()=>{}));
         return merged;
       });
     }
@@ -925,17 +940,15 @@ export default function App() {
   }, [tsSecret, locked]);
 
   // ── Monthly timesheet history + discrepancy checker ─────────────────────
-  const [monthlyTs, setMonthlyTs] = useState(() => load(SK.monthlyTs, []));
-  const [discrepancies, setDiscrepancies] = useState(() => load(SK.discrepancies, []));
+  const [monthlyTs, setMonthlyTs] = useState([]);
+  const [discrepancies, setDiscrepancies] = useState([]);
 
-  const saveMonthlyTs = (entry) => {
+  const saveMonthlyTs = async (entry) => {
+    if (user) await db.upsertMonthlyTs(user.id, entry);
     setMonthlyTs(prev => {
-      const updated = [...prev.filter(m => m.emailId !== entry.emailId && m.period !== entry.period), entry]
+      return [...prev.filter(m => m.emailId !== entry.emailId && m.period !== entry.period), entry]
         .sort((a, b) => new Date(b.period.split(" to ")[0]) - new Date(a.period.split(" to ")[0]));
-      save(SK.monthlyTs, updated);
-      return updated;
     });
-    // After saving monthly ts, check if we can run discrepancy check against a payslip
     checkDiscrepancy(entry, history);
   };
 
@@ -978,11 +991,10 @@ export default function App() {
       checkedAt: new Date().toISOString(),
     };
 
+    if (user) await db.upsertDiscrepancy(user.id, result);
     setDiscrepancies(prev => {
-      const updated = [...prev.filter(d => d.month !== tsEntry.month), result]
+      return [...prev.filter(d => d.month !== tsEntry.month), result]
         .sort((a, b) => new Date(b.checkedAt) - new Date(a.checkedAt));
-      save(SK.discrepancies, updated);
-      return updated;
     });
 
     if (items.length > 0) {
@@ -1035,28 +1047,29 @@ export default function App() {
     }
   }, [locked]);
 
-  // ── Onboarding ───────────────────────────────────────────────────────────
-  const [onboarded, setOnboarded] = useState(() => load(SK.onboarded, false));
-  const [onboardStep, setOnboardStep] = useState(0);
-  const completeOnboarding = () => { setOnboarded(true); save(SK.onboarded, true); };
+  // Onboarding handled by Supabase auth — no separate state needed
 
   // ── Named Scenarios ──────────────────────────────────────────────────────
-  const [scenarios, setScenarios] = useState(() => load(SK.scenarios, []));
+  const [scenarios, setScenarios] = useState([]);
   const [expandedMonth, setExpandedMonth] = useState(null);
   const [scenarioName, setScenarioName] = useState("");
   const [showScenarios, setShowScenarios] = useState(false);
-  const saveScenario = () => {
+  const saveScenario = async () => {
     if (!scenarioName.trim()) return;
-    const s = { id: Date.now(), name: scenarioName.trim(), stdHrs: ci.stdHrs, otHrs: ci.otHrs, weekendOtHrs: ci.weekendOtHrs, bonus: ci.bonus, tierOverride: tierOverride };
-    const updated = [...scenarios.filter(x=>x.name!==s.name), s];
-    setScenarios(updated); save(SK.scenarios, updated); setScenarioName("");
+    const s = { id: Date.now().toString(), name: scenarioName.trim(), stdHrs: ci.stdHrs, otHrs: ci.otHrs, weekendOtHrs: ci.weekendOtHrs, bonus: ci.bonus, tierOverride: tierOverride };
+    if (user) await db.upsertScenario(user.id, s);
+    setScenarios(prev => [...prev.filter(x=>x.name!==s.name), s]);
+    setScenarioName("");
   };
   const loadScenario = (s) => {
-    setCi(prev => { const n={...prev,stdHrs:s.stdHrs,otHrs:s.otHrs,weekendOtHrs:s.weekendOtHrs,bonus:s.bonus}; save(SK.calcInputs,n); return n; });
+    setCi(prev => { const n={...prev,stdHrs:s.stdHrs,otHrs:s.otHrs,weekendOtHrs:s.weekendOtHrs,bonus:s.bonus}; if(user) db.saveAppSettings(user.id,{calc_inputs:n}); return n; });
     saveTierOverride(s.tierOverride);
     setShowScenarios(false);
   };
-  const deleteScenario = (id) => { const u=scenarios.filter(s=>s.id!==id); setScenarios(u); save(SK.scenarios,u); };
+  const deleteScenario = async (id) => {
+    if (user) await db.deleteScenario(id);
+    setScenarios(prev => prev.filter(s=>s.id!==id));
+  };
 
   // Tier override — resets if stored month doesn't match current month
   const currentMonthStr = MONTHS[new Date().getMonth()]+" "+new Date().getFullYear();
@@ -1424,108 +1437,26 @@ const calcTimesheetTotals = days => {
     return [...history].reverse().filter(r=>r.month.toLowerCase().includes(q));
   },[history,payslipSearch]);
 
-  // Show lock screen on fresh load / after inactivity
-  if (locked) {
-    return <LockScreen pinHash={pinHash} credId={webAuthnCred} onUnlock={handleUnlock} onSetup={handleSetup} />;
+  // Auth loading
+  if (authLoading) {
+    return <div style={{minHeight:"100vh",background:"#0d0f14",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{color:"#4a9eff",fontSize:14}}>Loading…</div>
+    </div>;
   }
 
-  // Show onboarding flow for fresh installs (no payslip history yet beyond defaults)
-  if (!onboarded) {
-    const obBg = { minHeight:"100vh", background:"#0d0f14", color:"#e8eaf0", fontFamily:"'DM Sans','Segoe UI',sans-serif", padding:"28px 20px", display:"flex", flexDirection:"column" };
-    const obCard = { background:"#141824", borderRadius:12, border:"1px solid #1e2535", padding:"20px 16px", marginBottom:16 };
-    const obH = { margin:"0 0 6px", fontSize:18, fontWeight:800, color:"#fff" };
-    const obSub = { margin:"0 0 20px", fontSize:13, color:"#5a6480", lineHeight:1.6 };
-    const obBtn = (label, onClick, accent) => (
-      <button onClick={onClick} style={{ width:"100%", background:accent||"#4a9eff", border:"none", borderRadius:12, color:accent?"#fff":"#000", fontSize:15, fontWeight:700, padding:"16px", cursor:"pointer", marginBottom:accent?0:8 }}>
-        {label}
-      </button>
-    );
-
-    if (onboardStep === 0) return (
-      <div style={obBg}>
-        <div style={{ textAlign:"center", marginBottom:32, marginTop:20 }}>
-          <div style={{ fontSize:52, marginBottom:12 }}>🔐</div>
-          <h1 style={{ margin:"0 0 8px", fontSize:26, fontWeight:800, color:"#fff", letterSpacing:3 }}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
-          <p style={{ margin:0, fontSize:14, color:"#5a6480" }}>Your personal pay & budget tracker</p>
-        </div>
-        <div style={obCard}>
-          <p style={obH}>Welcome, Glyn 👋</p>
-          <p style={obSub}>Let's take 60 seconds to confirm your setup. Your pay history and bills are already loaded from backup — just verify and go.</p>
-          <div style={{ fontSize:12, color:"#3a4460", marginBottom:16 }}>
-            {[
-              "✅ " + history.length + " payslips loaded",
-              "✅ " + sharedBills.length + " shared bills loaded",
-              "✅ " + glynBills.length + " personal bills loaded",
-            ].map(t => <div key={t} style={{ marginBottom:6 }}>{t}</div>)}
-          </div>
-          {obBtn("Get Started →", () => setOnboardStep(1))}
-        </div>
-      </div>
-    );
-
-    if (onboardStep === 1) return (
-      <div style={obBg}>
-        <div style={{ fontSize:11, color:"#5a6480", fontWeight:700, letterSpacing:1, textTransform:"uppercase", marginBottom:16 }}>Step 1 of 2 — Pay Details</div>
-        <div style={obCard}>
-          <p style={obH}>Confirm your pay details</p>
-          <p style={obSub}>These are pre-filled from your latest payslip. Tap any value to update it in Pay Calc later.</p>
-          {[
-            ["Base Rate", "£" + PAY.baseRate + "/hr"],
-            ["OTE Rate (Tier 6)", "£" + (PAY.baseRate + 1.00).toFixed(2) + "/hr"],
-            ["OT Rate", "£" + PAY.otRate + "/hr"],
-            ["Weekend OT", "£" + PAY.weekendOtRate + "/hr"],
-            ["Tax Code", PAY.taxCode],
-            ["NEST Pension", "5% employee"],
-            ["Student Loan", "Plan 2"],
-            ["Latest Net Pay", latest ? fmt(latest.net) : "—"],
-            ["Latest Month", latest ? latest.month : "—"],
-          ].map(([l,v]) => (
-            <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"9px 0", borderBottom:"1px solid #1a1f2e", fontSize:13 }}>
-              <span style={{ color:"#8892b0" }}>{l}</span>
-              <span style={{ color:"#e8eaf0", fontWeight:700 }}>{v}</span>
-            </div>
-          ))}
-        </div>
-        <div style={{ display:"flex", gap:10 }}>
-          <button onClick={()=>setOnboardStep(0)} style={{ flex:1, background:"#1e2535", border:"none", borderRadius:12, color:"#5a6480", fontSize:14, fontWeight:600, padding:"14px", cursor:"pointer" }}>Back</button>
-          <button onClick={()=>setOnboardStep(2)} style={{ flex:2, background:"#4a9eff", border:"none", borderRadius:12, color:"#000", fontSize:15, fontWeight:700, padding:"14px", cursor:"pointer" }}>Looks good →</button>
-        </div>
-      </div>
-    );
-
-    if (onboardStep === 2) return (
-      <div style={obBg}>
-        <div style={{ fontSize:11, color:"#5a6480", fontWeight:700, letterSpacing:1, textTransform:"uppercase", marginBottom:16 }}>Step 2 of 2 — Bills</div>
-        <div style={obCard}>
-          <p style={obH}>Confirm your bills</p>
-          <p style={obSub}>Shared bills are split 50/50 with Hollie (car is Hollie £100, you pay the rest). You can edit any of these in the Budget tab.</p>
-          <div style={{ fontSize:12, fontWeight:700, color:"#4a9eff", marginBottom:8 }}>Shared Bills — your half: {fmt(shGlyn)}</div>
-          {sharedBills.map(b => (
-            <div key={b.id} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #1a1f2e", fontSize:12 }}>
-              <span style={{ color:"#8892b0" }}>{b.name}</span>
-              <span style={{ color:"#4a9eff", fontWeight:600 }}>{fmt(billShares(b).glyn)}</span>
-            </div>
-          ))}
-          <div style={{ fontSize:12, fontWeight:700, color:"#ff8c4a", marginTop:14, marginBottom:8 }}>My Bills: {fmt(glOnly)}</div>
-          {glynBills.map(b => (
-            <div key={b.id} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #1a1f2e", fontSize:12 }}>
-              <span style={{ color:"#8892b0" }}>{b.name}</span>
-              <span style={{ color:"#ff8c4a", fontWeight:600 }}>{fmt(b.total)}</span>
-            </div>
-          ))}
-          <div style={{ display:"flex", justifyContent:"space-between", padding:"10px 0", fontSize:13, fontWeight:700 }}>
-            <span style={{ color:"#5a6480" }}>Total outgoings</span>
-            <span style={{ color:"#e8eaf0" }}>{fmt(totalOut)}</span>
-          </div>
-        </div>
-        <div style={{ display:"flex", gap:10 }}>
-          <button onClick={()=>setOnboardStep(1)} style={{ flex:1, background:"#1e2535", border:"none", borderRadius:12, color:"#5a6480", fontSize:14, fontWeight:600, padding:"14px", cursor:"pointer" }}>Back</button>
-          <button onClick={async ()=>{ await requestAndSaveNotifPerm(); completeOnboarding(); }}
-            style={{ flex:2, background:"#00c88c", border:"none", borderRadius:12, color:"#000", fontSize:15, fontWeight:700, padding:"14px", cursor:"pointer" }}>All done — let's go 🎉</button>
-        </div>
-      </div>
-    );
+  // Not logged in
+  if (!user) {
+    return <LoginScreen onLogin={u => setUser(u)} />;
   }
+
+  // Data loading
+  if (dataLoading) {
+    return <div style={{minHeight:"100vh",background:"#0d0f14",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
+      <div style={{fontSize:48}}>🔐</div>
+      <div style={{color:"#4a9eff",fontSize:14,fontWeight:600}}>Loading your data…</div>
+    </div>;
+  }
+
 
   return (
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
@@ -1541,7 +1472,7 @@ const calcTimesheetTotals = days => {
           <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}>
             <span style={{color:"#4a9eff"}}>V</span>AULTED
           </h1>
-          <button onClick={()=>{haptic("medium");setLocked(true);}} title="Lock app"
+          <button onClick={()=>{haptic("medium");handleSignOut();}} title="Sign out"
             style={{background:"none",border:"none",color:"#3a4460",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:11,color:"#5a6480"}}>{history.length} payslips</div>
@@ -2802,7 +2733,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.8.4</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.9.0</span>
       </div>
 
     </div>
