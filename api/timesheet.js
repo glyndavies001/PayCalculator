@@ -1,17 +1,9 @@
 /**
- * Vercel Serverless Function — Timesheet Inbound Processor
- * File: /api/timesheet.js  (replace previous version)
- *
- * POST /api/timesheet  — receive from Google Apps Script
- * GET  /api/timesheet  — Vaulted polls for pending data
- * DELETE /api/timesheet — Vaulted confirms receipt
- *
- * Environment variables:
- *   ANTHROPIC_API_KEY  — Anthropic key
- *   TIMESHEET_SECRET   — random string, must match Apps Script + Vaulted setting
+ * Vercel Serverless Function — Timesheet Inbound Processor (queue version)
+ * File: /api/timesheet.js
  */
 
-let pendingData = null;
+let queue = []; // holds multiple processed timesheets
 
 function inferPayMonth(periodStr) {
   const match = periodStr.match(/to (\d{4})-(\d{2})-(\d{2})/);
@@ -25,8 +17,7 @@ function isMonthlyTimesheet(periodStr) {
   if (!periodStr) return false;
   const match = periodStr.match(/(\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})/);
   if (!match) return false;
-  const days = (new Date(match[2]) - new Date(match[1])) / (1000 * 60 * 60 * 24);
-  return days >= 20;
+  return (new Date(match[2]) - new Date(match[1])) / (1000*60*60*24) >= 20;
 }
 
 function extractPeriod(subject) {
@@ -46,12 +37,16 @@ export default async function handler(req, res) {
     const { token, emailId, emailBody, emailSubject, emailDate } = req.body || {};
     if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
     if (!emailBody) return res.status(400).json({ error: "No email body provided" });
-    if (pendingData && pendingData.emailId === emailId) return res.status(200).json({ status: "already_pending" });
 
-    const period   = extractPeriod(emailSubject || "");
-    const totalHrs = extractTotalHours(emailBody);
-    const isMonthly= isMonthlyTimesheet(period);
-    const payMonth = period ? inferPayMonth(period) : null;
+    // Skip if already in queue
+    if (queue.find(q => q.emailId === emailId)) {
+      return res.status(200).json({ status: "already_queued" });
+    }
+
+    const period    = extractPeriod(emailSubject || "");
+    const totalHrs  = extractTotalHours(emailBody);
+    const isMonthly = isMonthlyTimesheet(period);
+    const payMonth  = period ? inferPayMonth(period) : null;
 
     try {
       const upstream = await fetch("https://api.anthropic.com/v1/messages", {
@@ -86,32 +81,34 @@ ${emailBody}` }],
       const text = claudeData.content.map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
       const days = JSON.parse(text);
 
-      pendingData = {
+      queue.push({
         emailId,
         emailDate: emailDate || new Date().toISOString(),
         processedAt: new Date().toISOString(),
         days,
         meta: { isMonthly, period: period||"", payMonth: payMonth||"", totalHrs: totalHrs||"", subject: emailSubject||"" },
-      };
+      });
 
-      return res.status(200).json({ status: "processed", count: days.length, isMonthly, period, payMonth });
+      return res.status(200).json({ status: "queued", count: days.length, queueLength: queue.length, isMonthly, period, payMonth });
     } catch (err) {
       return res.status(500).json({ error: err.message || "Parse error" });
     }
   }
 
+  // GET — return oldest item in queue
   if (req.method === "GET") {
     const { token } = req.query;
     if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
-    if (!pendingData) return res.status(200).json({ status: "none" });
-    return res.status(200).json({ status: "pending", data: pendingData });
+    if (queue.length === 0) return res.status(200).json({ status: "none" });
+    return res.status(200).json({ status: "pending", data: queue[0], remaining: queue.length });
   }
 
+  // DELETE — remove oldest item (Vaulted confirms receipt)
   if (req.method === "DELETE") {
     const { token } = req.query;
     if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
-    pendingData = null;
-    return res.status(200).json({ status: "cleared" });
+    queue.shift(); // remove first item
+    return res.status(200).json({ status: "cleared", remaining: queue.length });
   }
 
   return res.status(405).json({ error: "Method not allowed" });
