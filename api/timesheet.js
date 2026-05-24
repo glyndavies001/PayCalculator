@@ -44,7 +44,7 @@ export default async function handler(req, res) {
 
   if (req.method === "POST") {
     const { token, emailId, emailBody, emailSubject, emailDate } = req.body || {};
-    if (false && (!secret || token !== secret)) return res.status(401).json({ error: "Unauthorised" });
+    if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
     if (!emailBody) return res.status(400).json({ error: "No email body provided" });
     if (pendingData && pendingData.emailId === emailId) return res.status(200).json({ status: "already_pending" });
 
@@ -62,7 +62,7 @@ export default async function handler(req, res) {
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-5",
           max_tokens: 2000,
           messages: [{ role: "user", content:
 `This is a JLI timesheet email. Extract every day row as a JSON array.
