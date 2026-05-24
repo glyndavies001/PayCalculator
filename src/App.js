@@ -1175,7 +1175,7 @@ export default function App() {
     avgNet:fyAvgNet(history),
   }),[history]);
 
-  const updH=h=>{setHistory(h);save(SK.history,h);};
+  const updH=h=>{setHistory(h);};
   const updSB=b=>{setSharedBills(b);save(SK.sharedBills,b);};
   const updGB=b=>{setGlynBills(b);save(SK.glynBills,b);};
   const updC=c=>{setCats(c);save(SK.cats,c);};
@@ -1217,7 +1217,7 @@ export default function App() {
       setHistory(prev=>{
         let h=[...prev];
         successful.forEach(p=>{const exists=h.find(x=>x.month===p.month);h=exists?h.map(x=>x.month===p.month?p:x):[...h,p];});
-        const sorted=sortH(h);save(SK.history,sorted);return sorted;
+        const sorted=sortH(h);return sorted;
       });
       const last=successful[successful.length-1];
       setC("bonus", last.bonus);
@@ -2779,6 +2779,9 @@ const calcTimesheetTotals = days => {
         <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.9.0</span>
       </div>
 
+    </div>
+      </div>
+      </div>
     </div>
     </ErrorBoundary>
   );
