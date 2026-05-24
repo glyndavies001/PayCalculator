@@ -781,7 +781,7 @@ export default function App() {
   const [tsLastEmail, setTsLastEmail] = useState(() => load(SK.tsLastEmail, ""));
   const [tsAutoMsg, setTsAutoMsg] = useState(null); // { text, ok } — brief status toast
 
-  const applyTimesheetDays = React.useCallback((days, emailId) => {
+  const applyTimesheetDays = React.useCallback((days, emailId, meta = null) => {
     const STD = 8.25;
     const enrichedDays = days.map(d => {
       const { isHoliday, isHalf } = normaliseHoliday(d.holiday);
@@ -811,10 +811,21 @@ export default function App() {
       });
     }
 
+    // Only merge into accumulator if days fall within current pay period
+    const now = new Date();
+    const currentPeriodStart = getPayday(now.getMonth() === 0 ? now.getFullYear()-1 : now.getFullYear(), now.getMonth() === 0 ? 11 : now.getMonth()-1);
+    const currentPeriodEnd = getPayday(now.getFullYear(), now.getMonth());
+    const currentDays = enrichedDays.filter(d => {
+      if (!d.date) return false;
+      const [dd, mm] = d.date.split("/").map(Number);
+      const dayDate = new Date(now.getFullYear(), mm - 1, dd);
+      return dayDate >= currentPeriodStart && dayDate <= currentPeriodEnd;
+    });
+
     // Merge into accumulated timesheet
     setAccumulated(prev => {
       const seen = new Set();
-      const merged = [...(prev.days || []), ...enrichedDays]
+      const merged = [...(prev.days || []), ...(currentDays.length > 0 ? currentDays : [])]
         .sort((a, b) => {
           const [ad, am] = (a.date || "").split("/").map(Number);
           const [bd, bm] = (b.date || "").split("/").map(Number);
@@ -833,11 +844,12 @@ export default function App() {
       return newAcc;
     });
 
-    setTsLastUpload(new Date().toISOString());
-    save(SK.tsLastUpload, new Date().toISOString());
+    if (currentDays.length > 0) {
+      setTsLastUpload(new Date().toISOString());
+      save(SK.tsLastUpload, new Date().toISOString());
+    }
     setTsLastEmail(emailId);
     save(SK.tsLastEmail, emailId);
-    setC("otHrs", 0);
 
     // If monthly timesheet, save to history and run discrepancy check
     if (meta && meta.isMonthly) {
@@ -2769,7 +2781,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.8.1</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.8.2</span>
       </div>
 
     </div>
