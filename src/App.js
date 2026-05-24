@@ -572,6 +572,30 @@ function shouldFireTimesheetNotif(tsLastUpload) {
   return isMonday && daysSince >= 7;
 }
 
+// ── Error Boundary ───────────────────────────────────────────────────────────
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("Vaulted crash:", error, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans',sans-serif",padding:"24px 20px"}}>
+          <div style={{fontSize:32,marginBottom:16}}>💥</div>
+          <h2 style={{color:"#ff6b8a",marginBottom:12}}>Vaulted crashed</h2>
+          <div style={{background:"#1a0a0a",border:"1px solid #5a1a2a",borderRadius:10,padding:"14px",fontSize:12,color:"#ff8c8c",fontFamily:"monospace",wordBreak:"break-all",lineHeight:1.6,marginBottom:16}}>
+            {this.state.error.toString()}
+          </div>
+          <button onClick={()=>this.setState({error:null})} style={{background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontWeight:700,padding:"12px 24px",cursor:"pointer",fontSize:14}}>
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ── Auth helpers ─────────────────────────────────────────────────────────────
 
 function LoginScreen({ onLogin }) {
@@ -1459,6 +1483,7 @@ const calcTimesheetTotals = days => {
 
 
   return (
+    <ErrorBoundary>
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
       {/* Auto-import toast */}
       {tsAutoMsg && (
@@ -2737,5 +2762,6 @@ const calcTimesheetTotals = days => {
       </div>
 
     </div>
+    </ErrorBoundary>
   );
 }
