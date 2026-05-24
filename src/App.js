@@ -952,7 +952,7 @@ export default function App() {
     checkDiscrepancy(entry, history);
   };
 
-  const checkDiscrepancy = (tsEntry, hist) => {
+  const checkDiscrepancy = async (tsEntry, hist) => {
     if (!tsEntry || !tsEntry.month) return;
     const payslip = hist.find(h => h.month === tsEntry.month);
     if (!payslip) return; // payslip not yet uploaded — will recheck when payslip arrives
