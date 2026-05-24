@@ -1,22 +1,45 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
+import { createClient } from "@supabase/supabase-js";
+
+// Catch any module-level errors and display them
+window.addEventListener("error", (e) => {
+  const root = document.getElementById("root");
+  if (root && root.children.length === 0) {
+    root.innerHTML = `<div style="background:#0d0f14;color:#ff6b8a;padding:20px;font-family:monospace;min-height:100vh;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;">
+      <div style="font-size:32px;margin-bottom:16px;">💥</div>
+      <div style="color:#fff;font-size:18px;margin-bottom:12px;">Vaulted failed to load</div>
+      <div style="background:#1a0a0a;padding:14px;border-radius:8px;border:1px solid #5a1a2a;">
+        <strong>Error:</strong> ${e.message || "Unknown"}<br>
+        <strong>Source:</strong> ${e.filename || "Unknown"}<br>
+        <strong>Line:</strong> ${e.lineno || "?"}:${e.colno || "?"}<br><br>
+        <strong>Stack:</strong><br>${(e.error && e.error.stack) || "No stack trace"}
+      </div>
+    </div>`;
+  }
+});
+
+window.addEventListener("unhandledrejection", (e) => {
+  const root = document.getElementById("root");
+  if (root && root.children.length === 0) {
+    root.innerHTML = `<div style="background:#0d0f14;color:#ff6b8a;padding:20px;font-family:monospace;min-height:100vh;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;">
+      <div style="font-size:32px;margin-bottom:16px;">💥</div>
+      <div style="color:#fff;font-size:18px;margin-bottom:12px;">Vaulted promise rejected</div>
+      <div style="background:#1a0a0a;padding:14px;border-radius:8px;border:1px solid #5a1a2a;">
+        ${e.reason && e.reason.message ? e.reason.message : String(e.reason)}<br><br>
+        ${e.reason && e.reason.stack ? e.reason.stack : ""}
+      </div>
+    </div>`;
+  }
+});
+
 // API calls routed through Vercel serverless proxy
 const API_PROXY = "/api/claude";
 
-// Supabase stub — testing if import causes blank page
-const supabase = {
-  auth: {
-    getSession: async () => ({ data: { session: null } }),
-    onAuthStateChange: () => ({ data: { subscription: { unsubscribe: ()=>{} } } }),
-    signInWithPassword: async () => ({ data: null, error: { message: "Supabase not loaded" } }),
-    signUp: async () => ({ error: { message: "Supabase not loaded" } }),
-    signOut: async () => {},
-    resetPasswordForEmail: async () => {},
-  },
-  from: () => ({ select: ()=>({ eq: ()=>({ order: ()=>({ data: [] }), single: ()=>({ data: null }) }) }), upsert: ()=>({}), delete: ()=>({ eq: ()=>({ eq: ()=>({}) }) }) }),
-  channel: () => ({ on: function(){ return this; }, subscribe: ()=>({}) }),
-  removeChannel: ()=>{},
-};
+// Supabase client — real connection
+const SUPABASE_URL = "https://yfbarahnwcrwewtpithb.supabase.co";
+const SUPABASE_KEY = "sb_publishable_ItUAbr04KIijWuO-JWgDNg_J5YCwaqK";
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 function getWorkingDaysInMonth(year, month) {
   const days = new Date(year, month + 1, 0).getDate();
