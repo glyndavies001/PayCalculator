@@ -1,9 +1,12 @@
 /**
- * Vercel Serverless Function — Timesheet Inbound Processor (queue version)
+ * Vercel Serverless Function — Timesheet Inbound Processor (Redis queue)
  * File: /api/timesheet.js
  */
 
-let queue = []; // holds multiple processed timesheets
+import { Redis } from '@upstash/redis';
+
+const redis = Redis.fromEnv();
+const QUEUE_KEY = 'vaulted_ts_queue';
 
 function inferPayMonth(periodStr) {
   const match = periodStr.match(/to (\d{4})-(\d{2})-(\d{2})/);
@@ -38,8 +41,10 @@ export default async function handler(req, res) {
     if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
     if (!emailBody) return res.status(400).json({ error: "No email body provided" });
 
-    // Skip if already in queue
-    if (queue.find(q => q.emailId === emailId)) {
+    // Check if already in queue
+    const queue = await redis.lrange(QUEUE_KEY, 0, -1);
+    const parsed = queue.map(i => typeof i === 'string' ? JSON.parse(i) : i);
+    if (parsed.find(q => q.emailId === emailId)) {
       return res.status(200).json({ status: "already_queued" });
     }
 
@@ -66,7 +71,7 @@ Return ONLY a JSON array, no other text:
 
 Rules:
 - Include ALL rows including weekends, holidays, and zero-hour days
-- "holiday" field: copy the EXACT text from the Holiday column. If empty or shows "-", use "" (empty string). Do NOT normalise — preserve whatever JLI put there (e.g. "Full Day", "Half Day", "Annual Leave", "AL", "H", "0.5" etc)
+- "holiday" field: copy the EXACT text from the Holiday column. If empty or shows "-", use "" (empty string). Do NOT normalise — preserve whatever JLI put there
 - Holiday rows have "-" for In/Out and "0h 00m" for hours — still include them
 - Weekend rows with 0h 00m: include with hours "0h 00m"
 - Use the hours column value exactly as shown
@@ -81,15 +86,18 @@ ${emailBody}` }],
       const text = claudeData.content.map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
       const days = JSON.parse(text);
 
-      queue.push({
+      const entry = {
         emailId,
         emailDate: emailDate || new Date().toISOString(),
         processedAt: new Date().toISOString(),
         days,
         meta: { isMonthly, period: period||"", payMonth: payMonth||"", totalHrs: totalHrs||"", subject: emailSubject||"" },
-      });
+      };
 
-      return res.status(200).json({ status: "queued", count: days.length, queueLength: queue.length, isMonthly, period, payMonth });
+      await redis.rpush(QUEUE_KEY, JSON.stringify(entry));
+      const queueLength = await redis.llen(QUEUE_KEY);
+
+      return res.status(200).json({ status: "queued", count: days.length, queueLength, isMonthly, period, payMonth });
     } catch (err) {
       return res.status(500).json({ error: err.message || "Parse error" });
     }
@@ -99,16 +107,20 @@ ${emailBody}` }],
   if (req.method === "GET") {
     const { token } = req.query;
     if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
-    if (queue.length === 0) return res.status(200).json({ status: "none" });
-    return res.status(200).json({ status: "pending", data: queue[0], remaining: queue.length });
+    const item = await redis.lindex(QUEUE_KEY, 0);
+    if (!item) return res.status(200).json({ status: "none" });
+    const data = typeof item === 'string' ? JSON.parse(item) : item;
+    const remaining = await redis.llen(QUEUE_KEY);
+    return res.status(200).json({ status: "pending", data, remaining });
   }
 
-  // DELETE — remove oldest item (Vaulted confirms receipt)
+  // DELETE — remove oldest item
   if (req.method === "DELETE") {
     const { token } = req.query;
     if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
-    queue.shift(); // remove first item
-    return res.status(200).json({ status: "cleared", remaining: queue.length });
+    await redis.lpop(QUEUE_KEY);
+    const remaining = await redis.llen(QUEUE_KEY);
+    return res.status(200).json({ status: "cleared", remaining });
   }
 
   return res.status(405).json({ error: "Method not allowed" });
