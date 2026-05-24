@@ -1731,7 +1731,6 @@ const calcTimesheetTotals = days => {
               <CollapsibleChart key={c.key} title={c.title} data={allSorted} dataKey={c.key} color={c.color}/>
             ))}
           </div>
-        </div>
         )}
 
         {tab==="Budget"&&(
@@ -1889,7 +1888,6 @@ const calcTimesheetTotals = days => {
                 <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit · Drag to categorise · Double-tap category to rename</p>
               </div>
             )}
-          </div>
           </div>
         )}
 
@@ -2780,7 +2778,6 @@ const calcTimesheetTotals = days => {
         <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.9.0</span>
       </div>
 
-    </div>
     </div>
   );
 }
