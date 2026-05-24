@@ -1290,17 +1290,17 @@ export default function App() {
 
         {tab==="Dashboard"&&(
           <div>
-            {showTsReminder&&(
-              {!pwaInstalled && pwaPrompt && (
-                <div onClick={triggerInstall} style={{background:"#0a1520",border:"1px solid #4a9eff44",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-                  <span style={{fontSize:20}}>📲</span>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>Add Vaulted to Home Screen</div>
-                    <div style={{fontSize:11,color:"#3a4460",marginTop:2}}>Install for quick access — works offline</div>
-                  </div>
-                  <span style={{fontSize:11,color:"#4a9eff",fontWeight:700}}>Install →</span>
+            {!pwaInstalled && pwaPrompt && (
+              <div onClick={triggerInstall} style={{background:"#0a1520",border:"1px solid #4a9eff44",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <span style={{fontSize:20}}>📲</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>Add Vaulted to Home Screen</div>
+                  <div style={{fontSize:11,color:"#3a4460",marginTop:2}}>Install for quick access — works offline</div>
                 </div>
-              )}
+                <span style={{fontSize:11,color:"#4a9eff",fontWeight:700}}>Install →</span>
+              </div>
+            )}
+            {showTsReminder&&(
               <div onClick={()=>setTab("Upload")} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>⚠️</span>
                 <div>
