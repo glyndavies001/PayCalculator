@@ -18,7 +18,7 @@ function getCurrentMonthHours() {
 }
 
 const PAY = {
-  baseRate: 14.50, oteRate: 16.84, otRate: 17.40, weekendOtRate: 21.75,
+  baseRate: 14.50, otRate: 17.40, weekendOtRate: 21.75,
   taxFreeMonthly: 1047.50, niPrimaryThreshold: 1048, niUpperThreshold: 4189,
   slThreshold: 2372, nestRate: 0.05, taxCode: "C1257L", niCategory: "A",
   bonusTiers: [
@@ -1115,6 +1115,7 @@ export default function App() {
           <p style={obSub}>These are pre-filled from your latest payslip. Tap any value to update it in Pay Calc later.</p>
           {[
             ["Base Rate", "£" + PAY.baseRate + "/hr"],
+            ["OTE Rate (Tier 6)", "£" + (PAY.baseRate + 1.00).toFixed(2) + "/hr"],
             ["OT Rate", "£" + PAY.otRate + "/hr"],
             ["Weekend OT", "£" + PAY.weekendOtRate + "/hr"],
             ["Tax Code", PAY.taxCode],
@@ -1721,7 +1722,7 @@ export default function App() {
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
                 {[
                   {label:"Base Rate",  value:"£"+PAY.baseRate+"/hr",      sub:"Standard hours",    accent:"#4a9eff"},
-                  {label:"OTE Rate",   value:"£"+PAY.oteRate+"/hr",        sub:"+ perf. allowance", accent:"#00c88c"},
+                  {label:"OTE Rate",   value:"£"+(PAY.baseRate+effectiveAllowance).toFixed(2)+"/hr", sub:"base + tier allowance", accent:"#00c88c"},
                   {label:"Overtime",   value:"£"+PAY.otRate+"/hr",         sub:"Weekday OT",        accent:"#4affd4"},
                   {label:"Weekend OT", value:"£"+PAY.weekendOtRate+"/hr",  sub:"Weekend OT",        accent:"#ffb84a"},
                 ].map(k=>(
