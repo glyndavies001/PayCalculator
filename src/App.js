@@ -1731,7 +1731,7 @@ const calcTimesheetTotals = days => {
               <CollapsibleChart key={c.key} title={c.title} data={allSorted} dataKey={c.key} color={c.color}/>
             ))}
           </div>
-          </div>
+        </div>
         )}
 
         {tab==="Budget"&&(
