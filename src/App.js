@@ -167,6 +167,8 @@ const SK = {
   scenarios:    "vaulted_scenarios",       // named Pay Calc scenarios
   notifPerm:    "vaulted_notif_perm",      // "granted" | "denied" | "dismissed"
   onboarded:    "vaulted_onboarded",       // true once onboarding is complete
+  leaveSettings:"vaulted_leave_settings",  // { baseEntitlement, serviceDays, startYear }
+  leaveLogs:    "vaulted_leave_logs",      // [{ id, date, days, label }]
 };
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
@@ -242,7 +244,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
-const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Upload"];
+const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload"];
 const RANGES = ["3M","6M","12M","2Y","All"];
 const SL_START_YEAR = 2019;
 const SL_WRITEOFF_YEAR = 2049;
@@ -413,6 +415,37 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
   );
 }
 
+
+// ── Haptic feedback ──────────────────────────────────────────────────────────
+function haptic(style = "light") {
+  if (!navigator.vibrate) return;
+  if (style === "light")  navigator.vibrate(8);
+  if (style === "medium") navigator.vibrate(20);
+  if (style === "heavy")  navigator.vibrate([30, 10, 30]);
+  if (style === "success")navigator.vibrate([10, 50, 30]);
+  if (style === "error")  navigator.vibrate([40, 20, 40, 20, 40]);
+}
+
+// ── Annual leave helpers ──────────────────────────────────────────────────────
+function getLeaveYear() {
+  return new Date().getFullYear(); // Jan–Dec
+}
+
+function effectiveEntitlement(baseEntitlement, serviceDays) {
+  // Service days are added June 1st each year, capped at 6
+  const now = new Date();
+  const juneFirst = new Date(now.getFullYear(), 5, 1); // June 1
+  const serviceAdded = now >= juneFirst ? Math.min(serviceDays, 6) : Math.min(Math.max(serviceDays - 1, 0), 6);
+  return baseEntitlement + serviceAdded;
+}
+
+function logsForYear(logs, year) {
+  return logs.filter(l => new Date(l.date).getFullYear() === year);
+}
+
+function daysTakenInYear(logs, year) {
+  return logsForYear(logs, year).reduce((s, l) => s + l.days, 0);
+}
 
 // ── Push notification helpers ────────────────────────────────────────────────
 
@@ -693,6 +726,35 @@ export default function App() {
 
   const handleUnlock = () => { setLocked(false); lastActiveRef.current = Date.now(); };
 
+  // ── Annual Leave ─────────────────────────────────────────────────────────
+  const [leaveSettings, setLeaveSettings] = useState(() => load(SK.leaveSettings, { baseEntitlement: 29, serviceDays: 4, startYear: 2022 }));
+  const [leaveLogs, setLeaveLogs] = useState(() => load(SK.leaveLogs, []));
+  const [leaveForm, setLeaveForm] = useState({ date: "", days: "1", label: "" });
+  const [leaveEditSettings, setLeaveEditSettings] = useState(false);
+  const [leaveDraftSettings, setLeaveDraftSettings] = useState(null);
+
+  const saveLeaveLog = () => {
+    if (!leaveForm.date || !leaveForm.days) return;
+    haptic("success");
+    const entry = { id: Date.now(), date: leaveForm.date, days: parseFloat(leaveForm.days), label: leaveForm.label.trim() };
+    const updated = [...leaveLogs, entry].sort((a,b) => new Date(b.date) - new Date(a.date));
+    setLeaveLogs(updated); save(SK.leaveLogs, updated);
+    setLeaveForm({ date: "", days: "1", label: "" });
+  };
+
+  const deleteLeaveLog = (id) => {
+    haptic("medium");
+    const updated = leaveLogs.filter(l => l.id !== id);
+    setLeaveLogs(updated); save(SK.leaveLogs, updated);
+  };
+
+  const saveLeaveSettings = () => {
+    haptic("success");
+    setLeaveSettings(leaveDraftSettings);
+    save(SK.leaveSettings, leaveDraftSettings);
+    setLeaveEditSettings(false);
+  };
+
   // ── Notifications ────────────────────────────────────────────────────────
   const [notifPerm, setNotifPerm] = useState(() => load(SK.notifPerm, null));
 
@@ -701,6 +763,24 @@ export default function App() {
     setNotifPerm(result);
     save(SK.notifPerm, result);
     return result;
+  };
+
+  // PWA install prompt
+  const [pwaPrompt, setPwaPrompt] = React.useState(null);
+  const [pwaInstalled, setPwaInstalled] = React.useState(() => window.matchMedia("(display-mode: standalone)").matches);
+  React.useEffect(() => {
+    const handler = (e) => { e.preventDefault(); setPwaPrompt(e); };
+    window.addEventListener("beforeinstallprompt", handler);
+    window.addEventListener("appinstalled", () => setPwaInstalled(true));
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+  const triggerInstall = async () => {
+    if (!pwaPrompt) return;
+    haptic("medium");
+    pwaPrompt.prompt();
+    const { outcome } = await pwaPrompt.userChoice;
+    if (outcome === "accepted") setPwaInstalled(true);
+    setPwaPrompt(null);
   };
 
   // Fire notifications once per session after unlock
@@ -1179,7 +1259,7 @@ export default function App() {
           <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}>
             <span style={{color:"#4a9eff"}}>V</span>AULTED
           </h1>
-          <button onClick={()=>setLocked(true)} title="Lock app"
+          <button onClick={()=>{haptic("medium");setLocked(true);}} title="Lock app"
             style={{background:"none",border:"none",color:"#3a4460",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:11,color:"#5a6480"}}>{history.length} payslips</div>
@@ -1188,7 +1268,7 @@ export default function App() {
         </div>
         <div style={{display:"flex",gap:2,marginBottom:2}}>
           {PRIMARY_TABS.map(t=>(
-            <button key={t} onClick={()=>setTab(t)} style={{
+            <button key={t} onClick={()=>{haptic();setTab(t);}} style={{
               flex:1,background:tab===t?"#4a9eff":"transparent",
               color:tab===t?"#fff":"#5a6480",border:"none",
               borderRadius:"6px 6px 0 0",padding:"8px 4px",fontSize:12,fontWeight:600,cursor:"pointer"
@@ -1197,7 +1277,7 @@ export default function App() {
         </div>
         <div style={{display:"flex",gap:2,borderTop:"1px solid #1e2535",paddingTop:2}}>
           {SECONDARY_TABS.map(t=>(
-            <button key={t} onClick={()=>setTab(t)} style={{
+            <button key={t} onClick={()=>{haptic();setTab(t);}} style={{
               flex:1,background:tab===t?"#2a3a5a":"transparent",
               color:tab===t?"#a0c0ff":"#3a4460",border:"none",
               padding:"6px 4px",fontSize:11,fontWeight:600,cursor:"pointer"
@@ -1211,6 +1291,16 @@ export default function App() {
         {tab==="Dashboard"&&(
           <div>
             {showTsReminder&&(
+              {!pwaInstalled && pwaPrompt && (
+                <div onClick={triggerInstall} style={{background:"#0a1520",border:"1px solid #4a9eff44",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                  <span style={{fontSize:20}}>📲</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>Add Vaulted to Home Screen</div>
+                    <div style={{fontSize:11,color:"#3a4460",marginTop:2}}>Install for quick access — works offline</div>
+                  </div>
+                  <span style={{fontSize:11,color:"#4a9eff",fontWeight:700}}>Install →</span>
+                </div>
+              )}
               <div onClick={()=>setTab("Upload")} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>⚠️</span>
                 <div>
@@ -1948,6 +2038,137 @@ export default function App() {
           </div>
         )}
 
+        {tab==="Leave"&&(()=>{
+          const year = getLeaveYear();
+          const entitlement = effectiveEntitlement(leaveSettings.baseEntitlement, leaveSettings.serviceDays);
+          const taken = daysTakenInYear(leaveLogs, year);
+          const remaining = entitlement - taken;
+          const pct = Math.min(100, Math.round((taken / entitlement) * 100));
+          const remainPct = 100 - pct;
+          const yearLogs = logsForYear(leaveLogs, year);
+          const inp2 = {background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px",width:"100%",boxSizing:"border-box",fontFamily:"inherit"};
+
+          return (
+            <div style={{padding:"14px 14px 0"}}>
+
+              {/* Settings toggle */}
+              {leaveEditSettings && leaveDraftSettings ? (
+                <div style={{...card,marginBottom:14,border:"1px solid #4a9eff44"}}>
+                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Leave Settings</div>
+                  {[
+                    ["Base Entitlement (days)", "baseEntitlement", "number"],
+                    ["Service Days (0–6)", "serviceDays", "number"],
+                    ["Start Year at JLI", "startYear", "number"],
+                  ].map(([label, key, type]) => (
+                    <div key={key} style={{marginBottom:10}}>
+                      <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>{label}</label>
+                      <input type={type} value={leaveDraftSettings[key]}
+                        onChange={e=>setLeaveDraftSettings(s=>({...s,[key]:parseInt(e.target.value)||0}))}
+                        style={inp2}/>
+                    </div>
+                  ))}
+                  <div style={{fontSize:11,color:"#3a4460",marginBottom:12,lineHeight:1.6}}>
+                    Service days are added on June 1st each year. Current effective entitlement after June 1st: <span style={{color:"#4a9eff",fontWeight:700}}>{leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)} days</span>
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>{haptic();setLeaveEditSettings(false);}} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:"#5a6480",fontSize:13,fontWeight:600,padding:"11px",cursor:"pointer"}}>Cancel</button>
+                    <button onClick={saveLeaveSettings} style={{flex:2,background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"}}>Save Settings</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Summary cards */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                    {[
+                      {label:"Entitlement", value:entitlement+" days", accent:"#4a9eff"},
+                      {label:"Taken",        value:taken+" days",       accent:"#ff8c4a"},
+                      {label:"Remaining",    value:remaining+" days",   accent:remaining>5?"#00c88c":remaining>0?"#ffb84a":"#ff4a6a"},
+                    ].map(k=>(
+                      <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
+                        <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>{k.label}</div>
+                        <div style={{fontSize:16,fontWeight:800,color:k.accent}}>{k.value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Progress bar */}
+                  <div style={{...card,marginBottom:14}}>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#5a6480",marginBottom:8}}>
+                      <span>{year} Leave Year</span>
+                      <span style={{color:"#4a9eff",fontWeight:700}}>{pct}% used</span>
+                    </div>
+                    <div style={{background:"#1e2535",borderRadius:99,height:10,overflow:"hidden",marginBottom:8}}>
+                      <div style={{width:pct+"%",height:"100%",background:"linear-gradient(90deg,#ff8c4a88,#ff8c4a)",borderRadius:99,transition:"width 0.4s"}}/>
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#3a4460"}}>
+                      <span>{taken} days taken</span>
+                      <span>{remaining} days remaining of {entitlement}</span>
+                    </div>
+                    <button onClick={()=>{haptic();setLeaveDraftSettings({...leaveSettings});setLeaveEditSettings(true);}}
+                      style={{marginTop:12,background:"none",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"7px 14px",cursor:"pointer",width:"100%"}}>
+                      ⚙️ Edit entitlement settings
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {/* Log leave form */}
+              <div style={{...card,marginBottom:14}}>
+                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Log Leave</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 80px",gap:8,marginBottom:8}}>
+                  <div>
+                    <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Date</label>
+                    <input type="date" value={leaveForm.date} onChange={e=>setLeaveForm(f=>({...f,date:e.target.value}))} style={inp2}/>
+                  </div>
+                  <div>
+                    <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Days</label>
+                    <input type="number" min="0.5" max="30" step="0.5" value={leaveForm.days}
+                      onChange={e=>setLeaveForm(f=>({...f,days:e.target.value}))} style={inp2}/>
+                  </div>
+                </div>
+                <div style={{marginBottom:10}}>
+                  <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Label (optional)</label>
+                  <input type="text" placeholder="e.g. Christmas week, bank holiday…" value={leaveForm.label}
+                    onChange={e=>setLeaveForm(f=>({...f,label:e.target.value}))}
+                    onKeyDown={e=>e.key==="Enter"&&saveLeaveLog()}
+                    style={inp2}/>
+                </div>
+                <button onClick={saveLeaveLog} disabled={!leaveForm.date||!leaveForm.days}
+                  style={{width:"100%",background:leaveForm.date&&leaveForm.days?"#00c88c":"#1e2535",border:"none",borderRadius:8,color:leaveForm.date&&leaveForm.days?"#000":"#3a4460",fontSize:13,fontWeight:700,padding:"12px",cursor:leaveForm.date&&leaveForm.days?"pointer":"default",transition:"background 0.2s"}}>
+                  + Log Leave
+                </button>
+              </div>
+
+              {/* Leave log for this year */}
+              {yearLogs.length > 0 && (
+                <div style={{...card,padding:0,overflow:"hidden",marginBottom:14}}>
+                  <div style={{padding:"10px 12px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase",display:"grid",gridTemplateColumns:"80px 48px 1fr 28px"}}>
+                    <span>Date</span><span style={{textAlign:"center"}}>Days</span><span>Label</span><span></span>
+                  </div>
+                  {yearLogs.map((l,i)=>(
+                    <div key={l.id} style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
+                      <span style={{color:"#8892b0"}}>{new Date(l.date).toLocaleDateString("en-GB",{day:"2-digit",month:"short"})}</span>
+                      <span style={{textAlign:"center",color:"#ff8c4a",fontWeight:700}}>{l.days}d</span>
+                      <span style={{color:"#5a6480",fontSize:11}}>{l.label||"—"}</span>
+                      <button onClick={()=>deleteLeaveLog(l.id)} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
+                    </div>
+                  ))}
+                  <div style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:12,fontWeight:700,background:"#0d1117",borderTop:"2px solid #2a3050"}}>
+                    <span style={{color:"#5a6480",fontSize:10,textTransform:"uppercase",letterSpacing:0.5}}>Total</span>
+                    <span style={{textAlign:"center",color:"#ff8c4a"}}>{taken}d</span>
+                    <span></span><span></span>
+                  </div>
+                </div>
+              )}
+
+              {yearLogs.length === 0 && (
+                <div style={{textAlign:"center",padding:"32px 0",color:"#3a4460",fontSize:13}}>No leave logged for {year} yet</div>
+              )}
+
+            </div>
+          );
+        })()}
+
         {tab==="Upload"&&(
           <div>
           <div style={{...card,textAlign:"center",marginBottom:14}}>
@@ -2170,7 +2391,7 @@ export default function App() {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.6.1</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.7.0</span>
       </div>
 
     </div>
