@@ -165,6 +165,8 @@ const SK = {
   pinHash:      "vaulted_pin_hash",        // SHA-256 hash of 4-digit PIN
   webAuthnCred: "vaulted_webauthn_cred",   // stored credential ID for biometric
   scenarios:    "vaulted_scenarios",       // named Pay Calc scenarios
+  notifPerm:    "vaulted_notif_perm",      // "granted" | "denied" | "dismissed"
+  onboarded:    "vaulted_onboarded",       // true once onboarding is complete
 };
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
@@ -412,6 +414,45 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
 }
 
 
+// ── Push notification helpers ────────────────────────────────────────────────
+
+async function requestNotifPermission() {
+  if (!("Notification" in window)) return "unsupported";
+  if (Notification.permission === "granted") return "granted";
+  if (Notification.permission === "denied") return "denied";
+  const result = await Notification.requestPermission();
+  return result;
+}
+
+function sendNotification(title, body, tag) {
+  if (Notification.permission !== "granted") return;
+  try {
+    new Notification(title, {
+      body,
+      tag,
+      icon: "/favicon.ico",
+      badge: "/favicon.ico",
+    });
+  } catch {}
+}
+
+// Check if tomorrow is payday
+function isTomorrowPayday() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const pd = getPayday(tomorrow.getFullYear(), tomorrow.getMonth());
+  return pd.toDateString() === tomorrow.toDateString();
+}
+
+// Check if a timesheet reminder should fire (Monday or 7+ days since last upload)
+function shouldFireTimesheetNotif(tsLastUpload) {
+  const now = new Date();
+  const isMonday = now.getDay() === 1;
+  if (!tsLastUpload) return isMonday;
+  const daysSince = Math.floor((now - new Date(tsLastUpload)) / (1000 * 60 * 60 * 24));
+  return isMonday && daysSince >= 7;
+}
+
 // ── Security helpers ─────────────────────────────────────────────────────────
 
 async function hashPIN(pin) {
@@ -642,13 +683,43 @@ export default function App() {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
 
-  const handleSetup = (hash, cred) => {
+  const handleSetup = async (hash, cred) => {
     setPinHash(hash); save(SK.pinHash, hash);
     setWebAuthnCred(cred); save(SK.webAuthnCred, cred);
+    // Request notification permission immediately after first-time setup
+    await requestAndSaveNotifPerm();
     setLocked(false);
   };
 
   const handleUnlock = () => { setLocked(false); lastActiveRef.current = Date.now(); };
+
+  // ── Notifications ────────────────────────────────────────────────────────
+  const [notifPerm, setNotifPerm] = useState(() => load(SK.notifPerm, null));
+
+  const requestAndSaveNotifPerm = async () => {
+    const result = await requestNotifPermission();
+    setNotifPerm(result);
+    save(SK.notifPerm, result);
+    return result;
+  };
+
+  // Fire notifications once per session after unlock
+  const notifFiredRef = React.useRef(false);
+  React.useEffect(() => {
+    if (locked || notifFiredRef.current || Notification.permission !== "granted") return;
+    notifFiredRef.current = true;
+    if (isTomorrowPayday()) {
+      sendNotification("💰 Payday tomorrow!", "Your pay should land tomorrow — check Vaulted for your estimate.", "payday");
+    }
+    if (shouldFireTimesheetNotif(tsLastUpload)) {
+      sendNotification("📋 Timesheet reminder", "It's Monday — don't forget to upload your weekly timesheet.", "timesheet");
+    }
+  }, [locked]);
+
+  // ── Onboarding ───────────────────────────────────────────────────────────
+  const [onboarded, setOnboarded] = useState(() => load(SK.onboarded, false));
+  const [onboardStep, setOnboardStep] = useState(0);
+  const completeOnboarding = () => { setOnboarded(true); save(SK.onboarded, true); };
 
   // ── Named Scenarios ──────────────────────────────────────────────────────
   const [scenarios, setScenarios] = useState(() => load(SK.scenarios, []));
@@ -1000,6 +1071,103 @@ export default function App() {
   // Show lock screen on fresh load / after inactivity
   if (locked) {
     return <LockScreen pinHash={pinHash} credId={webAuthnCred} onUnlock={handleUnlock} onSetup={handleSetup} />;
+  }
+
+  // Show onboarding flow for fresh installs (no payslip history yet beyond defaults)
+  if (!onboarded) {
+    const obBg = { minHeight:"100vh", background:"#0d0f14", color:"#e8eaf0", fontFamily:"'DM Sans','Segoe UI',sans-serif", padding:"28px 20px", display:"flex", flexDirection:"column" };
+    const obCard = { background:"#141824", borderRadius:12, border:"1px solid #1e2535", padding:"20px 16px", marginBottom:16 };
+    const obH = { margin:"0 0 6px", fontSize:18, fontWeight:800, color:"#fff" };
+    const obSub = { margin:"0 0 20px", fontSize:13, color:"#5a6480", lineHeight:1.6 };
+    const obBtn = (label, onClick, accent) => (
+      <button onClick={onClick} style={{ width:"100%", background:accent||"#4a9eff", border:"none", borderRadius:12, color:accent?"#fff":"#000", fontSize:15, fontWeight:700, padding:"16px", cursor:"pointer", marginBottom:accent?0:8 }}>
+        {label}
+      </button>
+    );
+
+    if (onboardStep === 0) return (
+      <div style={obBg}>
+        <div style={{ textAlign:"center", marginBottom:32, marginTop:20 }}>
+          <div style={{ fontSize:52, marginBottom:12 }}>🔐</div>
+          <h1 style={{ margin:"0 0 8px", fontSize:26, fontWeight:800, color:"#fff", letterSpacing:3 }}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
+          <p style={{ margin:0, fontSize:14, color:"#5a6480" }}>Your personal pay & budget tracker</p>
+        </div>
+        <div style={obCard}>
+          <p style={obH}>Welcome, Glyn 👋</p>
+          <p style={obSub}>Let's take 60 seconds to confirm your setup. Your pay history and bills are already loaded from backup — just verify and go.</p>
+          <div style={{ fontSize:12, color:"#3a4460", marginBottom:16 }}>
+            {[
+              "✅ " + history.length + " payslips loaded",
+              "✅ " + sharedBills.length + " shared bills loaded",
+              "✅ " + glynBills.length + " personal bills loaded",
+            ].map(t => <div key={t} style={{ marginBottom:6 }}>{t}</div>)}
+          </div>
+          {obBtn("Get Started →", () => setOnboardStep(1))}
+        </div>
+      </div>
+    );
+
+    if (onboardStep === 1) return (
+      <div style={obBg}>
+        <div style={{ fontSize:11, color:"#5a6480", fontWeight:700, letterSpacing:1, textTransform:"uppercase", marginBottom:16 }}>Step 1 of 2 — Pay Details</div>
+        <div style={obCard}>
+          <p style={obH}>Confirm your pay details</p>
+          <p style={obSub}>These are pre-filled from your latest payslip. Tap any value to update it in Pay Calc later.</p>
+          {[
+            ["Base Rate", "£" + PAY.baseRate + "/hr"],
+            ["OT Rate", "£" + PAY.otRate + "/hr"],
+            ["Weekend OT", "£" + PAY.weekendOtRate + "/hr"],
+            ["Tax Code", PAY.taxCode],
+            ["NEST Pension", "5% employee"],
+            ["Student Loan", "Plan 2"],
+            ["Latest Net Pay", latest ? fmt(latest.net) : "—"],
+            ["Latest Month", latest ? latest.month : "—"],
+          ].map(([l,v]) => (
+            <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"9px 0", borderBottom:"1px solid #1a1f2e", fontSize:13 }}>
+              <span style={{ color:"#8892b0" }}>{l}</span>
+              <span style={{ color:"#e8eaf0", fontWeight:700 }}>{v}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display:"flex", gap:10 }}>
+          <button onClick={()=>setOnboardStep(0)} style={{ flex:1, background:"#1e2535", border:"none", borderRadius:12, color:"#5a6480", fontSize:14, fontWeight:600, padding:"14px", cursor:"pointer" }}>Back</button>
+          <button onClick={()=>setOnboardStep(2)} style={{ flex:2, background:"#4a9eff", border:"none", borderRadius:12, color:"#000", fontSize:15, fontWeight:700, padding:"14px", cursor:"pointer" }}>Looks good →</button>
+        </div>
+      </div>
+    );
+
+    if (onboardStep === 2) return (
+      <div style={obBg}>
+        <div style={{ fontSize:11, color:"#5a6480", fontWeight:700, letterSpacing:1, textTransform:"uppercase", marginBottom:16 }}>Step 2 of 2 — Bills</div>
+        <div style={obCard}>
+          <p style={obH}>Confirm your bills</p>
+          <p style={obSub}>Shared bills are split 50/50 with Hollie (car is Hollie £100, you pay the rest). You can edit any of these in the Budget tab.</p>
+          <div style={{ fontSize:12, fontWeight:700, color:"#4a9eff", marginBottom:8 }}>Shared Bills — your half: {fmt(shGlyn)}</div>
+          {sharedBills.map(b => (
+            <div key={b.id} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #1a1f2e", fontSize:12 }}>
+              <span style={{ color:"#8892b0" }}>{b.name}</span>
+              <span style={{ color:"#4a9eff", fontWeight:600 }}>{fmt(billShares(b).glyn)}</span>
+            </div>
+          ))}
+          <div style={{ fontSize:12, fontWeight:700, color:"#ff8c4a", marginTop:14, marginBottom:8 }}>My Bills: {fmt(glOnly)}</div>
+          {glynBills.map(b => (
+            <div key={b.id} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #1a1f2e", fontSize:12 }}>
+              <span style={{ color:"#8892b0" }}>{b.name}</span>
+              <span style={{ color:"#ff8c4a", fontWeight:600 }}>{fmt(b.total)}</span>
+            </div>
+          ))}
+          <div style={{ display:"flex", justifyContent:"space-between", padding:"10px 0", fontSize:13, fontWeight:700 }}>
+            <span style={{ color:"#5a6480" }}>Total outgoings</span>
+            <span style={{ color:"#e8eaf0" }}>{fmt(totalOut)}</span>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:10 }}>
+          <button onClick={()=>setOnboardStep(1)} style={{ flex:1, background:"#1e2535", border:"none", borderRadius:12, color:"#5a6480", fontSize:14, fontWeight:600, padding:"14px", cursor:"pointer" }}>Back</button>
+          <button onClick={async ()=>{ await requestAndSaveNotifPerm(); completeOnboarding(); }}
+            style={{ flex:2, background:"#00c88c", border:"none", borderRadius:12, color:"#000", fontSize:15, fontWeight:700, padding:"14px", cursor:"pointer" }}>All done — let's go 🎉</button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -1863,6 +2031,30 @@ export default function App() {
             })()}
           </div>
 
+          <div style={{...card,marginBottom:14}}>
+            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Notifications</div>
+            {notifPerm === "granted" ? (
+              <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#0a1a10",borderRadius:8,border:"1px solid #1a4030"}}>
+                <span style={{fontSize:18}}>🔔</span>
+                <div>
+                  <div style={{fontSize:13,fontWeight:600,color:"#00c88c"}}>Notifications enabled</div>
+                  <div style={{fontSize:11,color:"#3a6040",marginTop:2}}>You'll be notified the day before payday and on timesheet Mondays</div>
+                </div>
+              </div>
+            ) : notifPerm === "denied" ? (
+              <div style={{padding:"10px 12px",background:"#1a1a0a",borderRadius:8,border:"1px solid #3a3a10"}}>
+                <div style={{fontSize:13,fontWeight:600,color:"#ffb84a",marginBottom:4}}>Notifications blocked</div>
+                <div style={{fontSize:11,color:"#5a5030",lineHeight:1.6}}>You've blocked notifications for this site. To enable, go to your browser's site settings and allow notifications for this page, then tap below.</div>
+                <button onClick={requestAndSaveNotifPerm} style={{marginTop:10,background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:8,color:"#ffb84a",fontSize:12,fontWeight:700,padding:"8px 14px",cursor:"pointer"}}>Check again</button>
+              </div>
+            ) : (
+              <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535"}}>
+                <div style={{fontSize:13,color:"#8892b0",marginBottom:10}}>Enable browser notifications for payday reminders and weekly timesheet alerts.</div>
+                <button onClick={requestAndSaveNotifPerm} style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"}}>🔔 Enable Notifications</button>
+              </div>
+            )}
+          </div>
+
           <div style={{...card}}>
             <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Backup & Restore</div>
             <p style={{fontSize:12,color:"#5a6480",marginBottom:16,lineHeight:1.6}}>Export saves all your payslips, bills, and categories to a file. Import restores from a previous export. Save your backup to Google Drive for safekeeping.</p>
@@ -1977,7 +2169,7 @@ export default function App() {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.6.0</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.6.1</span>
       </div>
 
     </div>
