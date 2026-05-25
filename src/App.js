@@ -934,6 +934,9 @@ export default function App() {
           } else if (accData.data) {
             setAccumulated(accData.data);
             setTsLastUpload(accData.lastUpload);
+            // Sync Pay Calc with loaded accumulator
+            setC("otHrs", accData.data.otHrs || 0);
+            setC("weekendOtHrs", accData.data.weekendOtHrs || 0);
           }
         }
 
@@ -965,6 +968,8 @@ export default function App() {
           if (acc && acc.data) {
             setAccumulated(acc.data);
             setTsLastUpload(acc.lastUpload);
+            setC("otHrs", acc.data.otHrs || 0);
+            setC("weekendOtHrs", acc.data.weekendOtHrs || 0);
           }
         });
       })
@@ -1165,6 +1170,9 @@ export default function App() {
       const now = new Date().toISOString();
       const newAcc = { otHrs: totalOtHrs, weekendOtHrs: totalWkndHrs, weeks: [...(prev.weeks||[]), { uploadedAt: now }], days: merged, lastUpload: now };
       if (user) db.saveAccumulator(user.id, newAcc, now).catch(e => console.error("Acc save failed:", e));
+      // Update Pay Calc with new OT totals
+      setC("otHrs", totalOtHrs);
+      setC("weekendOtHrs", totalWkndHrs);
       return newAcc;
     });
 
