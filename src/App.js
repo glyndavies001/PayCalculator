@@ -309,6 +309,21 @@ const db = {
   async saveCats(userId, cats) {
     await supabase.from("app_settings").upsert({ user_id: userId, cats_data: cats, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
   },
+  async createBackup(userId, data, trigger = "auto") {
+    const json = JSON.stringify(data);
+    await supabase.from("backups").insert({ user_id: userId, data, size_bytes: json.length, trigger });
+  },
+  async getBackups(userId, limit = 30) {
+    const { data } = await supabase.from("backups").select("id, size_bytes, trigger, created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(limit);
+    return data || [];
+  },
+  async getBackup(backupId) {
+    const { data } = await supabase.from("backups").select("*").eq("id", backupId).single();
+    return data;
+  },
+  async deleteBackup(backupId) {
+    await supabase.from("backups").delete().eq("id", backupId);
+  },
 };
 
 // UUID generator (browsers support crypto.randomUUID natively in modern versions)
@@ -974,6 +989,40 @@ export default function App() {
     loadAll();
   }, [user]);
 
+  // Auto-backup — runs after data loads, if last backup was > 24h ago
+  React.useEffect(() => {
+    if (!user || dataLoading) return;
+    let cancelled = false;
+    const runBackup = async () => {
+      try {
+        const backups = await db.getBackups(user.id, 1);
+        const lastBackup = backups[0];
+        const now = Date.now();
+        const dayMs = 24 * 60 * 60 * 1000;
+        const shouldBackup = !lastBackup || (now - new Date(lastBackup.created_at).getTime() > dayMs);
+        if (!shouldBackup || cancelled) return;
+
+        // Wait a bit to let initial state settle
+        await new Promise(r => setTimeout(r, 5000));
+        if (cancelled) return;
+
+        const backupData = {
+          history, sharedBills, glynBills,
+          cats, billCats, glynCats, glynBillCats,
+          calcInputs: ci, notes,
+          leaveLogs, leaveSettings,
+          monthlyTs, discrepancies, scenarios,
+          accumulated, tierOverride,
+          exportedAt: new Date().toISOString(),
+          version: "1.10.1"
+        };
+        await db.createBackup(user.id, backupData, "auto");
+      } catch(e) { console.error("Auto-backup failed:", e); }
+    };
+    runBackup();
+    return () => { cancelled = true; };
+  }, [user, dataLoading]);
+
   // Real-time subscriptions (Supabase v2 syntax)
   React.useEffect(() => {
     if (!user) return;
@@ -1004,7 +1053,26 @@ export default function App() {
     return () => supabase.removeChannel(channel);
   }, [user]);
 
-  const handleSignOut = async () => { await supabase.auth.signOut(); setUser(null); setHistory([]); };
+  const handleSignOut = async () => {
+    // Take a final backup before signing out
+    if (user) {
+      try {
+        const backupData = {
+          history, sharedBills, glynBills,
+          cats, billCats, glynCats, glynBillCats,
+          calcInputs: ci, notes,
+          leaveLogs, leaveSettings,
+          monthlyTs, discrepancies, scenarios,
+          accumulated, tierOverride,
+          exportedAt: new Date().toISOString(),
+          version: "1.10.1"
+        };
+        await db.createBackup(user.id, backupData, "signout").catch(()=>{});
+      } catch(e) {}
+    }
+    await supabase.auth.signOut();
+    setUser(null); setHistory([]);
+  };
 
   // Refresh all data from Supabase
   const refreshAll = useCallback(async () => {
@@ -1471,6 +1539,9 @@ export default function App() {
   const [tsProgress,setTsProgress]=useState(null);
   const [showManualTs,setShowManualTs]=useState(false);
   const [showQueueDiag,setShowQueueDiag]=useState(false);
+  const [showBackups,setShowBackups]=useState(false);
+  const [backupList,setBackupList]=useState([]);
+  const [backupLoading,setBackupLoading]=useState(false);
   const [tsPending,setTsPending]=useState(null); // extracted data awaiting confirmation
   const [tsLastUpload,setTsLastUpload]=useState(null);
   const [accumulated,setAccumulated]=useState({otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null});
@@ -3162,7 +3233,96 @@ const calcTimesheetTotals = days => {
 
           <div style={{...card}}>
             <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Backup & Restore</div>
-            <p style={{fontSize:12,color:"#5a6480",marginBottom:16,lineHeight:1.6}}>Export saves all your payslips, bills, and categories to a file. Import restores from a previous export. Save your backup to Google Drive for safekeeping.</p>
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:10,lineHeight:1.6}}>Your data is auto-backed up daily to the cloud. You can also export a JSON file for offline storage.</p>
+
+            {/* Cloud backups section */}
+            <div style={{background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,marginBottom:10,overflow:"hidden"}}>
+              <div onClick={async ()=>{
+                haptic();
+                if(!showBackups && user) {
+                  setBackupLoading(true);
+                  try { setBackupList(await db.getBackups(user.id)); } catch(e) {}
+                  setBackupLoading(false);
+                }
+                setShowBackups(v=>!v);
+              }} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>☁️ Cloud Backups</div>
+                <span style={{color:"#3a4460",fontSize:11}}>{showBackups?"▲":"▼"}</span>
+              </div>
+              {showBackups && (
+                <div style={{padding:"0 10px 10px"}}>
+                  <button onClick={async ()=>{
+                    haptic("medium");
+                    if (!user) return;
+                    setBackupLoading(true);
+                    try {
+                      const backupData = {
+                        history, sharedBills, glynBills,
+                        cats, billCats, glynCats, glynBillCats,
+                        calcInputs: ci, notes,
+                        leaveLogs, leaveSettings,
+                        monthlyTs, discrepancies, scenarios,
+                        accumulated, tierOverride,
+                        exportedAt: new Date().toISOString(),
+                        version: "1.10.1"
+                      };
+                      await db.createBackup(user.id, backupData, "manual");
+                      setBackupList(await db.getBackups(user.id));
+                      setImportMsg("✓ Backup saved to cloud");
+                    } catch(e) { setImportMsg("⚠ Backup failed"); }
+                    setBackupLoading(false);
+                    setTimeout(()=>setImportMsg(""),3000);
+                  }} style={{width:"100%",background:"#0a1a10",border:"1px solid #00c88c",borderRadius:6,color:"#00c88c",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer",marginBottom:8}}>
+                    + Backup Now
+                  </button>
+                  {backupLoading && <div style={{fontSize:11,color:"#5a6480",textAlign:"center",padding:8}}>Loading…</div>}
+                  {!backupLoading && backupList.length === 0 && <div style={{fontSize:11,color:"#3a4460",textAlign:"center",padding:8}}>No cloud backups yet</div>}
+                  {!backupLoading && backupList.map(b => (
+                    <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"#141824",borderRadius:6,marginBottom:4,fontSize:11}}>
+                      <div>
+                        <div style={{color:"#e8eaf0",fontWeight:600}}>{new Date(b.created_at).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}</div>
+                        <div style={{color:"#3a4460",fontSize:10}}>{(b.size_bytes/1024).toFixed(1)}KB · {b.trigger}</div>
+                      </div>
+                      <div style={{display:"flex",gap:4}}>
+                        <button onClick={async ()=>{
+                          haptic("medium");
+                          if(!window.confirm("Restore this backup? Your current data will be replaced.")) return;
+                          try {
+                            const full = await db.getBackup(b.id);
+                            const d = full.data;
+                            if(d.history){updH(d.history);}
+                            if(d.sharedBills){updSB(d.sharedBills);}
+                            if(d.glynBills){updGB(d.glynBills);}
+                            if(d.cats){updC(d.cats);}
+                            if(d.billCats){updBC(d.billCats);}
+                            if(d.glynCats){updGC(d.glynCats);}
+                            if(d.glynBillCats){updGBC(d.glynBillCats);}
+                            if(d.calcInputs){setCi(d.calcInputs);if(user)db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
+                            if(d.notes){updNotes(d.notes);}
+                            if(d.leaveLogs){setLeaveLogs(d.leaveLogs);}
+                            if(d.leaveSettings){setLeaveSettings(d.leaveSettings);}
+                            if(d.scenarios){setScenarios(d.scenarios);}
+                            if(d.tierOverride!==undefined){setTierOverride(d.tierOverride);}
+                            setImportMsg("✓ Backup restored");
+                          } catch(e) { setImportMsg("⚠ Restore failed"); }
+                          setTimeout(()=>setImportMsg(""),3000);
+                        }} style={{background:"#1a2535",border:"1px solid #4a9eff",borderRadius:4,color:"#4a9eff",fontSize:10,fontWeight:700,padding:"5px 8px",cursor:"pointer"}}>Restore</button>
+                        <button onClick={async ()=>{
+                          if(!window.confirm("Delete this backup?")) return;
+                          haptic("medium");
+                          try {
+                            await db.deleteBackup(b.id);
+                            setBackupList(await db.getBackups(user.id));
+                          } catch(e) {}
+                        }} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <p style={{fontSize:11,color:"#5a6480",marginBottom:10,lineHeight:1.5}}>Or export a local JSON file (useful before major changes):</p>
             <div style={{display:"flex",gap:8,marginBottom:12}}>
               <button onClick={exportData} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer"}}>⬇ Export Backup</button>
               <label style={{flex:1,background:"#1a2535",border:"1px solid #00c88c",borderRadius:8,color:"#00c88c",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer",textAlign:"center"}}>
