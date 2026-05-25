@@ -1201,7 +1201,7 @@ export default function App() {
       };
       saveMonthlyTs(entry);
     }
-  }, []);
+  }, [user]);
 
   // Poll /api/timesheet — 5s when items pending, 60s when empty
   React.useEffect(() => {
@@ -2969,6 +2969,24 @@ const calcTimesheetTotals = days => {
                     setTimeout(()=>setImportMsg(""),4000);
                   }} style={{flex:1,background:"#2a1a1a",border:"1px solid #ff6b8a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Clear Queue</button>
                 </div>
+                <button onClick={async ()=>{
+                  haptic("medium");
+                  setImportMsg("Processing queue…");
+                  let processed = 0;
+                  for (let i = 0; i < 20; i++) {
+                    try {
+                      const res = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
+                      const data = await res.json();
+                      if (data.status !== "pending" || !data.data) break;
+                      const { emailId, days } = data.data;
+                      applyTimesheetDays(days, emailId, data.data.meta || null);
+                      await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
+                      processed++;
+                    } catch(e) { console.error(e); break; }
+                  }
+                  setImportMsg(`✓ Processed ${processed} timesheet${processed!==1?"s":""}`);
+                  setTimeout(()=>setImportMsg(""),4000);
+                }} style={{marginTop:6,width:"100%",background:"#0a2a15",border:"1px solid #00c88c",borderRadius:6,color:"#00c88c",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Process Queue Now</button>
                 <button onClick={()=>{
                   haptic("medium");
                   localStorage.removeItem(SK.tsLastEmail);
