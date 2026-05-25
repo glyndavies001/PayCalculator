@@ -286,6 +286,144 @@ const db = {
     return (data || []).map(r => ({ id: r.id, name: r.name, stdHrs: r.std_hrs, otHrs: r.ot_hrs, weekendOtHrs: r.weekend_ot_hrs, bonus: r.bonus, tierOverride: r.tier_override }));
   },
   async upsertScenario(userId, s) {
+    await supabase.from("scenarios").upsert({ id: s.id, user_id: userId, name: s.name, std_hrs: s.stdHrs, ot_hrs: s.otHrs, weekend sl: 26, bonus: 160, ot: 82.66  },
+  { month: "May 2025", date: "29/05/2025", gross: 2748.21, net: 2150.06, tax: 340,    ni: 136.02, nest: 89.13, sl: 33, bonus: 160, ot: 131.54 },
+  { month: "Jun 2025", date: "30/06/2025", gross: 2728.63, net: 2137.83, tax: 336,    ni: 134.45, nest: 88.35, sl: 32, bonus: 160, ot: 141.96 },
+  { month: "Aug 2025", date: "29/08/2025", gross: 2760.96, net: 2157.68, tax: 342.6,  ni: 137.04, nest: 89.64, sl: 34, bonus: 160, ot: 120.29 },
+  { month: "Oct 2025", date: "29/10/2025", gross: 3125.28, net: 2372.48, tax: 415.4,  ni: 166.18, nest: 104.22,sl: 67, bonus: 160, ot: 158.09 },
+  { month: "Nov 2025", date: "28/11/2025", gross: 2794.04, net: 2177.39, tax: 349,    ni: 139.68, nest: 90.97, sl: 37, bonus: 200, ot: 88.2   },
+  { month: "Sep 2022", date: "30/09/2022", gross: 2195.26, net: 1746.83, tax: 229.4,  ni: 152.01, nest: 67.02, sl: 0,  bonus: 100, ot: 342.12 },
+  { month: "Dec 2022", date: "30/12/2022", gross: 2089.44, net: 1693.29, tax: 208.4,  ni: 124.97, nest: 62.78, sl: 0,  bonus: 100, ot: 149.44 },
+  { month: "Jun 2023", date: "30/06/2023", gross: 2339.91, net: 1848.68, tax: 258.4,  ni: 155.03, nest: 72.8,  sl: 5,  bonus: 100, ot: 219.91 },
+  { month: "Jan 2025", date: "29/01/2025", gross: 2763.27, net: 2150.31, tax: 343,    ni: 137.22, nest: 89.74, sl: 43, bonus: 200, ot: 96.6   },
+  { month: "Feb 2025", date: "28/02/2025", gross: 2899.87, net: 2230.32, tax: 370.2,  ni: 148.15, nest: 95.2,  sl: 56, bonus: 200, ot: 193.2  },
+  { month: "Mar 2025", date: "31/03/2025", gross: 2944.13, net: 2256.27, tax: 379.2,  ni: 151.69, nest: 96.97, sl: 60, bonus: 250, ot: 267.46 },
+  { month: "Jul 2025", date: "29/07/2025", gross: 2657.41, net: 2096.36, tax: 321.8,  ni: 128.75, nest: 85.5,  sl: 25, bonus: 200, ot: 30.74  },
+  { month: "Sep 2025", date: "29/09/2025", gross: 3345.11, net: 2501.93, tax: 459.4,  ni: 183.77, nest: 113.01,sl: 87, bonus: 160, ot: 259.06 },
+  { month: "Dec 2025", date: "22/12/2025", gross: 2678.41, net: 2108.44, tax: 326.2,  ni: 130.43, nest: 86.34, sl: 27, bonus: 200, ot: 51.74  },
+  { month: "Jan 2026", date: "29/01/2026", gross: 2798.53, net: 2179.34, tax: 350,    ni: 140.04, nest: 91.15, sl: 38, bonus: 200, ot: 85.34  },
+  { month: "Feb 2026", date: "27/02/2026", gross: 3212.55, net: 2423.88, tax: 432.8,  ni: 173.16, nest: 107.71,sl: 75, bonus: 160, ot: 328.94 },
+  { month: "Mar 2026", date: "30/03/2026", gross: 2860.71, net: 2216.46, tax: 362.6,  ni: 145.02, nest: 93.63, sl: 43, bonus: 240, ot: 83.16  },
+  { month: "Apr 2026", date: "29/04/2026", gross: 2957.36, net: 2280.31, tax: 381.8,  ni: 152.75, nest: 97.5,  sl: 45, bonus: 240, ot: 117.48 },
+];
+
+const HOLLIE_CAR = 100;
+const INITIAL_SHARED_BILLS = [
+  { id: 1,  name: "Food",               total: 300,    isCarGlyn: false },
+  { id: 2,  name: "Petrol",             total: 160,    isCarGlyn: false },
+  { id: 3,  name: "Gaia",               total: 100,    isCarGlyn: false },
+  { id: 4,  name: "Mortgage",           total: 501.59, isCarGlyn: false },
+  { id: 5,  name: "Council Tax",        total: 161,    isCarGlyn: false },
+  { id: 6,  name: "UW Gas & Electric",  total: 126.31, isCarGlyn: false },
+  { id: 7,  name: "Dwr Cymru",          total: 31.5,   isCarGlyn: false },
+  { id: 8,  name: "Sky (TV+Broadband)", total: 60,     isCarGlyn: false },
+  { id: 9,  name: "Netflix",            total: 12.99,  isCarGlyn: false },
+  { id: 10, name: "Disney+",            total: 9.99,   isCarGlyn: false },
+  { id: 11, name: "Spotify",            total: 17.99,  isCarGlyn: false },
+  { id: 12, name: "Car ðŸš—",             total: 416.02, isCarGlyn: true  },
+  { id: 13, name: "Barclays Hoover",    total: 100.64, isCarGlyn: false },
+  { id: 14, name: "Medivet",            total: 17.5,   isCarGlyn: false },
+  { id: 15, name: "Pet Insurance",      total: 4.97,   isCarGlyn: false },
+  { id: 16, name: "Head Room",          total: 100,    isCarGlyn: false },
+  { id: 17, name: "Angie",              total: 7,      isCarGlyn: false },
+];
+const INITIAL_GLYN_BILLS = [
+  { id: 101, name: "Barclays Phone", total: 38.08 },
+  { id: 102, name: "L&G Insurance",  total: 16.7  },
+  { id: 103, name: "Tesco",          total: 15    },
+  { id: 104, name: "Julia",          total: 15.5  },
+  { id: 105, name: "Google One",     total: 1.59  },
+  { id: 106, name: "Lloyds CC",      total: 91.26 },
+  { id: 107, name: "Ocean CC",       total: 26.95 },
+];
+
+function billShares(b) {
+  if (b.isCarGlyn) return { glyn: Math.max(0, b.total - HOLLIE_CAR), hollie: HOLLIE_CAR };
+  return { glyn: b.total / 2, hollie: b.total / 2 };
+}
+
+// localStorage keys â€” only truly device-local settings (Supabase has the rest)
+const SK = {
+  timesheets:   "vaulted_timesheets",    // legacy â€” for one-time migration on first login
+  tsLastUpload: "vaulted_ts_last",       // legacy â€” for one-time migration on first login
+  notifPerm:    "vaulted_notif_perm",    // browser notification permission (device-specific)
+  tsSecret:     "vaulted_ts_secret",     // device-specific (could differ per device)
+  tsLastEmail:  "vaulted_ts_last_email", // device-specific dedup tracking
+  // Below kept for backward compat - falls back to defaults if missing
+  cats:         "vaulted_cats",
+  billCats:     "vaulted_billcats",
+  glynCats:     "vaulted_gcats",
+  glynBillCats: "vaulted_gbillcats",
+};
+
+// Supabase DB helpers
+const db = {
+  async getPayslips(userId) {
+    const { data } = await supabase.from("payslips").select("*").eq("user_id", userId).order("date", { ascending: false });
+    return (data || []).map(r => ({ month: r.month, date: r.date, gross: r.gross, net: r.net, tax: r.tax, ni: r.ni, nest: r.nest, sl: r.sl, bonus: r.bonus, ot: r.ot, note: r.note }));
+  },
+  async upsertPayslip(userId, p) {
+    await supabase.from("payslips").upsert({ user_id: userId, month: p.month, date: p.date, gross: p.gross, net: p.net, tax: p.tax, ni: p.ni, nest: p.nest, sl: p.sl, bonus: p.bonus, ot: p.ot, note: p.note || null }, { onConflict: "user_id,month" });
+  },
+  async deletePayslip(userId, month) {
+    await supabase.from("payslips").delete().eq("user_id", userId).eq("month", month);
+  },
+  async getSharedBills() {
+    const { data } = await supabase.from("shared_bills").select("*").order("bill_id");
+    return data || [];
+  },
+  async upsertSharedBill(b) {
+    await supabase.from("shared_bills").upsert({ bill_id: b.id, name: b.name, total: b.total, is_car_glyn: b.isCarGlyn || false }, { onConflict: "bill_id" });
+  },
+  async deleteSharedBill(billId) {
+    await supabase.from("shared_bills").delete().eq("bill_id", billId);
+  },
+  async getGlynBills() {
+    const { data } = await supabase.from("glyn_bills").select("*").order("bill_id");
+    return data || [];
+  },
+  async upsertGlynBill(b) {
+    await supabase.from("glyn_bills").upsert({ bill_id: b.id, name: b.name, total: b.total }, { onConflict: "bill_id" });
+  },
+  async deleteGlynBill(billId) {
+    await supabase.from("glyn_bills").delete().eq("bill_id", billId);
+  },
+  async getLeaveLogs(userId) {
+    const { data } = await supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false });
+    return (data || []).map(r => ({ id: r.id, date: r.date, hours: r.hours, label: r.label }));
+  },
+  async upsertLeaveLog(userId, entry) {
+    await supabase.from("leave_logs").upsert({ id: entry.id, user_id: userId, date: entry.date, hours: entry.hours, label: entry.label || null });
+  },
+  async deleteLeaveLog(id) {
+    await supabase.from("leave_logs").delete().eq("id", id);
+  },
+  async getLeaveSettings(userId) {
+    const { data } = await supabase.from("leave_settings").select("*").eq("user_id", userId).single();
+    return data ? { baseEntitlement: data.base_entitlement, serviceDays: data.service_days, startYear: data.start_year } : null;
+  },
+  async saveLeaveSettings(userId, s) {
+    await supabase.from("leave_settings").upsert({ user_id: userId, base_entitlement: s.baseEntitlement, service_days: s.serviceDays, start_year: s.startYear, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+  },
+  async getMonthlyTs(userId) {
+    const { data } = await supabase.from("monthly_timesheets").select("*").eq("user_id", userId).order("saved_at", { ascending: false });
+    return (data || []).map(r => ({ emailId: r.email_id, period: r.period, month: r.month, totalHrs: r.total_hrs, stdHrs: r.std_hrs, otHrs: r.ot_hrs, wkndHrs: r.wknd_hrs, holHrs: r.hol_hrs, days: r.days, savedAt: r.saved_at }));
+  },
+  async upsertMonthlyTs(userId, entry) {
+    await supabase.from("monthly_timesheets").upsert({ user_id: userId, email_id: entry.emailId, period: entry.period, month: entry.month, total_hrs: entry.totalHrs, std_hrs: entry.stdHrs, ot_hrs: entry.otHrs, wknd_hrs: entry.wkndHrs, hol_hrs: entry.holHrs, days: entry.days, saved_at: entry.savedAt }, { onConflict: "email_id" });
+  },
+  async getDiscrepancies(userId) {
+    const { data } = await supabase.from("discrepancies").select("*").eq("user_id", userId).order("checked_at", { ascending: false });
+    return (data || []).map(r => ({ month: r.month, period: r.period, status: r.status, items: r.items, ts: r.ts_data, payslip: r.payslip_data, expected: r.expected_data, checkedAt: r.checked_at }));
+  },
+  async upsertDiscrepancy(userId, d) {
+    await supabase.from("discrepancies").upsert({ user_id: userId, month: d.month, period: d.period, status: d.status, items: d.items, ts_data: d.ts, payslip_data: d.payslip, expected_data: d.expected, checked_at: d.checkedAt }, { onConflict: "user_id,month" });
+  },
+  async getScenarios(userId) {
+    const { data } = await supabase.from("scenarios").select("*").eq("user_id", userId).order("created_at");
+    return (data || []).map(r => ({ id: r.id, name: r.name, stdHrs: r.std_hrs, otHrs: r.ot_hrs, weekendOtHrs: r.weekend_ot_hrs, bonus: r.bonus, tierOverride: r.tier_override }));
+  },
+  async upsertScenario(userId, s) {
     await supabase.from("scenarios").upsert({ id: s.id, user_id: userId, name: s.name, std_hrs: s.stdHrs, ot_hrs: s.otHrs, weekend_ot_hrs: s.weekendOtHrs, bonus: s.bonus, tier_override: s.tierOverride }, { onConflict: "user_id,name" });
   },
   async deleteScenario(id) {
