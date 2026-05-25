@@ -2939,6 +2939,45 @@ const calcTimesheetTotals = days => {
               <div style={{fontSize:11,color:"#3a4460"}}>No secret set — auto-import disabled</div>
             )}
             {tsLastEmail && <div style={{fontSize:10,color:"#3a4460",marginTop:4}}>Last email ID: {tsLastEmail.slice(0,12)}…</div>}
+
+            {/* Queue diagnostics */}
+            {tsSecret && (
+              <div style={{marginTop:12,padding:10,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8}}>
+                <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>Queue Diagnostics</div>
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={async ()=>{
+                    haptic("medium");
+                    try {
+                      const r = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
+                      const d = await r.json();
+                      const cnt = d.remaining || (d.status==="pending"?1:0);
+                      setImportMsg(`Queue: ${cnt} item${cnt!==1?"s":""} waiting`);
+                      setTimeout(()=>setImportMsg(""),4000);
+                    } catch(e) { setImportMsg("⚠️ Check failed"); }
+                  }} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:6,color:"#4a9eff",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Check Queue</button>
+                  <button onClick={async ()=>{
+                    haptic("medium");
+                    if(!window.confirm("Clear ALL queued timesheets? This deletes them from the server queue.")) return;
+                    let cleared = 0;
+                    for (let i = 0; i < 50; i++) {
+                      const r = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
+                      const d = await r.json();
+                      cleared++;
+                      if ((d.remaining || 0) === 0) break;
+                    }
+                    setImportMsg(`✓ Cleared ${cleared} item${cleared!==1?"s":""}`);
+                    setTimeout(()=>setImportMsg(""),4000);
+                  }} style={{flex:1,background:"#2a1a1a",border:"1px solid #ff6b8a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Clear Queue</button>
+                </div>
+                <button onClick={()=>{
+                  haptic("medium");
+                  localStorage.removeItem(SK.tsLastEmail);
+                  setTsLastEmail("");
+                  setImportMsg("✓ Last email cleared — will re-poll");
+                  setTimeout(()=>setImportMsg(""),4000);
+                }} style={{marginTop:6,width:"100%",background:"#1a1500",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Reset Last Email ID</button>
+              </div>
+            )}
           </div>
 
           <div style={{...card,marginBottom:14}}>
