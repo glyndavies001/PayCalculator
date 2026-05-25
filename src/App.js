@@ -53,6 +53,26 @@ function getCurrentMonthHours() {
   return Math.round(getWorkingDaysInMonth(now.getFullYear(), now.getMonth()) * 8.25 * 100) / 100;
 }
 
+// Historical pay rates — used for retroactive calculations
+// Each entry: { from: "YYYY-MM" (inclusive), baseRate, otRate, weekendOtRate, stdDayHrs, stdMonthlyHrs }
+const PAY_HISTORY = [
+  // Contract until April 2026: £14/hr base, 8-hour days
+  { from: "2022-04", baseRate: 14.00, otRate: 16.80, weekendOtRate: 21.00, stdDayHrs: 8.00, stdMonthlyHrs: 160 },
+  // From May 2026 (paid end of May): £14.50/hr base, 8.25-hour days
+  { from: "2026-05", baseRate: 14.50, otRate: 17.40, weekendOtRate: 21.75, stdDayHrs: 8.25, stdMonthlyHrs: 165 },
+];
+
+// Returns the rate config that applies to a given payslip month
+function getRateFor(monthStr) {
+  // monthStr like "Apr 2026"
+  const [mo, yr] = monthStr.split(" ");
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const ymKey = yr + "-" + String(months.indexOf(mo)+1).padStart(2,"0");
+  let best = PAY_HISTORY[0];
+  for (const r of PAY_HISTORY) if (ymKey >= r.from) best = r;
+  return best;
+}
+
 const PAY = {
   baseRate: 14.50, otRate: 17.40, weekendOtRate: 21.75,
   taxFreeMonthly: 1047.50, niPrimaryThreshold: 1048, niUpperThreshold: 4189,
@@ -289,6 +309,16 @@ const db = {
   async saveCats(userId, cats) {
     await supabase.from("app_settings").upsert({ user_id: userId, cats_data: cats, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
   },
+};
+
+// UUID generator (browsers support crypto.randomUUID natively in modern versions)
+const genUUID = () => {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  // Fallback for older browsers
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0, v = c === "x" ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
 };
 
 // ── Sync status tracking ─────────────────────────────────────────────────────
@@ -1067,7 +1097,7 @@ export default function App() {
   const saveLeaveLog = () => {
     if (!leaveForm.date || !leaveForm.hours) return;
     haptic("success");
-    const entry = { id: Date.now().toString(), date: leaveForm.date, hours: parseFloat(leaveForm.hours), label: leaveForm.label.trim() };
+    const entry = { id: genUUID(), date: leaveForm.date, hours: parseFloat(leaveForm.hours), label: leaveForm.label.trim() };
     // Optimistic update — UI first, then DB
     setLeaveLogs(prev => [...prev, entry].sort((a,b) => new Date(b.date) - new Date(a.date)));
     setLeaveForm({ date: "", hours: "8.25", label: "" });
@@ -1130,7 +1160,7 @@ export default function App() {
           const year = new Date().getFullYear();
           const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
           const hours = d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS;
-          return { id: Date.now() + Math.random(), date: dateStr, hours, label: "Annual Leave (auto)" };
+          return { id: genUUID(), date: dateStr, hours, label: "Annual Leave (auto)" };
         });
         const merged = [...prev, ...newEntries]
           .filter((e, i, arr) => arr.findIndex(x => x.date === e.date) === i)
@@ -1365,7 +1395,7 @@ export default function App() {
   const [showScenarios, setShowScenarios] = useState(false);
   const saveScenario = async () => {
     if (!scenarioName.trim()) return;
-    const s = { id: Date.now().toString(), name: scenarioName.trim(), stdHrs: ci.stdHrs, otHrs: ci.otHrs, weekendOtHrs: ci.weekendOtHrs, bonus: ci.bonus, tierOverride: tierOverride };
+    const s = { id: genUUID(), name: scenarioName.trim(), stdHrs: ci.stdHrs, otHrs: ci.otHrs, weekendOtHrs: ci.weekendOtHrs, bonus: ci.bonus, tierOverride: tierOverride };
     if (user) await trackSave(() => db.upsertScenario(user.id, s));
     setScenarios(prev => [...prev.filter(x=>x.name!==s.name), s]);
     setScenarioName("");
@@ -2750,6 +2780,98 @@ const calcTimesheetTotals = days => {
                     </button>
                   </div>
                 </>
+              )}
+
+              {/* Estimate leave from historical payslips */}
+              {history.length > 0 && (
+                <button onClick={async ()=>{
+                  haptic("medium");
+                  if(!window.confirm("This will estimate leave taken from your payslip history and add entries. Existing manual entries won'\''t be overwritten. Continue?")) return;
+
+                  setImportMsg("Calculating from payslips…");
+                  const newEntries = [];
+                  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+                  history.forEach(p => {
+                    const rate = getRateFor(p.month);
+                    if (!rate) return;
+                    // Calculate worked hours from gross - bonus - ot (the OT pay portion)
+                    // gross = (standard_hrs + leave_hrs) × baseRate + ot + bonus
+                    // So: standard_hrs + leave_hrs = (gross - ot - bonus) / baseRate
+                    const baseLeavePay = p.gross - (p.ot || 0) - (p.bonus || 0);
+                    const totalPaidHrs = baseLeavePay / rate.baseRate;
+                    const leaveHrs = Math.max(0, totalPaidHrs - rate.stdMonthlyHrs);
+
+                    if (leaveHrs >= 0.5) {
+                      // Round to nearest 0.25 (quarter hour)
+                      const roundedHrs = Math.round(leaveHrs * 4) / 4;
+                      // Use middle of the month as a placeholder date
+                      const [mo, yr] = p.month.split(" ");
+                      const monthIdx = months.indexOf(mo);
+                      const dateStr = new Date(parseInt(yr), monthIdx, 15).toISOString().slice(0, 10);
+                      newEntries.push({
+                        id: genUUID(),
+                        date: dateStr,
+                        hours: roundedHrs,
+                        label: "Estimated from " + p.month + " payslip"
+                      });
+                    }
+                  });
+
+                  // Filter out months that already have leave logged (any entry in same month)
+                  const existingMonths = new Set(leaveLogs.map(l => l.date.slice(0,7)));
+                  const toAdd = newEntries.filter(e => !existingMonths.has(e.date.slice(0,7)));
+
+                  if (toAdd.length === 0) {
+                    setImportMsg("✓ No new leave to estimate");
+                    setTimeout(()=>setImportMsg(""),3000);
+                    return;
+                  }
+
+                  setLeaveLogs(prev => [...prev, ...toAdd].sort((a,b) => new Date(b.date) - new Date(a.date)));
+                  if (user) {
+                    for (const e of toAdd) {
+                      try { await db.upsertLeaveLog(user.id, e); } catch(err) { console.error(err); }
+                    }
+                  }
+                  setImportMsg(`✓ Estimated ${toAdd.length} month${toAdd.length!==1?"s":""} of leave`);
+                  setTimeout(()=>setImportMsg(""),5000);
+                }} style={{width:"100%",marginBottom:8,background:"#1a1a0a",border:"1px solid #ffb84a",borderRadius:8,color:"#ffb84a",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer"}}>
+                  📊 Estimate Leave from Payslip History
+                </button>
+              )}
+
+              {/* Resync from timesheet button */}
+              {accumulated.days && accumulated.days.filter(d=>d.isHoliday).length > 0 && (
+                <button onClick={async ()=>{
+                  haptic("medium");
+                  const STD_DAY_HRS_LOCAL = 8.25;
+                  const holDays = accumulated.days.filter(d=>d.isHoliday);
+                  const newEntries = holDays.map(d=>{
+                    const [dd, mm] = d.date.split("/").map(Number);
+                    const year = new Date().getFullYear();
+                    const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
+                    return { id: genUUID(), date: dateStr, hours: d.isHalf ? STD_DAY_HRS_LOCAL/2 : STD_DAY_HRS_LOCAL, label: "Annual Leave (auto)" };
+                  });
+                  // Filter out duplicates by date
+                  const existing = new Set(leaveLogs.map(l => l.date));
+                  const toAdd = newEntries.filter(e => !existing.has(e.date));
+                  if (toAdd.length === 0) {
+                    setImportMsg("✓ Already up to date");
+                    setTimeout(()=>setImportMsg(""),3000);
+                    return;
+                  }
+                  setLeaveLogs(prev => [...prev, ...toAdd].sort((a,b) => new Date(b.date) - new Date(a.date)));
+                  if (user) {
+                    for (const e of toAdd) {
+                      try { await db.upsertLeaveLog(user.id, e); } catch(err) { console.error(err); }
+                    }
+                  }
+                  setImportMsg(`✓ Added ${toAdd.length} leave day${toAdd.length!==1?"s":""}`);
+                  setTimeout(()=>setImportMsg(""),3000);
+                }} style={{width:"100%",marginBottom:14,background:"#0a1a25",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer"}}>
+                  🔄 Resync Holidays from Timesheet ({accumulated.days.filter(d=>d.isHoliday).length} found)
+                </button>
               )}
 
               {/* Log leave form */}
