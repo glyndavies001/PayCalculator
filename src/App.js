@@ -279,6 +279,13 @@ const db = {
   async saveAppSettings(userId, settings) {
     await supabase.from("app_settings").upsert({ user_id: userId, ...settings, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
   },
+  async getAccumulator(userId) {
+    const { data } = await supabase.from("timesheet_accumulator").select("*").eq("user_id", userId).single();
+    return data ? { data: data.data, lastUpload: data.last_upload } : null;
+  },
+  async saveAccumulator(userId, accumulator, lastUpload) {
+    await supabase.from("timesheet_accumulator").upsert({ user_id: userId, data: accumulator, last_upload: lastUpload, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+  },
 };
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
@@ -795,6 +802,20 @@ export default function App() {
           if (appSettings.notes) setNotes(appSettings.notes);
         }
 
+        // Load accumulator from DB
+        const accData = await db.getAccumulator(user.id);
+        if (accData) {
+          if (accData.data && shouldResetTimesheet(accData.lastUpload)) {
+            // New pay period — reset to empty
+            const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+            setAccumulated(empty);
+            await db.saveAccumulator(user.id, empty, null);
+          } else if (accData.data) {
+            setAccumulated(accData.data);
+            setTsLastUpload(accData.lastUpload);
+          }
+        }
+
         await requestAndSaveNotifPerm();
       } catch(e) { console.error("Data load error:", e); }
       setDataLoading(false);
@@ -818,6 +839,14 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_logs" }, () =>
         db.getLeaveLogs(user.id).then(setLeaveLogs)
       )
+      .on("postgres_changes", { event: "*", schema: "public", table: "timesheet_accumulator", filter: "user_id=eq."+user.id }, () => {
+        db.getAccumulator(user.id).then(acc => {
+          if (acc && acc.data) {
+            setAccumulated(acc.data);
+            setTsLastUpload(acc.lastUpload);
+          }
+        });
+      })
       .subscribe();
     return () => supabase.removeChannel(channel);
   }, [user]);
@@ -928,13 +957,13 @@ export default function App() {
       const totalWkndHrs= Math.round(merged.reduce((s, d) => s + (d.wkOtHrs|| 0), 0) * 100) / 100;
       const now = new Date().toISOString();
       const newAcc = { otHrs: totalOtHrs, weekendOtHrs: totalWkndHrs, weeks: [...(prev.weeks||[]), { uploadedAt: now }], days: merged, lastUpload: now };
-      save(SK.timesheets, newAcc);
+      if (user) db.saveAccumulator(user.id, newAcc, now).catch(e => console.error("Acc save failed:", e));
       return newAcc;
     });
 
     if (currentDays.length > 0) {
-      setTsLastUpload(new Date().toISOString());
-      save(SK.tsLastUpload, new Date().toISOString());
+      const now = new Date().toISOString();
+      setTsLastUpload(now);
     }
     setTsLastEmail(emailId);
     save(SK.tsLastEmail, emailId);
@@ -1155,11 +1184,7 @@ export default function App() {
   const [tsResults,setTsResults]=useState([]);
   const [tsPending,setTsPending]=useState(null); // extracted data awaiting confirmation
   const [tsLastUpload,setTsLastUpload]=useState(()=>load(SK.tsLastUpload,null));
-  const [accumulated,setAccumulated]=useState(()=>{
-    const stored=load(SK.timesheets,null);
-    if(stored && shouldResetTimesheet(stored.lastUpload)) return {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
-    return stored||{otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
-  });
+  const [accumulated,setAccumulated]=useState({otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null});
   const showTsReminder=shouldShowTimesheetReminder(tsLastUpload);
 
   const latest=useMemo(()=>sortH(history).slice(-1)[0],[history]);
@@ -1400,7 +1425,7 @@ const calcTimesheetTotals = days => {
     e.target.value = "";
   };
 
-  const confirmTimesheet = () => {
+  const confirmTimesheet = async () => {
     if (!tsPending) return;
     const now = new Date().toISOString();
     const STD = 8.25;
@@ -1458,9 +1483,8 @@ const calcTimesheetTotals = days => {
       lastUpload: now,
     };
     setAccumulated(newAcc);
-    save(SK.timesheets, newAcc);
+    if (user) await db.saveAccumulator(user.id, newAcc, now);
     setTsLastUpload(now);
-    save(SK.tsLastUpload, now);
     setC("otHrs", newAcc.otHrs);
     setC("weekendOtHrs", newAcc.weekendOtHrs);
     setTsPending(null);
@@ -1469,7 +1493,7 @@ const calcTimesheetTotals = days => {
   const resetTimesheet = () => {
     const empty = { otHrs: 0, weekendOtHrs: 0, weeks: [], days: [], lastUpload: null };
     setAccumulated(empty);
-    save(SK.timesheets, empty);
+    if (user) db.saveAccumulator(user.id, empty, null).catch(()=>{});
     setTsResults([]);
     setTsPending(null);
   };
@@ -2799,7 +2823,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.9.0</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.9.1</span>
       </div>
 
     </div>
