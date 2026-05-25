@@ -822,21 +822,27 @@ export default function App() {
   // ── Supabase Auth ────────────────────────────────────────────────────────
   const [sessionWarning, setSessionWarning] = useState(false);
   React.useEffect(() => {
+    const checkExpiry = (session) => {
+      if (!session?.expires_at) { setSessionWarning(false); return; }
+      const msToExpiry = session.expires_at * 1000 - Date.now();
+      // Warn only if less than 1 hour remaining (Supabase auto-refreshes ~5min before expiry)
+      setSessionWarning(msToExpiry > 0 && msToExpiry < 60*60*1000);
+    };
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user || null);
       setAuthLoading(false);
-      if (session?.expires_at) {
-        const msToExpiry = session.expires_at * 1000 - Date.now();
-        // Warn if less than 24 hours remaining
-        if (msToExpiry > 0 && msToExpiry < 24*60*60*1000) setSessionWarning(true);
-      }
+      checkExpiry(session);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user || null);
-      if (event === "TOKEN_REFRESHED") setSessionWarning(false);
-      if (event === "SIGNED_OUT") setSessionWarning(false);
+      checkExpiry(session);
     });
-    return () => subscription.unsubscribe();
+    // Recheck every 5 min in case Supabase auto-refreshes
+    const interval = setInterval(async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      checkExpiry(session);
+    }, 5 * 60 * 1000);
+    return () => { subscription.unsubscribe(); clearInterval(interval); };
   }, []);
 
   // Load all data from Supabase when user logs in
@@ -1872,7 +1878,11 @@ const calcTimesheetTotals = days => {
                   <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Session expiring soon</div>
                   <div style={{fontSize:11,color:"#7a6030",marginTop:2}}>You'\''ll be signed out shortly. Refresh data or sign in again to extend.</div>
                 </div>
-                <button onClick={refreshAll} style={{background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"6px 10px",cursor:"pointer"}}>Refresh</button>
+                <button onClick={async () => {
+                  haptic("medium");
+                  const { error } = await supabase.auth.refreshSession();
+                  if (!error) { setSessionWarning(false); refreshAll(); }
+                }} style={{background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"6px 10px",cursor:"pointer"}}>Refresh</button>
               </div>
             )}
 
