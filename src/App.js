@@ -2,14 +2,14 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from "react"
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 import { createClient } from "@supabase/supabase-js";
 
-// Module-level error catcher — only fires if React fails to mount.
+// Module-level error catcher â€” only fires if React fails to mount.
 // Once App renders, the ErrorBoundary takes over.
 (function setupGlobalErrorHandler() {
   const showError = (title, details) => {
     const root = document.getElementById("root");
     if (root && root.children.length === 0) {
       root.innerHTML = `<div style="background:#0d0f14;color:#ff6b8a;padding:20px;font-family:monospace;min-height:100vh;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;">
-        <div style="font-size:32px;margin-bottom:16px;">💥</div>
+        <div style="font-size:32px;margin-bottom:16px;">ðŸ’¥</div>
         <div style="color:#fff;font-size:18px;margin-bottom:12px;">${title}</div>
         <div style="background:#1a0a0a;padding:14px;border-radius:8px;border:1px solid #5a1a2a;">${details}</div>
       </div>`;
@@ -34,7 +34,7 @@ import { createClient } from "@supabase/supabase-js";
 // API calls routed through Vercel serverless proxy
 const API_PROXY = "/api/claude";
 
-// Supabase client — real connection
+// Supabase client â€” real connection
 const SUPABASE_URL = "https://yfbarahnwcrwewtpithb.supabase.co";
 const SUPABASE_KEY = "sb_publishable_ItUAbr04KIijWuO-JWgDNg_J5YCwaqK";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -53,12 +53,12 @@ function getCurrentMonthHours() {
   return Math.round(getWorkingDaysInMonth(now.getFullYear(), now.getMonth()) * 8.25 * 100) / 100;
 }
 
-// Historical pay rates — used for retroactive calculations
+// Historical pay rates â€” used for retroactive calculations
 // Each entry: { from: "YYYY-MM" (inclusive), baseRate, otRate, weekendOtRate, stdDayHrs, stdMonthlyHrs }
 const PAY_HISTORY = [
-  // Contract until April 2026: £14/hr base, 8-hour days
+  // Contract until April 2026: Â£14/hr base, 8-hour days
   { from: "2022-04", baseRate: 14.00, otRate: 16.80, weekendOtRate: 21.00, stdDayHrs: 8.00, stdMonthlyHrs: 160 },
-  // From May 2026 (paid end of May): £14.50/hr base, 8.25-hour days
+  // From May 2026 (paid end of May): Â£14.50/hr base, 8.25-hour days
   { from: "2026-05", baseRate: 14.50, otRate: 17.40, weekendOtRate: 21.75, stdDayHrs: 8.25, stdMonthlyHrs: 165 },
 ];
 
@@ -182,7 +182,7 @@ const INITIAL_SHARED_BILLS = [
   { id: 9,  name: "Netflix",            total: 12.99,  isCarGlyn: false },
   { id: 10, name: "Disney+",            total: 9.99,   isCarGlyn: false },
   { id: 11, name: "Spotify",            total: 17.99,  isCarGlyn: false },
-  { id: 12, name: "Car 🚗",             total: 416.02, isCarGlyn: true  },
+  { id: 12, name: "Car ðŸš—",             total: 416.02, isCarGlyn: true  },
   { id: 13, name: "Barclays Hoover",    total: 100.64, isCarGlyn: false },
   { id: 14, name: "Medivet",            total: 17.5,   isCarGlyn: false },
   { id: 15, name: "Pet Insurance",      total: 4.97,   isCarGlyn: false },
@@ -204,10 +204,10 @@ function billShares(b) {
   return { glyn: b.total / 2, hollie: b.total / 2 };
 }
 
-// localStorage keys — only truly device-local settings (Supabase has the rest)
+// localStorage keys â€” only truly device-local settings (Supabase has the rest)
 const SK = {
-  timesheets:   "vaulted_timesheets",    // legacy — for one-time migration on first login
-  tsLastUpload: "vaulted_ts_last",       // legacy — for one-time migration on first login
+  timesheets:   "vaulted_timesheets",    // legacy â€” for one-time migration on first login
+  tsLastUpload: "vaulted_ts_last",       // legacy â€” for one-time migration on first login
   notifPerm:    "vaulted_notif_perm",    // browser notification permission (device-specific)
   tsSecret:     "vaulted_ts_secret",     // device-specific (could differ per device)
   tsLastEmail:  "vaulted_ts_last_email", // device-specific dedup tracking
@@ -305,7 +305,7 @@ const db = {
   async saveAccumulator(userId, accumulator, lastUpload) {
     await supabase.from("timesheet_accumulator").upsert({ user_id: userId, data: accumulator, last_upload: lastUpload, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
   },
-  // Categories — these are part of shared app_settings (bills are shared, so categorisations are too)
+  // Categories â€” these are part of shared app_settings (bills are shared, so categorisations are too)
   async saveCats(userId, cats) {
     await supabase.from("app_settings").upsert({ user_id: userId, cats_data: cats, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
   },
@@ -336,7 +336,7 @@ const genUUID = () => {
   });
 };
 
-// ── Sync status tracking ─────────────────────────────────────────────────────
+// â”€â”€ Sync status tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Global tracker for outstanding saves
 let outstandingSaves = 0;
 const syncListeners = new Set();
@@ -363,11 +363,11 @@ function getPayday(year, month) {
   // If month has fewer than 29 days (Feb), go to last day
   if (d.getMonth() !== month) d = new Date(year, month + 1, 0);
   const dow = d.getDay();
-  // Saturday → Friday
+  // Saturday â†’ Friday
   if (dow === 6) d.setDate(d.getDate() - 1);
-  // Sunday → Friday
+  // Sunday â†’ Friday
   if (dow === 0) d.setDate(d.getDate() - 2);
-  // Monday (possible bank holiday) → check if it's a common UK bank holiday pattern
+  // Monday (possible bank holiday) â†’ check if it's a common UK bank holiday pattern
   // Simple approach: if Monday, shift to Friday just in case
   // (Can be refined later)
   return d;
@@ -400,7 +400,7 @@ function shouldShowTimesheetReminder(tsLastUpload) {
   return daysSince >= 7;
 }
 
-// Legacy key names from older builds — migrate once then leave
+// Legacy key names from older builds â€” migrate once then leave
 const LEGACY = {
   "jli_history": "vaulted_history", "jli_bills": "vaulted_shared_bills",
   "jli_shared_bills": "vaulted_shared_bills", "jli_glyn_bills": "vaulted_glyn_bills",
@@ -426,7 +426,7 @@ const LEGACY = {
 const load = (key, fb) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fb; } catch { return fb; } };
 const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
 
-const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+const fmt = n => "Â£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload"];
@@ -474,7 +474,7 @@ function groupByFY(history) {
     const yearNum=parseInt(yr);
     const fyYear = monthIdx>=3 ? yearNum : yearNum-1;
     const key=fyYear+"-"+(fyYear+1);
-    if(!fyMap[key]) fyMap[key]={label:"Apr "+fyYear+" – Mar "+(fyYear+1),fyYear,gross:0,net:0,tax:0,ni:0,nest:0,sl:0,bonus:0,ot:0,months:0};
+    if(!fyMap[key]) fyMap[key]={label:"Apr "+fyYear+" â€“ Mar "+(fyYear+1),fyYear,gross:0,net:0,tax:0,ni:0,nest:0,sl:0,bonus:0,ot:0,months:0};
     fyMap[key].gross+=r.gross; fyMap[key].net+=r.net; fyMap[key].tax+=r.tax;
     fyMap[key].ni+=r.ni; fyMap[key].nest+=r.nest; fyMap[key].sl+=r.sl;
     fyMap[key].bonus+=r.bonus; fyMap[key].ot+=r.ot; fyMap[key].months++;
@@ -490,7 +490,7 @@ function getCurrentFYOT(history) {
     return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;
   }).reduce((s,r)=>({
     otPay: s.otPay+(r.ot||0),
-    // estimate OT hours from pay — weekday OT at £17.40, but we only have £ so show £
+    // estimate OT hours from pay â€” weekday OT at Â£17.40, but we only have Â£ so show Â£
   }),{otPay:0});
 }
 
@@ -507,7 +507,7 @@ function StatRow({label,value,color,last}) {
   );
 }
 
-// The allowance is entirely determined by the tier bonus — they're linked.
+// The allowance is entirely determined by the tier bonus â€” they're linked.
 // So inferring perfAllowance just means checking if a bonus was paid.
 function inferPerfAllowance(r) {
   if (typeof r.perfAllowance === "boolean") return r.perfAllowance;
@@ -520,7 +520,7 @@ function CollapsibleChart({title,data,dataKey,color}) {
     <div style={{border:"1px solid #1e2535",borderRadius:10,overflow:"hidden",marginBottom:8}}>
       <button onClick={()=>setOpen(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 14px",background:"#141824",border:"none",cursor:"pointer",color:"#e8eaf0"}}>
         <span style={{fontSize:13,fontWeight:600,color:"#8892b0"}}>{title}</span>
-        <span style={{fontSize:12,color:"#3a4460"}}>{open?"▲":"▼"}</span>
+        <span style={{fontSize:12,color:"#3a4460"}}>{open?"â–²":"â–¼"}</span>
       </button>
       {open&&(
         <div style={{padding:"12px",background:"#111520"}}>
@@ -528,7 +528,7 @@ function CollapsibleChart({title,data,dataKey,color}) {
             <BarChart data={data} margin={{top:4,right:4,left:0,bottom:0}}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
               <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(data.length/6)-1)}/>
-              <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
+              <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"Â£"+v}/>
               <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
               <Bar dataKey={dataKey} fill={color} radius={[2,2,0,0]}/>
             </BarChart>
@@ -559,7 +559,7 @@ function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,on
         </span>
       )}
       {!isGlynOnly&&<><span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(sh.glyn)}</span><span style={{textAlign:"right",color:"#c84aff",fontWeight:600}}>{fmt(sh.hollie)}</span></>}
-      <button onClick={onDelete} style={{background:"none",border:"none",color:"#3a4460",fontSize:12,cursor:"pointer",padding:0,textAlign:"center"}}>✕</button>
+      <button onClick={onDelete} style={{background:"none",border:"none",color:"#3a4460",fontSize:12,cursor:"pointer",padding:0,textAlign:"center"}}>âœ•</button>
     </div>
   );
 }
@@ -585,8 +585,8 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
         <span style={{textAlign:"right",fontSize:11,color:"#e8eaf0",fontWeight:700}}>{fmt(total)}</span>
         {!isGlynOnly&&<><span></span><span></span></>}
         <div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"center"}}>
-          <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>✏️</button>
-          <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 5px"}}>✕</button>
+          <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>âœï¸</button>
+          <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 5px"}}>âœ•</button>
         </div>
       </div>
       {cb.length===0&&<div style={{padding:"10px",textAlign:"center",fontSize:11,color:"#2a3050",fontStyle:"italic"}}>Drop bills here</div>}
@@ -601,7 +601,7 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
 }
 
 
-// ── Haptic feedback ──────────────────────────────────────────────────────────
+// â”€â”€ Haptic feedback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function haptic(style = "light") {
   if (!navigator.vibrate) return;
   if (style === "light")  navigator.vibrate(8);
@@ -611,9 +611,9 @@ function haptic(style = "light") {
   if (style === "error")  navigator.vibrate([40, 20, 40, 20, 40]);
 }
 
-// ── Annual leave helpers ──────────────────────────────────────────────────────
+// â”€â”€ Annual leave helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getLeaveYear() {
-  return new Date().getFullYear(); // Jan–Dec
+  return new Date().getFullYear(); // Janâ€“Dec
 }
 
 const STD_DAY_HRS = 8.25; // standard working day in hours
@@ -639,7 +639,7 @@ function hoursTakenInYear(logs, year) {
   return Math.round(logsForYear(logs, year).reduce((s, l) => s + (l.hours || 0), 0) * 100) / 100;
 }
 
-// ── Push notification helpers ────────────────────────────────────────────────
+// â”€â”€ Push notification helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function requestNotifPermission() {
   if (!("Notification" in window)) return "unsupported";
@@ -678,7 +678,7 @@ function shouldFireTimesheetNotif(tsLastUpload) {
   return isMonday && daysSince >= 7;
 }
 
-// ── Error Boundary ───────────────────────────────────────────────────────────
+// â”€â”€ Error Boundary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
   static getDerivedStateFromError(error) { return { error }; }
@@ -687,7 +687,7 @@ class ErrorBoundary extends React.Component {
     if (this.state.error) {
       return (
         <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans',sans-serif",padding:"24px 20px"}}>
-          <div style={{fontSize:32,marginBottom:16}}>💥</div>
+          <div style={{fontSize:32,marginBottom:16}}>ðŸ’¥</div>
           <h2 style={{color:"#ff6b8a",marginBottom:12}}>Vaulted crashed</h2>
           <div style={{background:"#1a0a0a",border:"1px solid #5a1a2a",borderRadius:10,padding:"14px",fontSize:12,color:"#ff8c8c",fontFamily:"monospace",wordBreak:"break-all",lineHeight:1.6,marginBottom:16}}>
             {this.state.error.toString()}
@@ -702,7 +702,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-// ── Auth helpers ─────────────────────────────────────────────────────────────
+// â”€â”€ Auth helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState("");
@@ -739,7 +739,7 @@ function LoginScreen({ onLogin }) {
 
   return (
     <div style={bg}>
-      <div style={{fontSize:48,marginBottom:16}}>🔐</div>
+      <div style={{fontSize:48,marginBottom:16}}>ðŸ”</div>
       <h1 style={{margin:"0 0 4px",fontSize:22,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
       <p style={{color:"#5a6480",fontSize:13,marginBottom:32}}>{isSignUp ? "Create your account" : "Sign in to continue"}</p>
       {error && <div style={{color: error.includes("Check") ? "#00c88c" : "#ff6b8a",fontSize:13,marginBottom:14,background: error.includes("Check") ? "#0a1a10" : "#2a0f15",padding:"10px 16px",borderRadius:8,border:"1px solid "+(error.includes("Check")?"#1a4030":"#5a1a2a"),width:"100%",boxSizing:"border-box",textAlign:"center"}}>{error}</div>}
@@ -749,7 +749,7 @@ function LoginScreen({ onLogin }) {
         {!resetSent && <input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} style={inp} onKeyDown={e=>e.key==="Enter"&&handleSubmit()}/>}
         <button onClick={handleSubmit} disabled={loading}
           style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:10,color:"#000",fontSize:15,fontWeight:700,padding:"14px",cursor:loading?"not-allowed":"pointer",marginBottom:10,opacity:loading?0.7:1}}>
-          {loading ? "Please wait…" : isSignUp ? "Create Account" : "Sign In"}
+          {loading ? "Please waitâ€¦" : isSignUp ? "Create Account" : "Sign In"}
         </button>
         <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
           <button onClick={()=>{setIsSignUp(!isSignUp);setError("");}} style={{background:"none",border:"none",color:"#4a9eff",cursor:"pointer",fontSize:12}}>
@@ -782,7 +782,7 @@ function SyncIndicator() {
   }, []);
 
   const color = !online ? "#ff4a6a" : pending > 0 ? "#ffb84a" : "#00c88c";
-  const title = !online ? "Offline" : pending > 0 ? `Saving ${pending}…` : "Synced";
+  const title = !online ? "Offline" : pending > 0 ? `Saving ${pending}â€¦` : "Synced";
 
   return (
     <div title={title} style={{display:"flex",alignItems:"center",gap:4}}>
@@ -862,7 +862,7 @@ export default function App() {
   const [payslipSearch,setPayslipSearch]=useState("");
   const [showAllTimeTotals,setShowAllTimeTotals]=useState(false);
 
-  // ── Supabase Auth ────────────────────────────────────────────────────────
+  // â”€â”€ Supabase Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [sessionWarning, setSessionWarning] = useState(false);
   React.useEffect(() => {
     const checkExpiry = (session) => {
@@ -906,14 +906,14 @@ export default function App() {
           db.getAppSettings(user.id),
         ]);
 
-        // Payslips — merge with INITIAL_HISTORY for months not yet in DB
+        // Payslips â€” merge with INITIAL_HISTORY for months not yet in DB
         if (payslips.length > 0) {
           setHistory(payslips.sort((a,b)=>{
             const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
             return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
           }));
         } else {
-          // First login — seed DB with INITIAL_HISTORY
+          // First login â€” seed DB with INITIAL_HISTORY
           const sorted = [...INITIAL_HISTORY].sort((a,b)=>{
             const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
             return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
@@ -922,7 +922,7 @@ export default function App() {
           for (const p of sorted) await trackSave(() => db.upsertPayslip(user.id, p));
         }
 
-        // Bills — merge with defaults if DB empty
+        // Bills â€” merge with defaults if DB empty
         if (sBills.length > 0) {
           setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
         } else {
@@ -958,7 +958,7 @@ export default function App() {
         const localLastUp = load(SK.tsLastUpload, null);
 
         if (!accData && localAcc) {
-          // Fresh DB but localStorage has data — migrate it up
+          // Fresh DB but localStorage has data â€” migrate it up
           if (shouldResetTimesheet(localAcc.lastUpload)) {
             const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
             setAccumulated(empty);
@@ -988,40 +988,6 @@ export default function App() {
     };
     loadAll();
   }, [user]);
-
-  // Auto-backup — runs after data loads, if last backup was > 24h ago
-  React.useEffect(() => {
-    if (!user || dataLoading) return;
-    let cancelled = false;
-    const runBackup = async () => {
-      try {
-        const backups = await db.getBackups(user.id, 1);
-        const lastBackup = backups[0];
-        const now = Date.now();
-        const dayMs = 24 * 60 * 60 * 1000;
-        const shouldBackup = !lastBackup || (now - new Date(lastBackup.created_at).getTime() > dayMs);
-        if (!shouldBackup || cancelled) return;
-
-        // Wait a bit to let initial state settle
-        await new Promise(r => setTimeout(r, 5000));
-        if (cancelled) return;
-
-        const backupData = {
-          history, sharedBills, glynBills,
-          cats, billCats, glynCats, glynBillCats,
-          calcInputs: ci, notes,
-          leaveLogs, leaveSettings,
-          monthlyTs, discrepancies, scenarios,
-          accumulated, tierOverride,
-          exportedAt: new Date().toISOString(),
-          version: "1.10.1"
-        };
-        await db.createBackup(user.id, backupData, "auto");
-      } catch(e) { console.error("Auto-backup failed:", e); }
-    };
-    runBackup();
-    return () => { cancelled = true; };
-  }, [user, dataLoading]);
 
   // Real-time subscriptions (Supabase v2 syntax)
   React.useEffect(() => {
@@ -1152,7 +1118,7 @@ export default function App() {
     };
   }, [refreshAll, dataLoading]);
 
-  // ── Annual Leave ─────────────────────────────────────────────────────────
+  // â”€â”€ Annual Leave â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [leaveSettings, setLeaveSettings] = useState({ baseEntitlement: 29, serviceDays: 4, startYear: 2022 });
   const [leaveLogs, setLeaveLogs] = useState([]);
   const [leaveForm, setLeaveForm] = useState({ date: "", hours: "8.25", label: "" });
@@ -1163,7 +1129,7 @@ export default function App() {
     if (!leaveForm.date || !leaveForm.hours) return;
     haptic("success");
     const entry = { id: genUUID(), date: leaveForm.date, hours: parseFloat(leaveForm.hours), label: leaveForm.label.trim() };
-    // Optimistic update — UI first, then DB
+    // Optimistic update â€” UI first, then DB
     setLeaveLogs(prev => [...prev, entry].sort((a,b) => new Date(b.date) - new Date(a.date)));
     setLeaveForm({ date: "", hours: "8.25", label: "" });
     if (user) trackSave(db.upsertLeaveLog(user.id, entry)).catch(e => {
@@ -1174,7 +1140,7 @@ export default function App() {
 
   const deleteLeaveLog = (id) => {
     haptic("medium");
-    // Optimistic — remove from UI first
+    // Optimistic â€” remove from UI first
     const removed = leaveLogs.find(l => l.id === id);
     setLeaveLogs(prev => prev.filter(l => l.id !== id));
     if (user) trackSave(db.deleteLeaveLog(id)).catch(e => {
@@ -1190,7 +1156,7 @@ export default function App() {
     setLeaveEditSettings(false);
   };
 
-  // ── Notifications ────────────────────────────────────────────────────────
+  // â”€â”€ Notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [notifPerm, setNotifPerm] = useState(() => load(SK.notifPerm, null));
 
   const requestAndSaveNotifPerm = async () => {
@@ -1200,10 +1166,10 @@ export default function App() {
     return result;
   };
 
-  // ── Timesheet auto-import polling ────────────────────────────────────────
+  // â”€â”€ Timesheet auto-import polling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [tsSecret, setTsSecret] = useState(() => load(SK.tsSecret, ""));
   const [tsLastEmail, setTsLastEmail] = useState(() => load(SK.tsLastEmail, ""));
-  const [tsAutoMsg, setTsAutoMsg] = useState(null); // { text, ok } — brief status toast
+  const [tsAutoMsg, setTsAutoMsg] = useState(null); // { text, ok } â€” brief status toast
 
   const applyTimesheetDays = React.useCallback((days, emailId, meta = null) => {
     const STD = 8.25;
@@ -1349,14 +1315,45 @@ export default function App() {
         } catch(e) { break; }
       }
       if (processed > 0 && !cancelled) {
-        setTsAutoMsg({ text: `✅ ${processed} timesheet${processed!==1?"s":""} imported`, ok: true });
+        setTsAutoMsg({ text: `âœ… ${processed} timesheet${processed!==1?"s":""} imported`, ok: true });
         setTimeout(() => setTsAutoMsg(null), 4000);
       }
     })();
     return () => { cancelled = true; };
   }, [tab, tsSecret, user, applyTimesheetDays]);
 
-  // Poll /api/timesheet — 5s when items pending, 60s when empty
+  // Auto-backup â€” runs after data loads, if last backup was > 24h ago
+  React.useEffect(() => {
+    if (!user || dataLoading) return;
+    let cancelled = false;
+    const runBackup = async () => {
+      try {
+        const backups = await db.getBackups(user.id, 1);
+        const lastBackup = backups[0];
+        const now = Date.now();
+        const dayMs = 24 * 60 * 60 * 1000;
+        const shouldBackup = !lastBackup || (now - new Date(lastBackup.created_at).getTime() > dayMs);
+        if (!shouldBackup || cancelled) return;
+        await new Promise(r => setTimeout(r, 5000));
+        if (cancelled) return;
+        const backupData = {
+          history, sharedBills, glynBills,
+          cats, billCats, glynCats, glynBillCats,
+          calcInputs: ci, notes,
+          leaveLogs, leaveSettings,
+          monthlyTs, discrepancies, scenarios,
+          accumulated, tierOverride,
+          exportedAt: new Date().toISOString(),
+          version: "1.10.2"
+        };
+        await db.createBackup(user.id, backupData, "auto");
+      } catch(e) { console.error("Auto-backup failed:", e); }
+    };
+    runBackup();
+    return () => { cancelled = true; };
+  }, [user, dataLoading]);
+
+  // Poll /api/timesheet â€” 5s when items pending, 60s when empty
   React.useEffect(() => {
     if (!tsSecret || !user) return;
     let intervalMs = 60000;
@@ -1371,16 +1368,16 @@ export default function App() {
           const { emailId, days } = data.data;
           const lastEmail = localStorage.getItem("vaulted_ts_last_email") || "";
           if (emailId === lastEmail) {
-            // Already applied — clear from queue and move on
+            // Already applied â€” clear from queue and move on
             await fetch(`/api/timesheet?token=${encodeURIComponent(secret)}`, { method: "DELETE" });
           } else {
             applyTimesheetDays(days, emailId, data.data.meta || null);
             await fetch(`/api/timesheet?token=${encodeURIComponent(secret)}`, { method: "DELETE" });
-            setTsAutoMsg({ text: "✅ Timesheet auto-imported", ok: true });
-            sendNotification("📋 Timesheet imported", "Your JLI timesheet has been automatically added to Vaulted.", "ts-auto");
+            setTsAutoMsg({ text: "âœ… Timesheet auto-imported", ok: true });
+            sendNotification("ðŸ“‹ Timesheet imported", "Your JLI timesheet has been automatically added to Vaulted.", "ts-auto");
             setTimeout(() => setTsAutoMsg(null), 4000);
           }
-          // More items — poll again in 5s
+          // More items â€” poll again in 5s
           if ((data.remaining || 1) > 1) intervalMs = 5000;
         } else {
           intervalMs = 60000;
@@ -1393,7 +1390,7 @@ export default function App() {
     return () => { if (timer) clearTimeout(timer); };
   }, [tsSecret, user]);
 
-  // ── Monthly timesheet history + discrepancy checker ─────────────────────
+  // â”€â”€ Monthly timesheet history + discrepancy checker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [monthlyTs, setMonthlyTs] = useState([]);
   const [discrepancies, setDiscrepancies] = useState([]);
 
@@ -1409,7 +1406,7 @@ export default function App() {
   const checkDiscrepancy = async (tsEntry, hist) => {
     if (!tsEntry || !tsEntry.month) return;
     const payslip = hist.find(h => h.month === tsEntry.month);
-    if (!payslip) return; // payslip not yet uploaded — will recheck when payslip arrives
+    if (!payslip) return; // payslip not yet uploaded â€” will recheck when payslip arrives
 
     const allowance = PAY.bonusTiers[5].allowance; // Tier 6 default; ideally from tierOverride
     const expected = calcPay({
@@ -1420,9 +1417,9 @@ export default function App() {
       _allowanceOverride: allowance,
     });
 
-    const THRESH = 1.00; // £1 tolerance for rounding
+    const THRESH = 1.00; // Â£1 tolerance for rounding
     const items = [];
-    const diff = (label, exp, act, unit="£") => {
+    const diff = (label, exp, act, unit="Â£") => {
       const d = Math.abs(exp - act);
       if (d > THRESH) items.push({ label, expected: exp, actual: act, diff: exp - act, unit });
     };
@@ -1453,7 +1450,7 @@ export default function App() {
 
     if (items.length > 0) {
       sendNotification(
-        "⚠️ Pay discrepancy — " + tsEntry.month,
+        "âš ï¸ Pay discrepancy â€” " + tsEntry.month,
         items.length + " item" + (items.length>1?"s":"") + " don't match your timesheet. Check Vaulted.",
         "discrepancy-" + tsEntry.month
       );
@@ -1494,16 +1491,16 @@ export default function App() {
     if (!user || notifFiredRef.current || Notification.permission !== "granted") return;
     notifFiredRef.current = true;
     if (isTomorrowPayday()) {
-      sendNotification("💰 Payday tomorrow!", "Your pay should land tomorrow — check Vaulted for your estimate.", "payday");
+      sendNotification("ðŸ’° Payday tomorrow!", "Your pay should land tomorrow â€” check Vaulted for your estimate.", "payday");
     }
     if (shouldFireTimesheetNotif(tsLastUpload)) {
-      sendNotification("📋 Timesheet reminder", "It's Monday — don't forget to upload your weekly timesheet.", "timesheet");
+      sendNotification("ðŸ“‹ Timesheet reminder", "It's Monday â€” don't forget to upload your weekly timesheet.", "timesheet");
     }
   }, [user]);
 
-  // Onboarding handled by Supabase auth — no separate state needed
+  // Onboarding handled by Supabase auth â€” no separate state needed
 
-  // ── Named Scenarios ──────────────────────────────────────────────────────
+  // â”€â”€ Named Scenarios â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [scenarios, setScenarios] = useState([]);
   const [expandedMonth, setExpandedMonth] = useState(null);
   const [scenarioName, setScenarioName] = useState("");
@@ -1525,7 +1522,7 @@ export default function App() {
     setScenarios(prev => prev.filter(s=>s.id!==id));
   };
 
-  // Tier override — initial value loaded from Supabase via app_settings later
+  // Tier override â€” initial value loaded from Supabase via app_settings later
   const currentMonthStr = MONTHS[new Date().getMonth()]+" "+new Date().getFullYear();
   const [tierOverride,setTierOverride]=useState(null); // null = auto (inferred from latest payslip)
   const saveTierOverride=(tierIdx)=>{
@@ -1584,7 +1581,7 @@ export default function App() {
   }),[history]);
 
   const updH=h=>{setHistory(h);};
-  // Bills — write each changed bill to Supabase (bulk reconcile)
+  // Bills â€” write each changed bill to Supabase (bulk reconcile)
   const updSB=async (b)=>{
     setSharedBills(b);
     if (user) {
@@ -1641,7 +1638,7 @@ export default function App() {
     const successful=[];
     for(let i=0;i<files.length;i++){
       const file=files[i];
-      setUploadProgress(`Reading ${i+1} of ${files.length}…`);
+      setUploadProgress(`Reading ${i+1} of ${files.length}â€¦`);
       try {
         const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
         const resp=await fetch(API_PROXY,{
@@ -1727,8 +1724,8 @@ export default function App() {
         if(d.glynBillCats){updGBC(d.glynBillCats);}
         if(d.calcInputs){setCi(d.calcInputs);if(user) db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
         if(d.notes){updNotes(d.notes);}
-        setImportMsg("✓ Data restored successfully");
-      } catch{setImportMsg("⚠ Invalid backup file");}
+        setImportMsg("âœ“ Data restored successfully");
+      } catch{setImportMsg("âš  Invalid backup file");}
     };
     reader.readAsText(file);
     e.target.value="";
@@ -1787,7 +1784,7 @@ const calcTimesheetTotals = days => {
     const allDays = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      setTsProgress(`Reading image ${i + 1} of ${files.length}…`);
+      setTsProgress(`Reading image ${i + 1} of ${files.length}â€¦`);
       try {
         const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
         const isPdf = file.type === "application/pdf" || file.name.endsWith(".pdf");
@@ -1802,7 +1799,7 @@ const calcTimesheetTotals = days => {
             model: "claude-sonnet-4-20250514", max_tokens: 1000,
             messages: [{ role: "user", content: [
               contentBlock,
-              { type: "text", text: 'This is a JLI work timesheet email. Extract each row as a JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m","holiday":""},{"date":"DD/MM","day":"Mon","hours":"0h 00m","holiday":"Full Day"}]\nRules:\n- Include ALL rows including weekends, holidays, and zero-hour days\n- "holiday" field: copy the EXACT text from the Holiday column. If the column is empty or shows "-", use "" (empty string). Do NOT normalise or reword it — preserve whatever text JLI put there (e.g. "Full Day", "Half Day", "Annual Leave", "AL", "H", "0.5" etc)\n- Holiday rows typically have "-" for In/Out and "0h 00m" for hours\n- Use the hours column value exactly as shown' }
+              { type: "text", text: 'This is a JLI work timesheet email. Extract each row as a JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m","holiday":""},{"date":"DD/MM","day":"Mon","hours":"0h 00m","holiday":"Full Day"}]\nRules:\n- Include ALL rows including weekends, holidays, and zero-hour days\n- "holiday" field: copy the EXACT text from the Holiday column. If the column is empty or shows "-", use "" (empty string). Do NOT normalise or reword it â€” preserve whatever text JLI put there (e.g. "Full Day", "Half Day", "Annual Leave", "AL", "H", "0.5" etc)\n- Holiday rows typically have "-" for In/Out and "0h 00m" for hours\n- Use the hours column value exactly as shown' }
             ]}]
           })
         });
@@ -1871,7 +1868,7 @@ const calcTimesheetTotals = days => {
         });
     };
     const mergedDays = sortAndDedup([...(accumulated.days||[]), ...enrichedDays]);
-    // Derive totals from the deduplicated days — single source of truth
+    // Derive totals from the deduplicated days â€” single source of truth
     const totalOtHrs = Math.round(mergedDays.reduce((s,d) => s + (d.otHrs||0), 0) * 100) / 100;
     const totalWkndHrs = Math.round(mergedDays.reduce((s,d) => s + (d.wkOtHrs||0), 0) * 100) / 100;
     const newAcc = {
@@ -1927,9 +1924,9 @@ const calcTimesheetTotals = days => {
   // Auth loading
   if (authLoading) {
     return <div style={{minHeight:"100vh",background:"#0d0f14",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
-      <div style={{fontSize:42,opacity:0.7}}>🔐</div>
+      <div style={{fontSize:42,opacity:0.7}}>ðŸ”</div>
       <h1 style={{margin:0,fontSize:18,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
-      <div style={{color:"#3a4460",fontSize:11}}>Checking session…</div>
+      <div style={{color:"#3a4460",fontSize:11}}>Checking sessionâ€¦</div>
     </div>;
   }
 
@@ -1947,7 +1944,7 @@ const calcTimesheetTotals = days => {
         <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"14px 14px 12px",position:"sticky",top:0,zIndex:10}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
-            <div style={{color:"#4a9eff",fontSize:11,fontWeight:600}}>Loading…</div>
+            <div style={{color:"#4a9eff",fontSize:11,fontWeight:600}}>Loadingâ€¦</div>
           </div>
         </div>
         <div style={{padding:"14px 12px"}}>
@@ -1983,11 +1980,11 @@ const calcTimesheetTotals = days => {
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <SyncIndicator/>
             <button onClick={()=>{haptic("medium");handleSignOut();}} title="Sign out"
-              style={{background:"none",border:"none",color:"#3a4460",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
+              style={{background:"none",border:"none",color:"#3a4460",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>ðŸ”’</button>
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:11,color:"#5a6480"}}>{history.length} payslips</div>
-            <div style={{fontSize:11,color:"#3a4460"}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> · {nextPayday.date}</div>
+            <div style={{fontSize:11,color:"#3a4460"}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> Â· {nextPayday.date}</div>
           </div>
         </div>
         <div style={{display:"flex",gap:2,marginBottom:2}}>
@@ -2016,20 +2013,20 @@ const calcTimesheetTotals = days => {
           <div>
             {discrepancies.filter(d=>d.status==="discrepancy").length>0&&(
               <div onClick={()=>{haptic();setTab("Timesheet");}} style={{background:"#1a0a0a",border:"1px solid #ff4a6a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-                <span style={{fontSize:20}}>⚠️</span>
+                <span style={{fontSize:20}}>âš ï¸</span>
                 <div style={{flex:1}}>
                   <div style={{fontSize:13,fontWeight:700,color:"#ff6b8a"}}>Pay discrepancy detected</div>
                   <div style={{fontSize:11,color:"#8a3040",marginTop:2}}>
-                    {discrepancies.filter(d=>d.status==="discrepancy").map(d=>d.month).join(", ")} · Tap to review
+                    {discrepancies.filter(d=>d.status==="discrepancy").map(d=>d.month).join(", ")} Â· Tap to review
                   </div>
                 </div>
-                <span style={{fontSize:11,color:"#ff6b8a",fontWeight:700}}>Review →</span>
+                <span style={{fontSize:11,color:"#ff6b8a",fontWeight:700}}>Review â†’</span>
               </div>
             )}
 
             {sessionWarning && (
               <div style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
-                <span style={{fontSize:20}}>⏰</span>
+                <span style={{fontSize:20}}>â°</span>
                 <div style={{flex:1}}>
                   <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Session expiring soon</div>
                   <div style={{fontSize:11,color:"#7a6030",marginTop:2}}>You'\''ll be signed out shortly. Refresh data or sign in again to extend.</div>
@@ -2044,27 +2041,27 @@ const calcTimesheetTotals = days => {
 
             {!pwaInstalled && pwaPrompt && (
               <div onClick={triggerInstall} style={{background:"#0a1520",border:"1px solid #4a9eff44",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-                <span style={{fontSize:20}}>📲</span>
+                <span style={{fontSize:20}}>ðŸ“²</span>
                 <div style={{flex:1}}>
                   <div style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>Add Vaulted to Home Screen</div>
-                  <div style={{fontSize:11,color:"#3a4460",marginTop:2}}>Install for quick access — works offline</div>
+                  <div style={{fontSize:11,color:"#3a4460",marginTop:2}}>Install for quick access â€” works offline</div>
                 </div>
-                <span style={{fontSize:11,color:"#4a9eff",fontWeight:700}}>Install →</span>
+                <span style={{fontSize:11,color:"#4a9eff",fontWeight:700}}>Install â†’</span>
               </div>
             )}
             {showTsReminder&&(
               <div onClick={()=>setTab("Upload")} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-                <span style={{fontSize:20}}>⚠️</span>
+                <span style={{fontSize:20}}>âš ï¸</span>
                 <div>
                   <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
-                  <div style={{fontSize:12,color:"#8a7040",marginTop:2}}>{tsLastUpload?`Last uploaded ${Math.floor((new Date()-new Date(tsLastUpload))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} · Tap to upload</div>
+                  <div style={{fontSize:12,color:"#8a7040",marginTop:2}}>{tsLastUpload?`Last uploaded ${Math.floor((new Date()-new Date(tsLastUpload))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} Â· Tap to upload</div>
                 </div>
               </div>
             )}
             {missingMonths.length>0&&(
               <div style={{background:"#1a0f1a",border:"1px solid #c84aff",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
-                  <span style={{fontSize:16}}>📭</span>
+                  <span style={{fontSize:16}}>ðŸ“­</span>
                   <span style={{fontSize:13,fontWeight:700,color:"#c84aff"}}>Missing payslips detected</span>
                 </div>
                 <div style={{fontSize:12,color:"#8a5080",lineHeight:1.8}}>{missingMonths.join(", ")}</div>
@@ -2122,7 +2119,7 @@ const calcTimesheetTotals = days => {
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
                   <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(chartData.length/7)-1)}/>
-                  <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
+                  <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"Â£"+v}/>
                   <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
                   <Line type="monotone" dataKey="net" stroke="#4a9eff" strokeWidth={2} dot={false} name="Net Pay"/>
                 </LineChart>
@@ -2131,12 +2128,12 @@ const calcTimesheetTotals = days => {
 
             <div style={{...card,marginBottom:14}}>
               <div style={{fontSize:11,fontWeight:600,color:"#8892b0",marginBottom:4}}>Budget vs Actual Net Pay</div>
-              <div style={{fontSize:10,color:"#3a4460",marginBottom:10}}>Current Pay Calc estimate vs actual received — last 12 months</div>
+              <div style={{fontSize:10,color:"#3a4460",marginBottom:10}}>Current Pay Calc estimate vs actual received â€” last 12 months</div>
               <ResponsiveContainer width="100%" height={160}>
                 <BarChart data={budgetVsActual} margin={{top:4,right:4,left:0,bottom:0}}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
                   <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(budgetVsActual.length/6)-1)}/>
-                  <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
+                  <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"Â£"+v}/>
                   <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
                   <Bar dataKey="estimated" fill="#2a3a5a" name="Estimated" radius={[2,2,0,0]}/>
                   <Bar dataKey="actual" fill="#4a9eff" name="Actual" radius={[2,2,0,0]}/>
@@ -2167,7 +2164,7 @@ const calcTimesheetTotals = days => {
             </div>
 
             <div style={{...card,marginBottom:12}}>
-              <SectionLabel>Student Loan — Plan 2</SectionLabel>
+              <SectionLabel>Student Loan â€” Plan 2</SectionLabel>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
                 <span style={{fontSize:13,color:"#8892b0"}}>{slProgress.elapsed} of {slProgress.total} years</span>
                 <span style={{fontSize:13,fontWeight:700,color:"#c84aff"}}>{slProgress.pct}% complete</span>
@@ -2185,7 +2182,7 @@ const calcTimesheetTotals = days => {
             <div style={{...card,marginBottom:12}}>
               <button onClick={()=>setShowAllTimeTotals(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"none",border:"none",cursor:"pointer",padding:0,marginBottom:showAllTimeTotals?12:0}}>
                 <SectionLabel>All-Time Totals</SectionLabel>
-                <span style={{fontSize:12,color:"#3a4460",marginTop:-10}}>{showAllTimeTotals?"▲":"▼"}</span>
+                <span style={{fontSize:12,color:"#3a4460",marginTop:-10}}>{showAllTimeTotals?"â–²":"â–¼"}</span>
               </button>
               {showAllTimeTotals&&[
                 ["Total Earned (Gross)", fmt(ts.gross), "#7c6fff"],
@@ -2232,7 +2229,7 @@ const calcTimesheetTotals = days => {
                     <div style={{width:Math.max(0,Math.min(100,savingsRate))+"%",height:"100%",background:`linear-gradient(90deg,${srColor}88,${srColor})`,borderRadius:99,transition:"width 0.3s"}}/>
                   </div>
                   <div style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>
-                    (Net Pay − Total Bills) ÷ Net Pay · <span style={{color:savingsRate>=0?"#00c88c":"#ff4a6a"}}>{fmt(Math.abs(surplus))} {surplus>=0?"saved":"overspent"}</span> per month
+                    (Net Pay âˆ’ Total Bills) Ã· Net Pay Â· <span style={{color:savingsRate>=0?"#00c88c":"#ff4a6a"}}>{fmt(Math.abs(surplus))} {surplus>=0?"saved":"overspent"}</span> per month
                   </div>
                 </div>
               );
@@ -2240,7 +2237,7 @@ const calcTimesheetTotals = days => {
             {billChanges.length > 0 && (
               <div style={{background:"#0a1525",border:"1px solid #4a9eff44",borderRadius:12,padding:"12px 14px",marginBottom:12}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                  <span style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>📊 Bills changed</span>
+                  <span style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>ðŸ“Š Bills changed</span>
                   <button onClick={dismissBillChanges} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer"}}>Dismiss</button>
                 </div>
                 {billChanges.map((c,i)=>{
@@ -2250,7 +2247,7 @@ const calcTimesheetTotals = days => {
                     <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:11}}>
                       <span style={{color:"#8892b0"}}>{c.name}</span>
                       <span>
-                        <span style={{color:"#5a6480"}}>{fmt(c.old)} → </span>
+                        <span style={{color:"#5a6480"}}>{fmt(c.old)} â†’ </span>
                         <span style={{color:"#e8eaf0",fontWeight:600}}>{fmt(c.new)}</span>
                         <span style={{color:up?"#ff8c4a":"#00c88c",marginLeft:6,fontWeight:700}}>
                           {up?"+":""}{fmt(diff)}
@@ -2294,7 +2291,7 @@ const calcTimesheetTotals = days => {
                   <div style={{display:"flex",gap:6,marginBottom:10}}>
                     <input autoFocus placeholder="Category name..." value={newCat} onChange={e=>setNewCat(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCategory(false)} style={{...inp,flex:1,padding:"6px 8px",fontSize:12}}/>
                     <button onClick={()=>addCategory(false)} style={{background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"6px 12px",cursor:"pointer"}}>Add</button>
-                    <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>✕</button>
+                    <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>âœ•</button>
                   </div>
                 )}
                 <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"8px 10px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",border:"1px solid #1e2535",borderBottom:"none"}}>
@@ -2317,11 +2314,11 @@ const calcTimesheetTotals = days => {
                   <div style={{border:"1px solid #00c88c",borderTop:"none",background:"#0a1a10",padding:12}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:6}}>
                       <input autoFocus placeholder="Bill name" value={newSh.name} onChange={e=>setNewSh(r=>({...r,name:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12}}/>
-                      <input placeholder="£ Total" type="number" value={newSh.total} onChange={e=>setNewSh(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
+                      <input placeholder="Â£ Total" type="number" value={newSh.total} onChange={e=>setNewSh(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
                     </div>
                     <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"#8892b0",marginBottom:10,cursor:"pointer"}}>
                       <input type="checkbox" checked={newSh.isCarGlyn} onChange={e=>setNewSh(r=>({...r,isCarGlyn:e.target.checked}))}/>
-                      Car exception (Hollie pays £{HOLLIE_CAR}, Glyn pays rest)
+                      Car exception (Hollie pays Â£{HOLLIE_CAR}, Glyn pays rest)
                     </label>
                     <div style={{display:"flex",gap:6}}>
                       <button onClick={addShBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"8px",cursor:"pointer"}}>Add Bill</button>
@@ -2340,7 +2337,7 @@ const calcTimesheetTotals = days => {
                   <button onClick={()=>setAddSh(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
                   <button onClick={()=>{if(!window.confirm("Reset all shared bills to defaults? This cannot be undone."))return;updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
                 </div>
-                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap Total to edit · Drag to categorise · Double-tap category to rename</p>
+                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap Total to edit Â· Drag to categorise Â· Double-tap category to rename</p>
               </div>
             )}
 
@@ -2354,7 +2351,7 @@ const calcTimesheetTotals = days => {
                   <div style={{display:"flex",gap:6,marginBottom:10}}>
                     <input autoFocus placeholder="Category name..." value={newCat} onChange={e=>setNewCat(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCategory(true)} style={{...inp,flex:1,padding:"6px 8px",fontSize:12}}/>
                     <button onClick={()=>addCategory(true)} style={{background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"6px 12px",cursor:"pointer"}}>Add</button>
-                    <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>✕</button>
+                    <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>âœ•</button>
                   </div>
                 )}
                 <div style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",padding:"8px 10px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",border:"1px solid #ff8c4a",borderBottom:"none"}}>
@@ -2377,7 +2374,7 @@ const calcTimesheetTotals = days => {
                   <div style={{border:"1px solid #00c88c",borderTop:"none",background:"#0a1a10",padding:12}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:10}}>
                       <input autoFocus placeholder="Bill name" value={newGl.name} onChange={e=>setNewGl(r=>({...r,name:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12}}/>
-                      <input placeholder="£ Total" type="number" value={newGl.total} onChange={e=>setNewGl(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
+                      <input placeholder="Â£ Total" type="number" value={newGl.total} onChange={e=>setNewGl(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
                     </div>
                     <div style={{display:"flex",gap:6}}>
                       <button onClick={addGlBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"8px",cursor:"pointer"}}>Add Bill</button>
@@ -2394,7 +2391,7 @@ const calcTimesheetTotals = days => {
                   <button onClick={()=>setAddGl(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
                   <button onClick={()=>{if(!window.confirm("Reset all personal bills to defaults? This cannot be undone."))return;updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
                 </div>
-                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit · Drag to categorise · Double-tap category to rename</p>
+                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit Â· Drag to categorise Â· Double-tap category to rename</p>
               </div>
             )}
           </div>
@@ -2427,14 +2424,14 @@ const calcTimesheetTotals = days => {
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
                 <div>
-                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Overtime Hrs <span style={{color:"#3a4460"}}>@£{PAY.otRate}</span></span><span style={{color:"#4affd4",fontWeight:700}}>{ci.otHrs}h</span></label>
+                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Overtime Hrs <span style={{color:"#3a4460"}}>@Â£{PAY.otRate}</span></span><span style={{color:"#4affd4",fontWeight:700}}>{ci.otHrs}h</span></label>
                   <input type="range" min={0} max={80} step={0.25} value={ci.otHrs}
                     onChange={e=>setC("otHrs",parseFloat(e.target.value))}
                     style={{width:"100%",accentColor:"#4affd4",marginBottom:6,cursor:"pointer"}}/>
                   <input type="number" value={ci.otHrs} onChange={e=>setC("otHrs",parseFloat(e.target.value)||0)} style={numI}/>
                 </div>
                 <div>
-                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Weekend OT <span style={{color:"#3a4460"}}>@£{PAY.weekendOtRate}</span></span><span style={{color:"#00c88c",fontWeight:700}}>{ci.weekendOtHrs}h</span></label>
+                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Weekend OT <span style={{color:"#3a4460"}}>@Â£{PAY.weekendOtRate}</span></span><span style={{color:"#00c88c",fontWeight:700}}>{ci.weekendOtHrs}h</span></label>
                   <input type="range" min={0} max={40} step={0.25} value={ci.weekendOtHrs}
                     onChange={e=>setC("weekendOtHrs",parseFloat(e.target.value))}
                     style={{width:"100%",accentColor:"#00c88c",marginBottom:6,cursor:"pointer"}}/>
@@ -2467,14 +2464,14 @@ const calcTimesheetTotals = days => {
                         borderRadius:8,padding:"8px 4px",cursor:"pointer",textAlign:"center"
                       }}>
                         <div style={{fontSize:11,fontWeight:700,color:isActive?colors[i]:"#5a6480"}}>{tier.label}</div>
-                        <div style={{fontSize:10,color:isActive?colors[i]:"#3a4460",marginTop:2}}>+£{tier.allowance.toFixed(2)}/hr</div>
+                        <div style={{fontSize:10,color:isActive?colors[i]:"#3a4460",marginTop:2}}>+Â£{tier.allowance.toFixed(2)}/hr</div>
                         {isAuto&&<div style={{fontSize:9,color:colors[i],marginTop:2,opacity:0.8}}>auto</div>}
                       </button>
                     );
                   })}
                 </div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:"#5a6480"}}>
-                  <span>Effective rate: <span style={{color:"#e8eaf0",fontWeight:700}}>£{(PAY.baseRate+effectiveAllowance).toFixed(2)}/hr</span></span>
+                  <span>Effective rate: <span style={{color:"#e8eaf0",fontWeight:700}}>Â£{(PAY.baseRate+effectiveAllowance).toFixed(2)}/hr</span></span>
                   {tierOverride!==null&&(
                     <button onClick={()=>saveTierOverride(null)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",textDecoration:"underline"}}>
                       Reset to auto
@@ -2482,7 +2479,7 @@ const calcTimesheetTotals = days => {
                   )}
                 </div>
                 {tierOverride!==null&&(
-                  <div style={{fontSize:11,color:"#ffb84a",marginTop:6}}>⚠ Manual override active — resets next month</div>
+                  <div style={{fontSize:11,color:"#ffb84a",marginTop:6}}>âš  Manual override active â€” resets next month</div>
                 )}
               </div>
             </div>
@@ -2499,18 +2496,18 @@ const calcTimesheetTotals = days => {
                         <div key={s.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 10px",background:"#111520",borderRadius:8,marginBottom:6,border:"1px solid #1e2535"}}>
                           <div>
                             <div style={{fontSize:13,fontWeight:600,color:"#e8eaf0"}}>{s.name}</div>
-                            <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{s.stdHrs}h std · {s.otHrs}h OT · {s.weekendOtHrs}h wknd · {s.bonus>0?"£"+s.bonus+" bonus":"no bonus"}</div>
+                            <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{s.stdHrs}h std Â· {s.otHrs}h OT Â· {s.weekendOtHrs}h wknd Â· {s.bonus>0?"Â£"+s.bonus+" bonus":"no bonus"}</div>
                           </div>
                           <div style={{display:"flex",gap:6}}>
                             <button onClick={()=>loadScenario(s)} style={{background:"#7c6fff22",border:"1px solid #7c6fff",borderRadius:6,color:"#7c6fff",fontSize:11,fontWeight:700,padding:"5px 10px",cursor:"pointer"}}>Load</button>
-                            <button onClick={()=>deleteScenario(s.id)} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
+                            <button onClick={()=>deleteScenario(s.id)} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>âœ•</button>
                           </div>
                         </div>
                       ))}
                     </div>
                   )}
                   <div style={{display:"flex",gap:8}}>
-                    <input placeholder="Scenario name…" value={scenarioName} onChange={e=>setScenarioName(e.target.value)}
+                    <input placeholder="Scenario nameâ€¦" value={scenarioName} onChange={e=>setScenarioName(e.target.value)}
                       onKeyDown={e=>e.key==="Enter"&&saveScenario()}
                       style={{...inp,flex:1,padding:"8px 10px",fontSize:12}}/>
                     <button onClick={saveScenario} style={{background:"#7c6fff",border:"none",borderRadius:6,color:"#fff",fontWeight:700,fontSize:12,padding:"8px 14px",cursor:"pointer"}}>Save</button>
@@ -2523,9 +2520,9 @@ const calcTimesheetTotals = days => {
             <div style={card}>
               <SectionLabel>Gross Breakdown</SectionLabel>
               {[
-                ["Standard Pay", ci.stdHrs+"hrs × £"+(PAY.baseRate+effectiveAllowance).toFixed(2), fmt(cr.stdPay), "#e8eaf0"],
-                ["Overtime Pay", ci.otHrs+"hrs x £"+PAY.otRate, fmt(cr.otPay), "#4affd4"],
-                ["Weekend OT",   ci.weekendOtHrs+"hrs x £"+PAY.weekendOtRate, fmt(cr.wkPay), "#00c88c"],
+                ["Standard Pay", ci.stdHrs+"hrs Ã— Â£"+(PAY.baseRate+effectiveAllowance).toFixed(2), fmt(cr.stdPay), "#e8eaf0"],
+                ["Overtime Pay", ci.otHrs+"hrs x Â£"+PAY.otRate, fmt(cr.otPay), "#4affd4"],
+                ["Weekend OT",   ci.weekendOtHrs+"hrs x Â£"+PAY.weekendOtRate, fmt(cr.wkPay), "#00c88c"],
                 ["Perf. Bonus",  "", fmt(cr.bonus), "#ffb84a"],
               ].map(([l,sub,v,c])=>(
                 <div key={l} style={{...row,flexDirection:"column",gap:2}}>
@@ -2542,9 +2539,9 @@ const calcTimesheetTotals = days => {
               <SectionLabel>Deductions</SectionLabel>
               {[
                 ["Income Tax (20%)",  "Tax-free: "+fmt(PAY.taxFreeMonthly)+"/mo", fmt(cr.tax),  "#ff6b8a"],
-                ["National Insurance","8% to £4,189 | 2% above",                  fmt(cr.ni),   "#ff8c4a"],
+                ["National Insurance","8% to Â£4,189 | 2% above",                  fmt(cr.ni),   "#ff8c4a"],
                 ["NEST Pension (5%)", "On qualifying earnings",                    fmt(cr.nest), "#ffb84a"],
-                ["Student Loan P2",   "9% above £2,372/mo",                        fmt(cr.sl),   "#c84aff"],
+                ["Student Loan P2",   "9% above Â£2,372/mo",                        fmt(cr.sl),   "#c84aff"],
               ].map(([l,sub,v,c])=>(
                 <div key={l} style={{...row,flexDirection:"column",gap:2}}>
                   <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#8892b0"}}>{l}</span><span style={{fontWeight:700,color:c}}>-{v}</span></div>
@@ -2578,7 +2575,7 @@ const calcTimesheetTotals = days => {
                     <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<arr.length-1?"1px solid #1a1f2e":"none"}}>
                       <span style={{fontSize:13,color:"#8892b0",width:60}}>{l}</span>
                       <span style={{fontSize:13,fontWeight:700,color:c}}>{fmt(cur)}</span>
-                      <span style={{fontSize:12,fontWeight:600,color:diff===0?"#3a4460":diff>0?"#00c88c":"#ff6b8a",width:80,textAlign:"right"}}>{diff===0?"—":(diff>0?"+":"")+fmt(Math.abs(diff))}</span>
+                      <span style={{fontSize:12,fontWeight:600,color:diff===0?"#3a4460":diff>0?"#00c88c":"#ff6b8a",width:80,textAlign:"right"}}>{diff===0?"â€”":(diff>0?"+":"")+fmt(Math.abs(diff))}</span>
                     </div>
                   );
                 })}
@@ -2588,10 +2585,10 @@ const calcTimesheetTotals = days => {
               <SectionLabel>Pay Rates</SectionLabel>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
                 {[
-                  {label:"Base Rate",  value:"£"+PAY.baseRate+"/hr",      sub:"Standard hours",    accent:"#4a9eff"},
-                  {label:"OTE Rate",   value:"£"+(PAY.baseRate+effectiveAllowance).toFixed(2)+"/hr", sub:"base + tier allowance", accent:"#00c88c"},
-                  {label:"Overtime",   value:"£"+PAY.otRate+"/hr",         sub:"Weekday OT",        accent:"#4affd4"},
-                  {label:"Weekend OT", value:"£"+PAY.weekendOtRate+"/hr",  sub:"Weekend OT",        accent:"#ffb84a"},
+                  {label:"Base Rate",  value:"Â£"+PAY.baseRate+"/hr",      sub:"Standard hours",    accent:"#4a9eff"},
+                  {label:"OTE Rate",   value:"Â£"+(PAY.baseRate+effectiveAllowance).toFixed(2)+"/hr", sub:"base + tier allowance", accent:"#00c88c"},
+                  {label:"Overtime",   value:"Â£"+PAY.otRate+"/hr",         sub:"Weekday OT",        accent:"#4affd4"},
+                  {label:"Weekend OT", value:"Â£"+PAY.weekendOtRate+"/hr",  sub:"Weekend OT",        accent:"#ffb84a"},
                 ].map(k=>(
                   <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
                     <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>{k.label}</div>
@@ -2628,11 +2625,11 @@ const calcTimesheetTotals = days => {
                 return(
                   <div key={tier.label} style={{background:"#0d1117",borderRadius:8,padding:"10px 14px",borderLeft:"3px solid "+colors[i],marginBottom:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <div>
-                      <div style={{fontSize:13,fontWeight:700,color:tier.bonus===0?"#3a4460":colors[i]}}>{tier.label} · {tier.range}</div>
+                      <div style={{fontSize:13,fontWeight:700,color:tier.bonus===0?"#3a4460":colors[i]}}>{tier.label} Â· {tier.range}</div>
                       <div style={{fontSize:11,color:"#5a6480",marginTop:3}}>{tier.bonus===0?"No bonus":"Bonus: "+fmt(tier.bonus)}</div>
                     </div>
                     <div style={{textAlign:"right"}}>
-                      <div style={{fontSize:13,fontWeight:700,color:tier.allowance>0?colors[i]:"#3a4460"}}>+£{tier.allowance.toFixed(2)}/hr</div>
+                      <div style={{fontSize:13,fontWeight:700,color:tier.allowance>0?colors[i]:"#3a4460"}}>+Â£{tier.allowance.toFixed(2)}/hr</div>
                       <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>allowance</div>
                     </div>
                   </div>
@@ -2642,7 +2639,7 @@ const calcTimesheetTotals = days => {
             <div style={card}>
               <SectionLabel>Recent Bonus History</SectionLabel>
               {allSorted.slice(-10).reverse().map((r,i,arr)=>(
-                <StatRow key={r.month} label={r.month} color={r.bonus>=240?"#00c88c":r.bonus>=200?"#ffb84a":r.bonus>=160?"#7c6fff":r.bonus>0?"#4a9eff":"#3a4460"} value={r.bonus>0?fmt(r.bonus):"—"} last={i===arr.length-1}/>
+                <StatRow key={r.month} label={r.month} color={r.bonus>=240?"#00c88c":r.bonus>=200?"#ffb84a":r.bonus>=160?"#7c6fff":r.bonus>0?"#4a9eff":"#3a4460"} value={r.bonus>0?fmt(r.bonus):"â€”"} last={i===arr.length-1}/>
               ))}
             </div>
           </div>
@@ -2651,9 +2648,9 @@ const calcTimesheetTotals = days => {
         {tab==="Payslips"&&(
           <div>
             <div style={{marginBottom:12,position:"relative"}}>
-              <input placeholder="Search e.g. Jan 2025…" value={payslipSearch} onChange={e=>setPayslipSearch(e.target.value)}
+              <input placeholder="Search e.g. Jan 2025â€¦" value={payslipSearch} onChange={e=>setPayslipSearch(e.target.value)}
                 style={{...inp,paddingLeft:36,background:"#141824"}}/>
-              <span style={{position:"absolute",top:"50%",left:12,transform:"translateY(-50%)",fontSize:14,pointerEvents:"none"}}>🔍</span>
+              <span style={{position:"absolute",top:"50%",left:12,transform:"translateY(-50%)",fontSize:14,pointerEvents:"none"}}>ðŸ”</span>
             </div>
               <div style={{background:"#2a0f15",border:"1px solid #ff4a6a",borderRadius:10,padding:"16px 14px",marginBottom:14,display:deleteConfirm?"block":"none"}}>
                 <div style={{fontSize:13,fontWeight:700,color:"#ff4a6a",marginBottom:8}}>Delete {deleteConfirm}?</div>
@@ -2685,7 +2682,7 @@ const calcTimesheetTotals = days => {
                         <div style={{color:"#ff8c4a",fontSize:11}}>{fmt(r.ni)}</div>
                       </span>
                       <button onClick={e=>{e.stopPropagation();setDeleteConfirm(r.month);}}
-                        style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
+                        style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>ðŸ—‘</button>
                     </div>
                     {expandedPayslip===r.month&&(
                       <div style={{background:"#0d1525",borderBottom:"1px solid #1e2535",padding:"12px 14px"}}>
@@ -2695,11 +2692,11 @@ const calcTimesheetTotals = days => {
                             ["Net",      fmt(r.net),                 "#4a9eff"],
                             ["Tax",      fmt(r.tax),                 "#ff6b8a"],
                             ["NI",       fmt(r.ni),                  "#ff8c4a"],
-                            ["NEST",     r.nest>0?fmt(r.nest):"—",   "#00c88c"],
-                            ["Bonus",    r.bonus>0?fmt(r.bonus):"—", "#c84aff"],
-                            ["OT Pay",   r.ot>0?fmt(r.ot):"—",      "#4affd4"],
-                            ["St. Loan", r.sl>0?fmt(r.sl):"—",      "#ffb84a"],
-                            ["Date",     r.date||"—",                "#5a6480"],
+                            ["NEST",     r.nest>0?fmt(r.nest):"â€”",   "#00c88c"],
+                            ["Bonus",    r.bonus>0?fmt(r.bonus):"â€”", "#c84aff"],
+                            ["OT Pay",   r.ot>0?fmt(r.ot):"â€”",      "#4affd4"],
+                            ["St. Loan", r.sl>0?fmt(r.sl):"â€”",      "#ffb84a"],
+                            ["Date",     r.date||"â€”",                "#5a6480"],
                           ].map(([l,v,c])=>(
                             <div key={l} style={{background:"#111827",borderRadius:8,padding:"8px",textAlign:"center"}}>
                               <div style={{fontSize:9,color:"#5a6480",marginBottom:3,textTransform:"uppercase",letterSpacing:0.5}}>{l}</div>
@@ -2707,7 +2704,7 @@ const calcTimesheetTotals = days => {
                             </div>
                           ))}
                         </div>
-                        <textarea placeholder="Add a note for this month…" value={notes[r.month]||""}
+                        <textarea placeholder="Add a note for this monthâ€¦" value={notes[r.month]||""}
                           onChange={e=>{const n={...notes,[r.month]:e.target.value};updNotes(n);}}
                           style={{width:"100%",boxSizing:"border-box",background:"#111827",border:"1px solid #2a3050",borderRadius:8,color:"#8892b0",fontSize:12,padding:"10px",resize:"vertical",minHeight:60,fontFamily:"inherit",lineHeight:1.5}}/>
                       </div>
@@ -2717,7 +2714,7 @@ const calcTimesheetTotals = days => {
                 {filteredHistory.length===0&&(
                   history.length === 0 ? (
                     <div style={{padding:"40px 20px",textAlign:"center"}}>
-                      <div style={{fontSize:36,marginBottom:8}}>💼</div>
+                      <div style={{fontSize:36,marginBottom:8}}>ðŸ’¼</div>
                       <div style={{fontSize:14,color:"#8892b0",fontWeight:600,marginBottom:6}}>No payslips yet</div>
                       <div style={{fontSize:12,color:"#3a4460",marginBottom:14}}>Upload your first payslip PDF to start tracking</div>
                       <button onClick={()=>{haptic();setTab("Upload");}} style={{background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:12,fontWeight:700,padding:"10px 18px",cursor:"pointer"}}>Go to Upload</button>
@@ -2740,7 +2737,7 @@ const calcTimesheetTotals = days => {
                 </div>
               </div>
             </div>
-            <p style={{fontSize:10,color:"#3a4460",textAlign:"center",marginTop:4,marginBottom:12}}>Tap a row to expand full detail · add notes or delete</p>
+            <p style={{fontSize:10,color:"#3a4460",textAlign:"center",marginTop:4,marginBottom:12}}>Tap a row to expand full detail Â· add notes or delete</p>
 
             {latest&&(()=>{
               const active = inferPerfAllowance(latest);
@@ -2753,17 +2750,17 @@ const calcTimesheetTotals = days => {
               return(
                 <div style={{marginTop:12,background:active?"#0a1a10":"#1a0f0a",border:"1px solid "+(active?"#00c88c":"#ff8c4a"),borderRadius:12,padding:"14px 16px"}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-                    <span style={{fontSize:18}}>{active?"✅":"❌"}</span>
+                    <span style={{fontSize:18}}>{active?"âœ…":"âŒ"}</span>
                     <span style={{fontSize:13,fontWeight:700,color:active?"#00c88c":"#ff8c4a"}}>
-                      Performance Allowance — {nextMo} {nextYr}
+                      Performance Allowance â€” {nextMo} {nextYr}
                     </span>
                   </div>
                   <div style={{fontSize:12,color:"#8892b0",lineHeight:1.7}}>
                     Your <span style={{color:"#e8eaf0",fontWeight:600}}>{latest.month}</span> payslip shows a <span style={{color:"#c84aff",fontWeight:700}}>{fmt(latest.bonus||0)}</span> bonus
-                    {" "}(<span style={{color:"#e8eaf0"}}>{tier.label} · {tier.range}</span>).
+                    {" "}(<span style={{color:"#e8eaf0"}}>{tier.label} Â· {tier.range}</span>).
                     {active
-                      ? <> The <span style={{color:"#00c88c",fontWeight:700}}>+£{allowanceRate.toFixed(2)}/hr</span> allowance will apply to every hour worked in <span style={{color:"#e8eaf0",fontWeight:600}}>{nextMo} {nextYr}</span>. Pay Calc updated.</>
-                      : <> No performance allowance applies for <span style={{color:"#e8eaf0",fontWeight:600}}>{nextMo} {nextYr}</span> — a bonus is needed to unlock the hourly allowance.</>
+                      ? <> The <span style={{color:"#00c88c",fontWeight:700}}>+Â£{allowanceRate.toFixed(2)}/hr</span> allowance will apply to every hour worked in <span style={{color:"#e8eaf0",fontWeight:600}}>{nextMo} {nextYr}</span>. Pay Calc updated.</>
+                      : <> No performance allowance applies for <span style={{color:"#e8eaf0",fontWeight:600}}>{nextMo} {nextYr}</span> â€” a bonus is needed to unlock the hourly allowance.</>
                     }
                   </div>
                   <button onClick={()=>setC("perfAllowance",!ci.perfAllowance)}
@@ -2780,7 +2777,7 @@ const calcTimesheetTotals = days => {
           <div>
             <div style={{...card,marginBottom:14,background:"linear-gradient(135deg,#0f1a10,#0d1117)",border:"1px solid #00c88c"}}>
               <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>Tax Year Summaries</div>
-              <p style={{fontSize:11,color:"#3a4460",margin:0}}>Apr – Mar breakdown from your payslip history</p>
+              <p style={{fontSize:11,color:"#3a4460",margin:0}}>Apr â€“ Mar breakdown from your payslip history</p>
             </div>
             {groupByFY(history).map((fy,i)=>{
               const isCurrent=i===0;
@@ -2789,7 +2786,7 @@ const calcTimesheetTotals = days => {
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                     <div>
                       <div style={{fontSize:13,fontWeight:700,color:isCurrent?"#00c88c":"#8892b0"}}>{fy.label}</div>
-                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{fy.months} month{fy.months!==1?"s":""} recorded{isCurrent?" · current year":""}</div>
+                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{fy.months} month{fy.months!==1?"s":""} recorded{isCurrent?" Â· current year":""}</div>
                     </div>
                     {isCurrent&&<span style={{background:"#0a2a15",border:"1px solid #00c88c",borderRadius:12,fontSize:9,fontWeight:700,color:"#00c88c",padding:"3px 8px",letterSpacing:1}}>CURRENT</span>}
                   </div>
@@ -2845,7 +2842,7 @@ const calcTimesheetTotals = days => {
                   <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Leave Settings</div>
                   {[
                     ["Base Entitlement (days)", "baseEntitlement", "number"],
-                    ["Service Days (0–6)", "serviceDays", "number"],
+                    ["Service Days (0â€“6)", "serviceDays", "number"],
                     ["Start Year at JLI", "startYear", "number"],
                   ].map(([label, key, type]) => (
                     <div key={key} style={{marginBottom:10}}>
@@ -2856,7 +2853,7 @@ const calcTimesheetTotals = days => {
                     </div>
                   ))}
                   <div style={{fontSize:11,color:"#3a4460",marginBottom:12,lineHeight:1.6}}>
-                    Service days are added on June 1st each year. Current effective entitlement after June 1st: <span style={{color:"#4a9eff",fontWeight:700}}>{Math.round((leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)) * STD_DAY_HRS * 100)/100}h ({leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)} days × {STD_DAY_HRS}h)</span>
+                    Service days are added on June 1st each year. Current effective entitlement after June 1st: <span style={{color:"#4a9eff",fontWeight:700}}>{Math.round((leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)) * STD_DAY_HRS * 100)/100}h ({leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)} days Ã— {STD_DAY_HRS}h)</span>
                   </div>
                   <div style={{display:"flex",gap:8}}>
                     <button onClick={()=>{haptic();setLeaveEditSettings(false);}} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:"#5a6480",fontSize:13,fontWeight:600,padding:"11px",cursor:"pointer"}}>Cancel</button>
@@ -2868,9 +2865,9 @@ const calcTimesheetTotals = days => {
                   {/* Summary cards */}
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
                     {[
-                      {label:"Entitlement", value:entitlement+"h", sub:"≈ "+Math.round(entitlement/STD_DAY_HRS*10)/10+"d", accent:"#4a9eff"},
-                      {label:"Taken",        value:taken+"h",       sub:"≈ "+Math.round(taken/STD_DAY_HRS*10)/10+"d", accent:"#ff8c4a"},
-                      {label:"Remaining",    value:remaining+"h",   sub:"≈ "+Math.round(remaining/STD_DAY_HRS*10)/10+"d", accent:remaining>STD_DAY_HRS?"#00c88c":remaining>0?"#ffb84a":"#ff4a6a"},
+                      {label:"Entitlement", value:entitlement+"h", sub:"â‰ˆ "+Math.round(entitlement/STD_DAY_HRS*10)/10+"d", accent:"#4a9eff"},
+                      {label:"Taken",        value:taken+"h",       sub:"â‰ˆ "+Math.round(taken/STD_DAY_HRS*10)/10+"d", accent:"#ff8c4a"},
+                      {label:"Remaining",    value:remaining+"h",   sub:"â‰ˆ "+Math.round(remaining/STD_DAY_HRS*10)/10+"d", accent:remaining>STD_DAY_HRS?"#00c88c":remaining>0?"#ffb84a":"#ff4a6a"},
                     ].map(k=>(
                       <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
                         <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>{k.label}</div>
@@ -2894,7 +2891,7 @@ const calcTimesheetTotals = days => {
                     </div>
                     <button onClick={()=>{haptic();setLeaveDraftSettings({...leaveSettings});setLeaveEditSettings(true);}}
                       style={{marginTop:12,background:"none",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"7px 14px",cursor:"pointer",width:"100%"}}>
-                      ⚙️ Edit entitlement settings
+                      âš™ï¸ Edit entitlement settings
                     </button>
                   </div>
                 </>
@@ -2906,7 +2903,7 @@ const calcTimesheetTotals = days => {
                   haptic("medium");
                   if(!window.confirm("This will estimate leave taken from your payslip history and add entries. Existing manual entries won'\''t be overwritten. Continue?")) return;
 
-                  setImportMsg("Calculating from payslips…");
+                  setImportMsg("Calculating from payslipsâ€¦");
                   const newEntries = [];
                   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
@@ -2914,7 +2911,7 @@ const calcTimesheetTotals = days => {
                     const rate = getRateFor(p.month);
                     if (!rate) return;
                     // Calculate worked hours from gross - bonus - ot (the OT pay portion)
-                    // gross = (standard_hrs + leave_hrs) × baseRate + ot + bonus
+                    // gross = (standard_hrs + leave_hrs) Ã— baseRate + ot + bonus
                     // So: standard_hrs + leave_hrs = (gross - ot - bonus) / baseRate
                     const baseLeavePay = p.gross - (p.ot || 0) - (p.bonus || 0);
                     const totalPaidHrs = baseLeavePay / rate.baseRate;
@@ -2941,7 +2938,7 @@ const calcTimesheetTotals = days => {
                   const toAdd = newEntries.filter(e => !existingMonths.has(e.date.slice(0,7)));
 
                   if (toAdd.length === 0) {
-                    setImportMsg("✓ No new leave to estimate");
+                    setImportMsg("âœ“ No new leave to estimate");
                     setTimeout(()=>setImportMsg(""),3000);
                     return;
                   }
@@ -2952,10 +2949,10 @@ const calcTimesheetTotals = days => {
                       try { await db.upsertLeaveLog(user.id, e); } catch(err) { console.error(err); }
                     }
                   }
-                  setImportMsg(`✓ Estimated ${toAdd.length} month${toAdd.length!==1?"s":""} of leave`);
+                  setImportMsg(`âœ“ Estimated ${toAdd.length} month${toAdd.length!==1?"s":""} of leave`);
                   setTimeout(()=>setImportMsg(""),5000);
                 }} style={{width:"100%",marginBottom:8,background:"#1a1a0a",border:"1px solid #ffb84a",borderRadius:8,color:"#ffb84a",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer"}}>
-                  📊 Estimate Leave from Payslip History
+                  ðŸ“Š Estimate Leave from Payslip History
                 </button>
               )}
 
@@ -2975,7 +2972,7 @@ const calcTimesheetTotals = days => {
                 </div>
                 <div style={{marginBottom:10}}>
                   <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Label (optional)</label>
-                  <input type="text" placeholder="e.g. Christmas week, bank holiday…" value={leaveForm.label}
+                  <input type="text" placeholder="e.g. Christmas week, bank holidayâ€¦" value={leaveForm.label}
                     onChange={e=>setLeaveForm(f=>({...f,label:e.target.value}))}
                     onKeyDown={e=>e.key==="Enter"&&saveLeaveLog()}
                     style={inp2}/>
@@ -2996,8 +2993,8 @@ const calcTimesheetTotals = days => {
                     <div key={l.id} style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
                       <span style={{color:"#8892b0"}}>{new Date(l.date).toLocaleDateString("en-GB",{day:"2-digit",month:"short"})}</span>
                       <span style={{textAlign:"center",color:"#ff8c4a",fontWeight:700}}>{l.hours}h</span>
-                      <span style={{color:"#5a6480",fontSize:11}}>{l.label||"—"}</span>
-                      <button onClick={()=>deleteLeaveLog(l.id)} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
+                      <span style={{color:"#5a6480",fontSize:11}}>{l.label||"â€”"}</span>
+                      <button onClick={()=>deleteLeaveLog(l.id)} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>ðŸ—‘</button>
                     </div>
                   ))}
                   <div style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:12,fontWeight:700,background:"#0d1117",borderTop:"2px solid #2a3050"}}>
@@ -3010,7 +3007,7 @@ const calcTimesheetTotals = days => {
 
               {yearLogs.length === 0 && (
                 <div style={{textAlign:"center",padding:"32px 20px"}}>
-                  <div style={{fontSize:36,marginBottom:8}}>🏖️</div>
+                  <div style={{fontSize:36,marginBottom:8}}>ðŸ–ï¸</div>
                   <div style={{fontSize:14,color:"#8892b0",fontWeight:600,marginBottom:6}}>No leave logged for {year} yet</div>
                   <div style={{fontSize:12,color:"#3a4460"}}>Log leave above or it'\''ll auto-import from your monthly timesheets</div>
                 </div>
@@ -3023,26 +3020,26 @@ const calcTimesheetTotals = days => {
         {tab==="Upload"&&(
           <div>
           <div style={{...card,textAlign:"center",marginBottom:14}}>
-            <div style={{fontSize:32,marginBottom:10}}>📄</div>
+            <div style={{fontSize:32,marginBottom:10}}>ðŸ“„</div>
             <h2 style={{margin:"0 0 6px",fontSize:16,color:"#e8eaf0"}}>Upload Payslips</h2>
             <p style={{fontSize:12,color:"#5a6480",marginBottom:24}}>Select one or more payslip PDFs. They'll be read and added to your history automatically.</p>
             <label style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer"}}>
               <input type="file" accept=".pdf" multiple onChange={handleUpload} style={{display:"none"}} disabled={uploading}/>
               {uploading
-                ?<div><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing…"}</div></div>
-                :<div><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
+                ?<div><div style={{fontSize:20,marginBottom:6}}>â³</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processingâ€¦"}</div></div>
+                :<div><div style={{fontSize:20,marginBottom:6}}>â˜ï¸</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
               }
             </label>
             {multiResults.length>0&&(
               <div style={{marginTop:16,textAlign:"left"}}>
                 <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
-                  ✓ {multiResults.filter(r=>r.ok).length} of {multiResults.length} added
+                  âœ“ {multiResults.filter(r=>r.ok).length} of {multiResults.length} added
                 </div>
                 {multiResults.map((r,i)=>(
                   <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:12}}>
                     {r.ok
-                      ?<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}</span><span style={{color:"#8892b0"}}>Gross {fmt(r.parsed.gross)} · Net {fmt(r.parsed.net)}</span></div>
-                      :<div style={{color:"#ff6b8a"}}>⚠ {r.name} — {r.err}</div>
+                      ?<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}</span><span style={{color:"#8892b0"}}>Gross {fmt(r.parsed.gross)} Â· Net {fmt(r.parsed.net)}</span></div>
+                      :<div style={{color:"#ff6b8a"}}>âš  {r.name} â€” {r.err}</div>
                     }
                   </div>
                 ))}
@@ -3054,16 +3051,16 @@ const calcTimesheetTotals = days => {
             <div onClick={()=>{haptic();setShowManualTs(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
               <div>
                 <div style={{fontSize:9,color:"#ffb84a",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Weekly Timesheet (Manual)</div>
-                <p style={{fontSize:11,color:"#5a6480",margin:0}}>Backup option — auto-import handles this automatically</p>
+                <p style={{fontSize:11,color:"#5a6480",margin:0}}>Backup option â€” auto-import handles this automatically</p>
               </div>
-              <span style={{color:"#3a4460",fontSize:14}}>{showManualTs?"▲":"▼"}</span>
+              <span style={{color:"#3a4460",fontSize:14}}>{showManualTs?"â–²":"â–¼"}</span>
             </div>
             {showManualTs && (<div style={{padding:"0 14px 14px"}}>
             <label style={{display:"block",background:"#0d1117",border:"2px dashed "+(showTsReminder?"#ffb84a":"#2a3050"),borderRadius:10,padding:"20px 16px",cursor:tsUploading?"not-allowed":"pointer",marginBottom:12}}>
               <input type="file" accept="image/*,application/pdf" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
               {tsUploading
-                ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#ffb84a",fontSize:13}}>{tsProgress||"Processing…"}</div></div>
-                :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
+                ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>â³</div><div style={{color:"#ffb84a",fontSize:13}}>{tsProgress||"Processingâ€¦"}</div></div>
+                :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>ðŸ“¸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
               }
             </label>
             {tsPending&&(()=>{
@@ -3082,7 +3079,7 @@ const calcTimesheetTotals = days => {
               const projWknd = Math.round(merged.reduce((s,d)=>s+(d.wkOtHrs||0),0)*100)/100;
               return(
                 <div style={{background:"#0d1a10",border:"1px solid #1a4030",borderRadius:10,padding:14,marginBottom:12}}>
-                  <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted — {tsPending.days.length} days</div>
+                  <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>âœ“ Extracted â€” {tsPending.days.length} days</div>
                   <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
                     {tsPending.days.map((d,i)=>(
                       <div key={i} style={{display:"grid",gridTemplateColumns:"60px 50px 1fr",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:11}}>
@@ -3115,12 +3112,12 @@ const calcTimesheetTotals = days => {
             <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Account</div>
             <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535",marginBottom:10}}>
               <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>Signed in as</div>
-              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:600,wordBreak:"break-all"}}>{user?.email || "—"}</div>
+              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:600,wordBreak:"break-all"}}>{user?.email || "â€”"}</div>
             </div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
               <button onClick={()=>{haptic("medium");refreshAll();}}
                 style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#4a9eff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
-                🔄 Refresh data
+                ðŸ”„ Refresh data
               </button>
               <button onClick={()=>{
                 const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,exportedAt:new Date().toISOString()};
@@ -3131,14 +3128,14 @@ const calcTimesheetTotals = days => {
                 a.click();URL.revokeObjectURL(url);
               }}
                 style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
-                📥 Export backup
+                ðŸ“¥ Export backup
               </button>
               <button onClick={async ()=>{
                 if(!window.confirm("Sign out? You'\''ll need to log in again to access your data.")) return;
                 haptic("heavy");await handleSignOut();
               }}
                 style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
-                🚪 Sign out
+                ðŸšª Sign out
               </button>
             </div>
           </div>
@@ -3150,24 +3147,24 @@ const calcTimesheetTotals = days => {
             </div>
             <input
               type="password"
-              placeholder="Paste secret here…"
+              placeholder="Paste secret hereâ€¦"
               value={tsSecret}
               onChange={e=>{setTsSecret(e.target.value);save(SK.tsSecret,e.target.value);}}
               style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px",fontFamily:"inherit",marginBottom:8}}
             />
             {tsSecret ? (
-              <div style={{fontSize:11,color:"#00c88c"}}>✅ Secret saved — polling every 60s</div>
+              <div style={{fontSize:11,color:"#00c88c"}}>âœ… Secret saved â€” polling every 60s</div>
             ) : (
-              <div style={{fontSize:11,color:"#3a4460"}}>No secret set — auto-import disabled</div>
+              <div style={{fontSize:11,color:"#3a4460"}}>No secret set â€” auto-import disabled</div>
             )}
-            {tsLastEmail && <div style={{fontSize:10,color:"#3a4460",marginTop:4}}>Last email ID: {tsLastEmail.slice(0,12)}…</div>}
+            {tsLastEmail && <div style={{fontSize:10,color:"#3a4460",marginTop:4}}>Last email ID: {tsLastEmail.slice(0,12)}â€¦</div>}
 
             {/* Queue diagnostics - collapsed by default */}
             {tsSecret && (
               <div style={{marginTop:12,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,overflow:"hidden"}}>
                 <div onClick={()=>{haptic();setShowQueueDiag(v=>!v);}} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Queue Diagnostics</div>
-                  <span style={{color:"#3a4460",fontSize:11}}>{showQueueDiag?"▲":"▼"}</span>
+                  <span style={{color:"#3a4460",fontSize:11}}>{showQueueDiag?"â–²":"â–¼"}</span>
                 </div>
                 {showQueueDiag && (<div style={{padding:"0 10px 10px"}}>
                 <div style={{display:"flex",gap:6}}>
@@ -3179,7 +3176,7 @@ const calcTimesheetTotals = days => {
                       const cnt = d.remaining || (d.status==="pending"?1:0);
                       setImportMsg(`Queue: ${cnt} item${cnt!==1?"s":""} waiting`);
                       setTimeout(()=>setImportMsg(""),4000);
-                    } catch(e) { setImportMsg("⚠️ Check failed"); }
+                    } catch(e) { setImportMsg("âš ï¸ Check failed"); }
                   }} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:6,color:"#4a9eff",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Check Queue</button>
                   <button onClick={async ()=>{
                     haptic("medium");
@@ -3191,7 +3188,7 @@ const calcTimesheetTotals = days => {
                       cleared++;
                       if ((d.remaining || 0) === 0) break;
                     }
-                    setImportMsg(`✓ Cleared ${cleared} item${cleared!==1?"s":""}`);
+                    setImportMsg(`âœ“ Cleared ${cleared} item${cleared!==1?"s":""}`);
                     setTimeout(()=>setImportMsg(""),4000);
                   }} style={{flex:1,background:"#2a1a1a",border:"1px solid #ff6b8a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Clear Queue</button>
                 </div>
@@ -3199,7 +3196,7 @@ const calcTimesheetTotals = days => {
                   haptic("medium");
                   localStorage.removeItem(SK.tsLastEmail);
                   setTsLastEmail("");
-                  setImportMsg("✓ Last email cleared — will re-poll");
+                  setImportMsg("âœ“ Last email cleared â€” will re-poll");
                   setTimeout(()=>setImportMsg(""),4000);
                 }} style={{marginTop:6,width:"100%",background:"#1a1500",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Reset Last Email ID</button>
                 </div>)}
@@ -3211,7 +3208,7 @@ const calcTimesheetTotals = days => {
             <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Notifications</div>
             {notifPerm === "granted" ? (
               <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#0a1a10",borderRadius:8,border:"1px solid #1a4030"}}>
-                <span style={{fontSize:18}}>🔔</span>
+                <span style={{fontSize:18}}>ðŸ””</span>
                 <div>
                   <div style={{fontSize:13,fontWeight:600,color:"#00c88c"}}>Notifications enabled</div>
                   <div style={{fontSize:11,color:"#3a6040",marginTop:2}}>You'll be notified the day before payday and on timesheet Mondays</div>
@@ -3226,7 +3223,7 @@ const calcTimesheetTotals = days => {
             ) : (
               <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535"}}>
                 <div style={{fontSize:13,color:"#8892b0",marginBottom:10}}>Enable browser notifications for payday reminders and weekly timesheet alerts.</div>
-                <button onClick={requestAndSaveNotifPerm} style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"}}>🔔 Enable Notifications</button>
+                <button onClick={requestAndSaveNotifPerm} style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"}}>ðŸ”” Enable Notifications</button>
               </div>
             )}
           </div>
@@ -3246,8 +3243,8 @@ const calcTimesheetTotals = days => {
                 }
                 setShowBackups(v=>!v);
               }} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>☁️ Cloud Backups</div>
-                <span style={{color:"#3a4460",fontSize:11}}>{showBackups?"▲":"▼"}</span>
+                <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>â˜ï¸ Cloud Backups</div>
+                <span style={{color:"#3a4460",fontSize:11}}>{showBackups?"â–²":"â–¼"}</span>
               </div>
               {showBackups && (
                 <div style={{padding:"0 10px 10px"}}>
@@ -3268,20 +3265,20 @@ const calcTimesheetTotals = days => {
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
-                      setImportMsg("✓ Backup saved to cloud");
-                    } catch(e) { setImportMsg("⚠ Backup failed"); }
+                      setImportMsg("âœ“ Backup saved to cloud");
+                    } catch(e) { setImportMsg("âš  Backup failed"); }
                     setBackupLoading(false);
                     setTimeout(()=>setImportMsg(""),3000);
                   }} style={{width:"100%",background:"#0a1a10",border:"1px solid #00c88c",borderRadius:6,color:"#00c88c",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer",marginBottom:8}}>
                     + Backup Now
                   </button>
-                  {backupLoading && <div style={{fontSize:11,color:"#5a6480",textAlign:"center",padding:8}}>Loading…</div>}
+                  {backupLoading && <div style={{fontSize:11,color:"#5a6480",textAlign:"center",padding:8}}>Loadingâ€¦</div>}
                   {!backupLoading && backupList.length === 0 && <div style={{fontSize:11,color:"#3a4460",textAlign:"center",padding:8}}>No cloud backups yet</div>}
                   {!backupLoading && backupList.map(b => (
                     <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"#141824",borderRadius:6,marginBottom:4,fontSize:11}}>
                       <div>
                         <div style={{color:"#e8eaf0",fontWeight:600}}>{new Date(b.created_at).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}</div>
-                        <div style={{color:"#3a4460",fontSize:10}}>{(b.size_bytes/1024).toFixed(1)}KB · {b.trigger}</div>
+                        <div style={{color:"#3a4460",fontSize:10}}>{(b.size_bytes/1024).toFixed(1)}KB Â· {b.trigger}</div>
                       </div>
                       <div style={{display:"flex",gap:4}}>
                         <button onClick={async ()=>{
@@ -3303,8 +3300,8 @@ const calcTimesheetTotals = days => {
                             if(d.leaveSettings){setLeaveSettings(d.leaveSettings);}
                             if(d.scenarios){setScenarios(d.scenarios);}
                             if(d.tierOverride!==undefined){setTierOverride(d.tierOverride);}
-                            setImportMsg("✓ Backup restored");
-                          } catch(e) { setImportMsg("⚠ Restore failed"); }
+                            setImportMsg("âœ“ Backup restored");
+                          } catch(e) { setImportMsg("âš  Restore failed"); }
                           setTimeout(()=>setImportMsg(""),3000);
                         }} style={{background:"#1a2535",border:"1px solid #4a9eff",borderRadius:4,color:"#4a9eff",fontSize:10,fontWeight:700,padding:"5px 8px",cursor:"pointer"}}>Restore</button>
                         <button onClick={async ()=>{
@@ -3314,7 +3311,7 @@ const calcTimesheetTotals = days => {
                             await db.deleteBackup(b.id);
                             setBackupList(await db.getBackups(user.id));
                           } catch(e) {}
-                        }} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
+                        }} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>âœ•</button>
                       </div>
                     </div>
                   ))}
@@ -3324,14 +3321,14 @@ const calcTimesheetTotals = days => {
 
             <p style={{fontSize:11,color:"#5a6480",marginBottom:10,lineHeight:1.5}}>Or export a local JSON file (useful before major changes):</p>
             <div style={{display:"flex",gap:8,marginBottom:12}}>
-              <button onClick={exportData} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer"}}>⬇ Export Backup</button>
+              <button onClick={exportData} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer"}}>â¬‡ Export Backup</button>
               <label style={{flex:1,background:"#1a2535",border:"1px solid #00c88c",borderRadius:8,color:"#00c88c",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer",textAlign:"center"}}>
-                ⬆ Import Backup
+                â¬† Import Backup
                 <input type="file" accept=".json" onChange={importData} style={{display:"none"}}/>
               </label>
             </div>
             {importMsg&&(
-              <div style={{padding:"10px 12px",borderRadius:8,background:importMsg.startsWith("✓")?"#0a1a10":"#2a0f15",border:"1px solid "+(importMsg.startsWith("✓")?"#1a4030":"#5a1a2a"),color:importMsg.startsWith("✓")?"#00c88c":"#ff6b8a",fontSize:12,textAlign:"center"}}>
+              <div style={{padding:"10px 12px",borderRadius:8,background:importMsg.startsWith("âœ“")?"#0a1a10":"#2a0f15",border:"1px solid "+(importMsg.startsWith("âœ“")?"#1a4030":"#5a1a2a"),color:importMsg.startsWith("âœ“")?"#00c88c":"#ff6b8a",fontSize:12,textAlign:"center"}}>
                 {importMsg}
               </div>
             )}
@@ -3379,7 +3376,7 @@ const calcTimesheetTotals = days => {
                         <span style={{color:"#00c88c",fontWeight:700}}>{d.day}</span>
                         <span style={{textAlign:"right",color:"#00c88c",fontWeight:700,fontSize:11}}>{d.holiday}</span>
                         <span style={{textAlign:"right",color:"#3a6040",fontSize:10}}>leave</span>
-                        <span style={{textAlign:"right",color:"#3a6040"}}>—</span>
+                        <span style={{textAlign:"right",color:"#3a6040"}}>â€”</span>
                       </div>
                     );
                     return(
@@ -3387,8 +3384,8 @@ const calcTimesheetTotals = days => {
                         <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
                         <span style={{color:isWeekend?"#ffb84a":"#5a6480",fontWeight:isWeekend?700:400}}>{d.day}</span>
                         <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{d.hours}</span>
-                        <span style={{textAlign:"right",color:"#4affd4",fontWeight:600}}>{d.otHrs>0?"+"+d.otHrs+"h":"—"}</span>
-                        <span style={{textAlign:"right",color:"#ffb84a",fontWeight:600}}>{d.wkOtHrs>0?d.wkOtHrs+"h":"—"}</span>
+                        <span style={{textAlign:"right",color:"#4affd4",fontWeight:600}}>{d.otHrs>0?"+"+d.otHrs+"h":"â€”"}</span>
+                        <span style={{textAlign:"right",color:"#ffb84a",fontWeight:600}}>{d.wkOtHrs>0?d.wkOtHrs+"h":"â€”"}</span>
                       </div>
                     );
                   })}
@@ -3396,7 +3393,7 @@ const calcTimesheetTotals = days => {
               </div>
             ):(
               <div style={{...card,textAlign:"center",padding:"32px 16px",marginBottom:14}}>
-                <div style={{fontSize:32,marginBottom:10}}>📋</div>
+                <div style={{fontSize:32,marginBottom:10}}>ðŸ“‹</div>
                 <div style={{fontSize:13,color:"#5a6480"}}>No timesheets uploaded yet this month</div>
                 <div style={{fontSize:11,color:"#3a4460",marginTop:6}}>Go to Upload tab to add your weekly timesheet</div>
               </div>
@@ -3420,11 +3417,11 @@ const calcTimesheetTotals = days => {
                         <div onClick={()=>{haptic();setExpandedMonth(expanded?null:m.month);}}
                           style={{display:"grid",gridTemplateColumns:"80px 1fr 60px 28px",padding:"10px 12px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center",cursor:"pointer"}}>
                           <span style={{color:"#8892b0",fontWeight:600,fontSize:11}}>{m.month||m.period.slice(0,5)}</span>
-                          <span style={{color:"#5a6480",fontSize:10}}>{m.totalHrs} · {m.otHrs}h OT · {m.wkndHrs}h wknd</span>
+                          <span style={{color:"#5a6480",fontSize:10}}>{m.totalHrs} Â· {m.otHrs}h OT Â· {m.wkndHrs}h wknd</span>
                           <span style={{textAlign:"right",fontSize:11,fontWeight:700,color:hasIssue?"#ff6b8a":isOk?"#00c88c":"#3a4460"}}>
-                            {hasIssue?"⚠️ "+disc.items.length+" issue"+(disc.items.length>1?"s":""):isOk?"✅ OK":"—"}
+                            {hasIssue?"âš ï¸ "+disc.items.length+" issue"+(disc.items.length>1?"s":""):isOk?"âœ… OK":"â€”"}
                           </span>
-                          <span style={{textAlign:"right",color:"#3a4460",fontSize:12}}>{expanded?"▲":"▼"}</span>
+                          <span style={{textAlign:"right",color:"#3a4460",fontSize:12}}>{expanded?"â–²":"â–¼"}</span>
                         </div>
                         {expanded && (
                           <div style={{background:"#0d1117",borderBottom:"1px solid #1e2535",padding:"12px 14px"}}>
@@ -3435,7 +3432,7 @@ const calcTimesheetTotals = days => {
                                 ["Wknd Hrs", m.wkndHrs+"h", "#ffb84a"],
                                 ["Hol Hrs",  m.holHrs+"h",  "#00c88c"],
                                 ["Total",    m.totalHrs,    "#7c6fff"],
-                                ["Period",   m.period ? m.period.replace("2026-","").replace(/-/g,"/") : "—", "#5a6480"],
+                                ["Period",   m.period ? m.period.replace("2026-","").replace(/-/g,"/") : "â€”", "#5a6480"],
                               ].map(([l,v,c])=>(
                                 <div key={l} style={{background:"#111827",borderRadius:6,padding:"7px",textAlign:"center"}}>
                                   <div style={{fontSize:9,color:"#3a4460",textTransform:"uppercase",letterSpacing:0.5,marginBottom:3}}>{l}</div>
@@ -3445,32 +3442,32 @@ const calcTimesheetTotals = days => {
                             </div>
                             {disc && disc.status === "discrepancy" && (
                               <div style={{background:"#1a0a0a",borderRadius:8,padding:"10px 12px",border:"1px solid #3a1a1a"}}>
-                                <div style={{fontSize:11,fontWeight:700,color:"#ff6b8a",marginBottom:8}}>⚠️ Pay discrepancies found</div>
+                                <div style={{fontSize:11,fontWeight:700,color:"#ff6b8a",marginBottom:8}}>âš ï¸ Pay discrepancies found</div>
                                 {disc.items.map((item,j)=>(
                                   <div key={j} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #2a1a1a",fontSize:11}}>
                                     <span style={{color:"#8892b0"}}>{item.label}</span>
                                     <span>
                                       <span style={{color:"#5a6480"}}>exp </span>
                                       <span style={{color:"#e8eaf0",fontWeight:600}}>{fmt(item.expected)}</span>
-                                      <span style={{color:"#3a4460"}}> · got </span>
+                                      <span style={{color:"#3a4460"}}> Â· got </span>
                                       <span style={{color:item.diff>0?"#ff6b8a":"#4affd4",fontWeight:700}}>{fmt(item.actual)}</span>
-                                      <span style={{color:item.diff>0?"#ff4a6a":"#00c88c",fontSize:10,marginLeft:4}}>{item.diff>0?"↓":"↑"}{fmt(Math.abs(item.diff))}</span>
+                                      <span style={{color:item.diff>0?"#ff4a6a":"#00c88c",fontSize:10,marginLeft:4}}>{item.diff>0?"â†“":"â†‘"}{fmt(Math.abs(item.diff))}</span>
                                     </span>
                                   </div>
                                 ))}
                                 <div style={{fontSize:10,color:"#5a3030",marginTop:8,lineHeight:1.6}}>
-                                  These are estimates based on your stored rates. Rounding differences under £1 are ignored. If a gap is large, raise it with payroll.
+                                  These are estimates based on your stored rates. Rounding differences under Â£1 are ignored. If a gap is large, raise it with payroll.
                                 </div>
                               </div>
                             )}
                             {disc && disc.status === "ok" && (
                               <div style={{background:"#0a1a10",borderRadius:8,padding:"10px 12px",border:"1px solid #1a3a1a",fontSize:11,color:"#00c88c"}}>
-                                ✅ Pay matches timesheet within tolerance — no issues found
+                                âœ… Pay matches timesheet within tolerance â€” no issues found
                               </div>
                             )}
                             {!disc && (
                               <div style={{fontSize:11,color:"#3a4460",textAlign:"center",padding:"6px 0"}}>
-                                Payslip for {m.month||"this period"} not yet uploaded — discrepancy check will run automatically once it arrives
+                                Payslip for {m.month||"this period"} not yet uploaded â€” discrepancy check will run automatically once it arrives
                               </div>
                             )}
                           </div>
@@ -3524,7 +3521,7 @@ const calcTimesheetTotals = days => {
 
               return (
                 <div style={card}>
-                  <SectionLabel>Year-on-Year — {thisYear} vs {thisYear-1}</SectionLabel>
+                  <SectionLabel>Year-on-Year â€” {thisYear} vs {thisYear-1}</SectionLabel>
                   <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>Calendar year totals from payslip history</div>
                   {rows.map(r => {
                     const d = diff(r.key);
@@ -3537,7 +3534,7 @@ const calcTimesheetTotals = days => {
                         <span style={{textAlign:"right",color:"#5a6480"}}>{fmt(d.p)}</span>
                         <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{fmt(d.c)}</span>
                         <span style={{textAlign:"right",color,fontWeight:700,fontSize:11}}>
-                          {up?"↑":"↓"} {Math.abs(d.pct).toFixed(1)}%
+                          {up?"â†‘":"â†“"} {Math.abs(d.pct).toFixed(1)}%
                         </span>
                       </div>
                     );
@@ -3561,7 +3558,7 @@ const calcTimesheetTotals = days => {
 
               return (
                 <div style={{...card,marginBottom:14}}>
-                  <SectionLabel>OT Pay Trend — Last {otData.length} Months</SectionLabel>
+                  <SectionLabel>OT Pay Trend â€” Last {otData.length} Months</SectionLabel>
                   <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",gap:3,height:80,marginTop:8,marginBottom:8}}>
                     {otData.map((d,i)=>{
                       const h = Math.max(3, (d.ot / maxOt) * 70);
@@ -3595,7 +3592,7 @@ const calcTimesheetTotals = days => {
               const now=new Date();
               const fyStart=now.getMonth()>=3?new Date(now.getFullYear(),3,1):new Date(now.getFullYear()-1,3,1);
               const fyYear=fyStart.getFullYear();
-              const fyLabel="Apr "+fyYear+" – Mar "+(fyYear+1);
+              const fyLabel="Apr "+fyYear+" â€“ Mar "+(fyYear+1);
               const fyRows=history.filter(r=>{const[mo,yr]=r.month.split(" ");return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;});
               const fyOTPay=fyRows.reduce((s,r)=>s+(r.ot||0),0);
               const fyOTHrsEst=Math.round(fyOTPay/PAY.otRate*100)/100;
@@ -3606,11 +3603,11 @@ const calcTimesheetTotals = days => {
               if(fyRows.length===0) return null;
               return(
                 <div style={{...card,marginBottom:14,border:"1px solid #2a4a4a"}}>
-                  <SectionLabel>FY Overtime Tracker — {fyLabel}</SectionLabel>
+                  <SectionLabel>FY Overtime Tracker â€” {fyLabel}</SectionLabel>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
                     {[
                       {label:"Total OT Pay",value:fmt(fyOTPay),accent:"#4affd4"},
-                      {label:"Est. OT Hours",value:fyOTHrsEst+"h",accent:"#00c88c",sub:"at £"+PAY.otRate+"/hr avg"},
+                      {label:"Est. OT Hours",value:fyOTHrsEst+"h",accent:"#00c88c",sub:"at Â£"+PAY.otRate+"/hr avg"},
                       {label:"Months Tracked",value:fyRows.length,accent:"#7c6fff"},
                       {label:"Avg OT/Month",value:fmt(fyOTPay/fyRows.length),accent:"#ffb84a"},
                     ].map(k=>(
@@ -3623,7 +3620,7 @@ const calcTimesheetTotals = days => {
                   </div>
                   <SectionLabel>Month by Month</SectionLabel>
                   {fyRows.map((r,i,arr)=>(
-                    <StatRow key={r.month} label={r.month} value={r.ot>0?fmt(r.ot):"—"} color={r.ot>0?"#4affd4":"#3a4460"} last={i===arr.length-1}/>
+                    <StatRow key={r.month} label={r.month} value={r.ot>0?fmt(r.ot):"â€”"} color={r.ot>0?"#4affd4":"#3a4460"} last={i===arr.length-1}/>
                   ))}
                 </div>
               );
