@@ -837,8 +837,6 @@ export default function App() {
   const dragBill=useRef(null);
   const [chartRange,setChartRange]=useState("All");
   const [uploading,setUploading]=useState(false);
-  const [uploadRes,setUploadRes]=useState(null);
-  const [uploadErr,setUploadErr]=useState(null);
   const [pending,setPending]=useState(null);
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
@@ -946,7 +944,6 @@ export default function App() {
 
         if (!accData && localAcc) {
           // Fresh DB but localStorage has data — migrate it up
-          console.log("Migrating accumulator from localStorage to Supabase");
           if (shouldResetTimesheet(localAcc.lastUpload)) {
             const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
             setAccumulated(empty);
@@ -1241,6 +1238,56 @@ export default function App() {
     }
   }, [user]);
 
+  // Silent holiday resync whenever Leave tab is opened
+  React.useEffect(() => {
+    if (tab !== "Leave" || !user) return;
+    if (!accumulated.days || accumulated.days.length === 0) return;
+    const STD_DAY_HRS_LOCAL = 8.25;
+    const holDays = accumulated.days.filter(d=>d.isHoliday);
+    if (holDays.length === 0) return;
+    const newEntries = holDays.map(d=>{
+      const [dd, mm] = d.date.split("/").map(Number);
+      const year = new Date().getFullYear();
+      const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
+      return { id: genUUID(), date: dateStr, hours: d.isHalf ? STD_DAY_HRS_LOCAL/2 : STD_DAY_HRS_LOCAL, label: "Annual Leave (auto)" };
+    });
+    const existing = new Set(leaveLogs.map(l => l.date));
+    const toAdd = newEntries.filter(e => !existing.has(e.date));
+    if (toAdd.length === 0) return;
+    setLeaveLogs(prev => [...prev, ...toAdd].sort((a,b) => new Date(b.date) - new Date(a.date)));
+    (async () => {
+      for (const e of toAdd) {
+        try { await db.upsertLeaveLog(user.id, e); } catch(err) {}
+      }
+    })();
+  }, [tab, user, accumulated.days]);
+
+  // Silent queue drain whenever Timesheet tab is opened
+  React.useEffect(() => {
+    if (tab !== "Timesheet" || !tsSecret || !user) return;
+    let cancelled = false;
+    (async () => {
+      let processed = 0;
+      for (let i = 0; i < 20; i++) {
+        if (cancelled) return;
+        try {
+          const res = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
+          const data = await res.json();
+          if (data.status !== "pending" || !data.data) break;
+          const { emailId, days } = data.data;
+          applyTimesheetDays(days, emailId, data.data.meta || null);
+          await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
+          processed++;
+        } catch(e) { break; }
+      }
+      if (processed > 0 && !cancelled) {
+        setTsAutoMsg({ text: `✅ ${processed} timesheet${processed!==1?"s":""} imported`, ok: true });
+        setTimeout(() => setTsAutoMsg(null), 4000);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, tsSecret, user, applyTimesheetDays]);
+
   // Poll /api/timesheet — 5s when items pending, 60s when empty
   React.useEffect(() => {
     if (!tsSecret || !user) return;
@@ -1422,7 +1469,8 @@ export default function App() {
   // Timesheet state
   const [tsUploading,setTsUploading]=useState(false);
   const [tsProgress,setTsProgress]=useState(null);
-  const [tsResults,setTsResults]=useState([]);
+  const [showManualTs,setShowManualTs]=useState(false);
+  const [showQueueDiag,setShowQueueDiag]=useState(false);
   const [tsPending,setTsPending]=useState(null); // extracted data awaiting confirmation
   const [tsLastUpload,setTsLastUpload]=useState(null);
   const [accumulated,setAccumulated]=useState({otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null});
@@ -1774,7 +1822,6 @@ const calcTimesheetTotals = days => {
     const empty = { otHrs: 0, weekendOtHrs: 0, weeks: [], days: [], lastUpload: null };
     setAccumulated(empty);
     if (user) db.saveAccumulator(user.id, empty, null).catch(()=>{});
-    setTsResults([]);
     setTsPending(null);
   };
 
@@ -2220,7 +2267,7 @@ const calcTimesheetTotals = days => {
                 </div>
                 <div style={{display:"flex",gap:8,marginTop:10}}>
                   <button onClick={()=>setAddSh(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
-                  <button onClick={()=>{updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
+                  <button onClick={()=>{if(!window.confirm("Reset all shared bills to defaults? This cannot be undone."))return;updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
                 </div>
                 <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap Total to edit · Drag to categorise · Double-tap category to rename</p>
               </div>
@@ -2274,7 +2321,7 @@ const calcTimesheetTotals = days => {
                 </div>
                 <div style={{display:"flex",gap:8,marginTop:10}}>
                   <button onClick={()=>setAddGl(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
-                  <button onClick={()=>{updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
+                  <button onClick={()=>{if(!window.confirm("Reset all personal bills to defaults? This cannot be undone."))return;updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
                 </div>
                 <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit · Drag to categorise · Double-tap category to rename</p>
               </div>
@@ -2841,39 +2888,6 @@ const calcTimesheetTotals = days => {
                 </button>
               )}
 
-              {/* Resync from timesheet button */}
-              {accumulated.days && accumulated.days.filter(d=>d.isHoliday).length > 0 && (
-                <button onClick={async ()=>{
-                  haptic("medium");
-                  const STD_DAY_HRS_LOCAL = 8.25;
-                  const holDays = accumulated.days.filter(d=>d.isHoliday);
-                  const newEntries = holDays.map(d=>{
-                    const [dd, mm] = d.date.split("/").map(Number);
-                    const year = new Date().getFullYear();
-                    const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
-                    return { id: genUUID(), date: dateStr, hours: d.isHalf ? STD_DAY_HRS_LOCAL/2 : STD_DAY_HRS_LOCAL, label: "Annual Leave (auto)" };
-                  });
-                  // Filter out duplicates by date
-                  const existing = new Set(leaveLogs.map(l => l.date));
-                  const toAdd = newEntries.filter(e => !existing.has(e.date));
-                  if (toAdd.length === 0) {
-                    setImportMsg("✓ Already up to date");
-                    setTimeout(()=>setImportMsg(""),3000);
-                    return;
-                  }
-                  setLeaveLogs(prev => [...prev, ...toAdd].sort((a,b) => new Date(b.date) - new Date(a.date)));
-                  if (user) {
-                    for (const e of toAdd) {
-                      try { await db.upsertLeaveLog(user.id, e); } catch(err) { console.error(err); }
-                    }
-                  }
-                  setImportMsg(`✓ Added ${toAdd.length} leave day${toAdd.length!==1?"s":""}`);
-                  setTimeout(()=>setImportMsg(""),3000);
-                }} style={{width:"100%",marginBottom:14,background:"#0a1a25",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer"}}>
-                  🔄 Resync Holidays from Timesheet ({accumulated.days.filter(d=>d.isHoliday).length} found)
-                </button>
-              )}
-
               {/* Log leave form */}
               <div style={{...card,marginBottom:14}}>
                 <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Log Leave</div>
@@ -2965,9 +2979,15 @@ const calcTimesheetTotals = days => {
             )}
           </div>
 
-          <div style={{...card,marginBottom:14}}>
-            <div style={{fontSize:9,color:"#ffb84a",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Weekly Timesheet</div>
-            <p style={{fontSize:12,color:"#5a6480",marginBottom:14,lineHeight:1.6}}>Screenshot your timesheet email and upload here. Hours will be calculated and applied to Pay Calc automatically.</p>
+          <div style={{...card,marginBottom:14,padding:0}}>
+            <div onClick={()=>{haptic();setShowManualTs(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div>
+                <div style={{fontSize:9,color:"#ffb84a",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Weekly Timesheet (Manual)</div>
+                <p style={{fontSize:11,color:"#5a6480",margin:0}}>Backup option — auto-import handles this automatically</p>
+              </div>
+              <span style={{color:"#3a4460",fontSize:14}}>{showManualTs?"▲":"▼"}</span>
+            </div>
+            {showManualTs && (<div style={{padding:"0 14px 14px"}}>
             <label style={{display:"block",background:"#0d1117",border:"2px dashed "+(showTsReminder?"#ffb84a":"#2a3050"),borderRadius:10,padding:"20px 16px",cursor:tsUploading?"not-allowed":"pointer",marginBottom:12}}>
               <input type="file" accept="image/*,application/pdf" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
               {tsUploading
@@ -3017,6 +3037,7 @@ const calcTimesheetTotals = days => {
                 </div>
               );
             })()}
+          </div>)}
           </div>
 
           <div style={{...card,marginBottom:14}}>
@@ -3070,10 +3091,14 @@ const calcTimesheetTotals = days => {
             )}
             {tsLastEmail && <div style={{fontSize:10,color:"#3a4460",marginTop:4}}>Last email ID: {tsLastEmail.slice(0,12)}…</div>}
 
-            {/* Queue diagnostics */}
+            {/* Queue diagnostics - collapsed by default */}
             {tsSecret && (
-              <div style={{marginTop:12,padding:10,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8}}>
-                <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>Queue Diagnostics</div>
+              <div style={{marginTop:12,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,overflow:"hidden"}}>
+                <div onClick={()=>{haptic();setShowQueueDiag(v=>!v);}} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Queue Diagnostics</div>
+                  <span style={{color:"#3a4460",fontSize:11}}>{showQueueDiag?"▲":"▼"}</span>
+                </div>
+                {showQueueDiag && (<div style={{padding:"0 10px 10px"}}>
                 <div style={{display:"flex",gap:6}}>
                   <button onClick={async ()=>{
                     haptic("medium");
@@ -3099,24 +3124,6 @@ const calcTimesheetTotals = days => {
                     setTimeout(()=>setImportMsg(""),4000);
                   }} style={{flex:1,background:"#2a1a1a",border:"1px solid #ff6b8a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Clear Queue</button>
                 </div>
-                <button onClick={async ()=>{
-                  haptic("medium");
-                  setImportMsg("Processing queue…");
-                  let processed = 0;
-                  for (let i = 0; i < 20; i++) {
-                    try {
-                      const res = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
-                      const data = await res.json();
-                      if (data.status !== "pending" || !data.data) break;
-                      const { emailId, days } = data.data;
-                      applyTimesheetDays(days, emailId, data.data.meta || null);
-                      await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
-                      processed++;
-                    } catch(e) { console.error(e); break; }
-                  }
-                  setImportMsg(`✓ Processed ${processed} timesheet${processed!==1?"s":""}`);
-                  setTimeout(()=>setImportMsg(""),4000);
-                }} style={{marginTop:6,width:"100%",background:"#0a2a15",border:"1px solid #00c88c",borderRadius:6,color:"#00c88c",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Process Queue Now</button>
                 <button onClick={()=>{
                   haptic("medium");
                   localStorage.removeItem(SK.tsLastEmail);
@@ -3124,6 +3131,7 @@ const calcTimesheetTotals = days => {
                   setImportMsg("✓ Last email cleared — will re-poll");
                   setTimeout(()=>setImportMsg(""),4000);
                 }} style={{marginTop:6,width:"100%",background:"#1a1500",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Reset Last Email ID</button>
+                </div>)}
               </div>
             )}
           </div>
@@ -3461,7 +3469,7 @@ const calcTimesheetTotals = days => {
               );
             })()}
 
-            <button onClick={resetTimesheet} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"12px",cursor:"pointer"}}>
+            <button onClick={()=>{if(window.confirm("Reset timesheet data for new month? This clears the current accumulator."))resetTimesheet();}} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"12px",cursor:"pointer"}}>
               Reset for New Month
             </button>
           </div>
