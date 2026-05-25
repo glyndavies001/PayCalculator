@@ -1272,86 +1272,7 @@ export default function App() {
     }
   }, [user]);
 
-  // Silent holiday resync whenever Leave tab is opened
-  React.useEffect(() => {
-    if (tab !== "Leave" || !user) return;
-    if (!accumulated.days || accumulated.days.length === 0) return;
-    const STD_DAY_HRS_LOCAL = 8.25;
-    const holDays = accumulated.days.filter(d=>d.isHoliday);
-    if (holDays.length === 0) return;
-    const newEntries = holDays.map(d=>{
-      const [dd, mm] = d.date.split("/").map(Number);
-      const year = new Date().getFullYear();
-      const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
-      return { id: genUUID(), date: dateStr, hours: d.isHalf ? STD_DAY_HRS_LOCAL/2 : STD_DAY_HRS_LOCAL, label: "Annual Leave (auto)" };
-    });
-    const existing = new Set(leaveLogs.map(l => l.date));
-    const toAdd = newEntries.filter(e => !existing.has(e.date));
-    if (toAdd.length === 0) return;
-    setLeaveLogs(prev => [...prev, ...toAdd].sort((a,b) => new Date(b.date) - new Date(a.date)));
-    (async () => {
-      for (const e of toAdd) {
-        try { await db.upsertLeaveLog(user.id, e); } catch(err) {}
-      }
-    })();
-  }, [tab, user, accumulated.days]);
 
-  // Silent queue drain whenever Timesheet tab is opened
-  React.useEffect(() => {
-    if (tab !== "Timesheet" || !tsSecret || !user) return;
-    let cancelled = false;
-    (async () => {
-      let processed = 0;
-      for (let i = 0; i < 20; i++) {
-        if (cancelled) return;
-        try {
-          const res = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
-          const data = await res.json();
-          if (data.status !== "pending" || !data.data) break;
-          const { emailId, days } = data.data;
-          applyTimesheetDays(days, emailId, data.data.meta || null);
-          await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
-          processed++;
-        } catch(e) { break; }
-      }
-      if (processed > 0 && !cancelled) {
-        setTsAutoMsg({ text: `âœ… ${processed} timesheet${processed!==1?"s":""} imported`, ok: true });
-        setTimeout(() => setTsAutoMsg(null), 4000);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [tab, tsSecret, user, applyTimesheetDays]);
-
-  // Auto-backup â€” runs after data loads, if last backup was > 24h ago
-  React.useEffect(() => {
-    if (!user || dataLoading) return;
-    let cancelled = false;
-    const runBackup = async () => {
-      try {
-        const backups = await db.getBackups(user.id, 1);
-        const lastBackup = backups[0];
-        const now = Date.now();
-        const dayMs = 24 * 60 * 60 * 1000;
-        const shouldBackup = !lastBackup || (now - new Date(lastBackup.created_at).getTime() > dayMs);
-        if (!shouldBackup || cancelled) return;
-        await new Promise(r => setTimeout(r, 5000));
-        if (cancelled) return;
-        const backupData = {
-          history, sharedBills, glynBills,
-          cats, billCats, glynCats, glynBillCats,
-          calcInputs: ci, notes,
-          leaveLogs, leaveSettings,
-          monthlyTs, discrepancies, scenarios,
-          accumulated, tierOverride,
-          exportedAt: new Date().toISOString(),
-          version: "1.10.2"
-        };
-        await db.createBackup(user.id, backupData, "auto");
-      } catch(e) { console.error("Auto-backup failed:", e); }
-    };
-    runBackup();
-    return () => { cancelled = true; };
-  }, [user, dataLoading]);
 
   // Poll /api/timesheet â€” 5s when items pending, 60s when empty
   React.useEffect(() => {
@@ -1542,6 +1463,87 @@ export default function App() {
   const [tsPending,setTsPending]=useState(null); // extracted data awaiting confirmation
   const [tsLastUpload,setTsLastUpload]=useState(null);
   const [accumulated,setAccumulated]=useState({otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null});
+
+  // Silent holiday resync whenever Leave tab is opened
+  React.useEffect(() => {
+    if (tab !== "Leave" || !user) return;
+    if (!accumulated.days || accumulated.days.length === 0) return;
+    const STD_DAY_HRS_LOCAL = 8.25;
+    const holDays = accumulated.days.filter(d=>d.isHoliday);
+    if (holDays.length === 0) return;
+    const newEntries = holDays.map(d=>{
+      const [dd, mm] = d.date.split("/").map(Number);
+      const year = new Date().getFullYear();
+      const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
+      return { id: genUUID(), date: dateStr, hours: d.isHalf ? STD_DAY_HRS_LOCAL/2 : STD_DAY_HRS_LOCAL, label: "Annual Leave (auto)" };
+    });
+    const existing = new Set(leaveLogs.map(l => l.date));
+    const toAdd = newEntries.filter(e => !existing.has(e.date));
+    if (toAdd.length === 0) return;
+    setLeaveLogs(prev => [...prev, ...toAdd].sort((a,b) => new Date(b.date) - new Date(a.date)));
+    (async () => {
+      for (const e of toAdd) {
+        try { await db.upsertLeaveLog(user.id, e); } catch(err) {}
+      }
+    })();
+  }, [tab, user, accumulated.days]);
+
+  // Silent queue drain whenever Timesheet tab is opened
+  React.useEffect(() => {
+    if (tab !== "Timesheet" || !tsSecret || !user) return;
+    let cancelled = false;
+    (async () => {
+      let processed = 0;
+      for (let i = 0; i < 20; i++) {
+        if (cancelled) return;
+        try {
+          const res = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
+          const data = await res.json();
+          if (data.status !== "pending" || !data.data) break;
+          const { emailId, days } = data.data;
+          applyTimesheetDays(days, emailId, data.data.meta || null);
+          await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
+          processed++;
+        } catch(e) { break; }
+      }
+      if (processed > 0 && !cancelled) {
+        setTsAutoMsg({ text: `âœ… ${processed} timesheet${processed!==1?"s":""} imported`, ok: true });
+        setTimeout(() => setTsAutoMsg(null), 4000);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, tsSecret, user, applyTimesheetDays]);
+
+  // Auto-backup â€” runs after data loads, if last backup was > 24h ago
+  React.useEffect(() => {
+    if (!user || dataLoading) return;
+    let cancelled = false;
+    const runBackup = async () => {
+      try {
+        const backups = await db.getBackups(user.id, 1);
+        const lastBackup = backups[0];
+        const now = Date.now();
+        const dayMs = 24 * 60 * 60 * 1000;
+        const shouldBackup = !lastBackup || (now - new Date(lastBackup.created_at).getTime() > dayMs);
+        if (!shouldBackup || cancelled) return;
+        await new Promise(r => setTimeout(r, 5000));
+        if (cancelled) return;
+        const backupData = {
+          history, sharedBills, glynBills,
+          cats, billCats, glynCats, glynBillCats,
+          calcInputs: ci, notes,
+          leaveLogs, leaveSettings,
+          monthlyTs, discrepancies, scenarios,
+          accumulated, tierOverride,
+          exportedAt: new Date().toISOString(),
+          version: "1.10.2"
+        };
+        await db.createBackup(user.id, backupData, "auto");
+      } catch(e) { console.error("Auto-backup failed:", e); }
+    };
+    runBackup();
+    return () => { cancelled = true; };
+  }, [user, dataLoading]);
   const showTsReminder=shouldShowTimesheetReminder(tsLastUpload);
 
   const latest=useMemo(()=>sortH(history).slice(-1)[0],[history]);
