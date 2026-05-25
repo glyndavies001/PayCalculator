@@ -2,36 +2,34 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from "react"
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 import { createClient } from "@supabase/supabase-js";
 
-// Catch any module-level errors and display them
-window.addEventListener("error", (e) => {
-  const root = document.getElementById("root");
-  if (root && root.children.length === 0) {
-    root.innerHTML = `<div style="background:#0d0f14;color:#ff6b8a;padding:20px;font-family:monospace;min-height:100vh;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;">
-      <div style="font-size:32px;margin-bottom:16px;">💥</div>
-      <div style="color:#fff;font-size:18px;margin-bottom:12px;">Vaulted failed to load</div>
-      <div style="background:#1a0a0a;padding:14px;border-radius:8px;border:1px solid #5a1a2a;">
-        <strong>Error:</strong> ${e.message || "Unknown"}<br>
-        <strong>Source:</strong> ${e.filename || "Unknown"}<br>
-        <strong>Line:</strong> ${e.lineno || "?"}:${e.colno || "?"}<br><br>
-        <strong>Stack:</strong><br>${(e.error && e.error.stack) || "No stack trace"}
-      </div>
-    </div>`;
-  }
-});
-
-window.addEventListener("unhandledrejection", (e) => {
-  const root = document.getElementById("root");
-  if (root && root.children.length === 0) {
-    root.innerHTML = `<div style="background:#0d0f14;color:#ff6b8a;padding:20px;font-family:monospace;min-height:100vh;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;">
-      <div style="font-size:32px;margin-bottom:16px;">💥</div>
-      <div style="color:#fff;font-size:18px;margin-bottom:12px;">Vaulted promise rejected</div>
-      <div style="background:#1a0a0a;padding:14px;border-radius:8px;border:1px solid #5a1a2a;">
-        ${e.reason && e.reason.message ? e.reason.message : String(e.reason)}<br><br>
-        ${e.reason && e.reason.stack ? e.reason.stack : ""}
-      </div>
-    </div>`;
-  }
-});
+// Module-level error catcher — only fires if React fails to mount.
+// Once App renders, the ErrorBoundary takes over.
+(function setupGlobalErrorHandler() {
+  const showError = (title, details) => {
+    const root = document.getElementById("root");
+    if (root && root.children.length === 0) {
+      root.innerHTML = `<div style="background:#0d0f14;color:#ff6b8a;padding:20px;font-family:monospace;min-height:100vh;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;">
+        <div style="font-size:32px;margin-bottom:16px;">💥</div>
+        <div style="color:#fff;font-size:18px;margin-bottom:12px;">${title}</div>
+        <div style="background:#1a0a0a;padding:14px;border-radius:8px;border:1px solid #5a1a2a;">${details}</div>
+      </div>`;
+    }
+  };
+  window.addEventListener("error", (e) =>
+    showError("Vaulted failed to load",
+      `<strong>Error:</strong> ${e.message || "Unknown"}<br>
+       <strong>Source:</strong> ${e.filename || "Unknown"}<br>
+       <strong>Line:</strong> ${e.lineno || "?"}:${e.colno || "?"}<br><br>
+       <strong>Stack:</strong><br>${(e.error && e.error.stack) || "No stack trace"}`
+    )
+  );
+  window.addEventListener("unhandledrejection", (e) =>
+    showError("Vaulted promise rejected",
+      `${e.reason && e.reason.message ? e.reason.message : String(e.reason)}<br><br>
+       ${e.reason && e.reason.stack ? e.reason.stack : ""}`
+    )
+  );
+})();
 
 // API calls routed through Vercel serverless proxy
 const API_PROXY = "/api/claude";
@@ -186,17 +184,18 @@ function billShares(b) {
   return { glyn: b.total / 2, hollie: b.total / 2 };
 }
 
-// localStorage keys for device-only settings
+// localStorage keys — only truly device-local settings (Supabase has the rest)
 const SK = {
+  timesheets:   "vaulted_timesheets",    // legacy — for one-time migration on first login
+  tsLastUpload: "vaulted_ts_last",       // legacy — for one-time migration on first login
+  notifPerm:    "vaulted_notif_perm",    // browser notification permission (device-specific)
+  tsSecret:     "vaulted_ts_secret",     // device-specific (could differ per device)
+  tsLastEmail:  "vaulted_ts_last_email", // device-specific dedup tracking
+  // Below kept for backward compat - falls back to defaults if missing
   cats:         "vaulted_cats",
   billCats:     "vaulted_billcats",
   glynCats:     "vaulted_gcats",
   glynBillCats: "vaulted_gbillcats",
-  timesheets:   "vaulted_timesheets",
-  tsLastUpload: "vaulted_ts_last",
-  notifPerm:    "vaulted_notif_perm",
-  tsSecret:     "vaulted_ts_secret",
-  tsLastEmail:  "vaulted_ts_last_email",
 };
 
 // Supabase DB helpers
@@ -286,7 +285,31 @@ const db = {
   async saveAccumulator(userId, accumulator, lastUpload) {
     await supabase.from("timesheet_accumulator").upsert({ user_id: userId, data: accumulator, last_upload: lastUpload, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
   },
+  // Categories — these are part of shared app_settings (bills are shared, so categorisations are too)
+  async saveCats(userId, cats) {
+    await supabase.from("app_settings").upsert({ user_id: userId, cats_data: cats, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+  },
 };
+
+// ── Sync status tracking ─────────────────────────────────────────────────────
+// Global tracker for outstanding saves
+let outstandingSaves = 0;
+const syncListeners = new Set();
+function notifySyncChange() {
+  syncListeners.forEach(fn => fn(outstandingSaves));
+}
+// trackSave accepts either a promise or a function returning a promise
+async function trackSave(promiseOrFn) {
+  outstandingSaves++;
+  notifySyncChange();
+  try {
+    const p = typeof promiseOrFn === "function" ? promiseOrFn() : promiseOrFn;
+    return await p;
+  } finally {
+    outstandingSaves--;
+    notifySyncChange();
+  }
+}
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
 function getPayday(year, month) {
@@ -694,6 +717,40 @@ function LoginScreen({ onLogin }) {
   );
 }
 
+function SyncIndicator() {
+  const [pending, setPending] = useState(0);
+  const [online, setOnline] = useState(navigator.onLine);
+
+  useEffect(() => {
+    const update = (n) => setPending(n);
+    syncListeners.add(update);
+    setPending(outstandingSaves);
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      syncListeners.delete(update);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  const color = !online ? "#ff4a6a" : pending > 0 ? "#ffb84a" : "#00c88c";
+  const title = !online ? "Offline" : pending > 0 ? `Saving ${pending}…` : "Synced";
+
+  return (
+    <div title={title} style={{display:"flex",alignItems:"center",gap:4}}>
+      <span style={{
+        width:8,height:8,borderRadius:"50%",background:color,
+        boxShadow:`0 0 6px ${color}`,
+        transition:"background 0.3s",
+        opacity: pending > 0 ? 0.7 : 1
+      }}/>
+    </div>
+  );
+}
+
 export default function App() {
   const [tab,setTab]=useState("Dashboard");
   const [user,setUser]=useState(null);
@@ -718,6 +775,35 @@ export default function App() {
   const [newCat,setNewCat]=useState("");
   const [dragOver,setDragOver]=useState(null);
   const [budTab,setBudTab]=useState("shared");
+  const [billSnapshot,setBillSnapshot]=useState(()=>{
+    try { return JSON.parse(localStorage.getItem("vaulted_bill_snapshot")||"null"); } catch { return null; }
+  });
+  const billChanges = useMemo(()=>{
+    if (!billSnapshot) return [];
+    const changes = [];
+    sharedBills.forEach(b => {
+      const old = (billSnapshot.shared||[]).find(s=>s.id===b.id);
+      if (old && old.total !== b.total) changes.push({name:b.name, old:old.total, new:b.total, type:"shared"});
+    });
+    glynBills.forEach(b => {
+      const old = (billSnapshot.glyn||[]).find(s=>s.id===b.id);
+      if (old && old.total !== b.total) changes.push({name:b.name, old:old.total, new:b.total, type:"glyn"});
+    });
+    return changes;
+  },[billSnapshot, sharedBills, glynBills]);
+  const dismissBillChanges = () => {
+    const snap = {shared:sharedBills.map(b=>({id:b.id,total:b.total})), glyn:glynBills.map(b=>({id:b.id,total:b.total}))};
+    localStorage.setItem("vaulted_bill_snapshot", JSON.stringify(snap));
+    setBillSnapshot(snap);
+  };
+  // Auto-snapshot on first load if none exists
+  useEffect(()=>{
+    if (!billSnapshot && sharedBills.length > 0) {
+      const snap = {shared:sharedBills.map(b=>({id:b.id,total:b.total})), glyn:glynBills.map(b=>({id:b.id,total:b.total}))};
+      localStorage.setItem("vaulted_bill_snapshot", JSON.stringify(snap));
+      setBillSnapshot(snap);
+    }
+  },[billSnapshot, sharedBills, glynBills]);
   const dragBill=useRef(null);
   const [chartRange,setChartRange]=useState("All");
   const [uploading,setUploading]=useState(false);
@@ -734,13 +820,21 @@ export default function App() {
   const [showAllTimeTotals,setShowAllTimeTotals]=useState(false);
 
   // ── Supabase Auth ────────────────────────────────────────────────────────
+  const [sessionWarning, setSessionWarning] = useState(false);
   React.useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user || null);
       setAuthLoading(false);
+      if (session?.expires_at) {
+        const msToExpiry = session.expires_at * 1000 - Date.now();
+        // Warn if less than 24 hours remaining
+        if (msToExpiry > 0 && msToExpiry < 24*60*60*1000) setSessionWarning(true);
+      }
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user || null);
+      if (event === "TOKEN_REFRESHED") setSessionWarning(false);
+      if (event === "SIGNED_OUT") setSessionWarning(false);
     });
     return () => subscription.unsubscribe();
   }, []);
@@ -776,19 +870,19 @@ export default function App() {
             return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
           });
           setHistory(sorted);
-          for (const p of sorted) await db.upsertPayslip(user.id, p);
+          for (const p of sorted) await trackSave(() => db.upsertPayslip(user.id, p));
         }
 
         // Bills — merge with defaults if DB empty
         if (sBills.length > 0) {
           setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
         } else {
-          for (const b of INITIAL_SHARED_BILLS) await db.upsertSharedBill(b);
+          for (const b of INITIAL_SHARED_BILLS) await trackSave(() => db.upsertSharedBill(b));
         }
         if (gBills.length > 0) {
           setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
         } else {
-          for (const b of INITIAL_GLYN_BILLS) await db.upsertGlynBill(b);
+          for (const b of INITIAL_GLYN_BILLS) await trackSave(() => db.upsertGlynBill(b));
         }
 
         if (lLogs.length > 0) setLeaveLogs(lLogs);
@@ -798,8 +892,15 @@ export default function App() {
         if (scens.length > 0) setScenarios(scens);
         if (appSettings) {
           if (appSettings.calc_inputs) setCi(appSettings.calc_inputs);
-          if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
+          if (appSettings.tier_override) setTierOverrideState(appSettings.tier_override);
           if (appSettings.notes) setNotes(appSettings.notes);
+          if (appSettings.cats_data) {
+            const cd = appSettings.cats_data;
+            if (cd.cats) setCats(cd.cats);
+            if (cd.billCats) setBillCats(cd.billCats);
+            if (cd.glynCats) setGlynCats(cd.glynCats);
+            if (cd.glynBillCats) setGlynBillCats(cd.glynBillCats);
+          }
         }
 
         // Load accumulator from DB - migrate from localStorage if DB is empty
@@ -867,6 +968,84 @@ export default function App() {
 
   const handleSignOut = async () => { await supabase.auth.signOut(); setUser(null); setHistory([]); };
 
+  // Refresh all data from Supabase
+  const refreshAll = useCallback(async () => {
+    if (!user) return;
+    setDataLoading(true);
+    try {
+      const [payslips, sBills, gBills, lLogs, lSettings, mTs, discs, scens, appSettings, accData] = await Promise.all([
+        db.getPayslips(user.id), db.getSharedBills(), db.getGlynBills(),
+        db.getLeaveLogs(user.id), db.getLeaveSettings(user.id), db.getMonthlyTs(user.id),
+        db.getDiscrepancies(user.id), db.getScenarios(user.id), db.getAppSettings(user.id),
+        db.getAccumulator(user.id),
+      ]);
+      if (payslips.length > 0) setHistory(payslips.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);}));
+      if (sBills.length > 0) setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
+      if (gBills.length > 0) setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
+      setLeaveLogs(lLogs);
+      if (lSettings) setLeaveSettings(lSettings);
+      setMonthlyTs(mTs);
+      setDiscrepancies(discs);
+      setScenarios(scens);
+      if (appSettings) {
+        if (appSettings.calc_inputs) setCi(appSettings.calc_inputs);
+        if (appSettings.tier_override) setTierOverrideState(appSettings.tier_override);
+        if (appSettings.notes) setNotes(appSettings.notes);
+      }
+      if (accData && accData.data) {
+        setAccumulated(accData.data);
+        setTsLastUpload(accData.lastUpload);
+      }
+    } catch(e) { console.error("Refresh error:", e); }
+    setDataLoading(false);
+  }, [user]);
+
+  // Keyboard shortcuts (desktop)
+  useEffect(() => {
+    const all = [...PRIMARY_TABS, ...SECONDARY_TABS];
+    const onKey = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        const num = parseInt(e.key);
+        if (num >= 1 && num <= 9 && num <= all.length) {
+          e.preventDefault();
+          setTab(all[num-1]);
+        }
+        if (e.key === "r" && e.shiftKey) {
+          e.preventDefault();
+          refreshAll();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [refreshAll]);
+
+  // Pull-to-refresh on touch devices
+  useEffect(() => {
+    let startY = 0, pulling = false;
+    const onTouchStart = (e) => {
+      if (window.scrollY === 0) { startY = e.touches[0].clientY; pulling = true; }
+    };
+    const onTouchMove = (e) => {
+      if (!pulling) return;
+      const dy = e.touches[0].clientY - startY;
+      if (dy > 80 && !dataLoading) {
+        pulling = false;
+        haptic("medium");
+        refreshAll();
+      }
+    };
+    const onTouchEnd = () => { pulling = false; };
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd);
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [refreshAll, dataLoading]);
+
   // ── Annual Leave ─────────────────────────────────────────────────────────
   const [leaveSettings, setLeaveSettings] = useState({ baseEntitlement: 29, serviceDays: 4, startYear: 2022 });
   const [leaveLogs, setLeaveLogs] = useState([]);
@@ -874,25 +1053,34 @@ export default function App() {
   const [leaveEditSettings, setLeaveEditSettings] = useState(false);
   const [leaveDraftSettings, setLeaveDraftSettings] = useState(null);
 
-  const saveLeaveLog = async () => {
+  const saveLeaveLog = () => {
     if (!leaveForm.date || !leaveForm.hours) return;
     haptic("success");
     const entry = { id: Date.now().toString(), date: leaveForm.date, hours: parseFloat(leaveForm.hours), label: leaveForm.label.trim() };
-    if (user) await db.upsertLeaveLog(user.id, entry);
+    // Optimistic update — UI first, then DB
     setLeaveLogs(prev => [...prev, entry].sort((a,b) => new Date(b.date) - new Date(a.date)));
     setLeaveForm({ date: "", hours: "8.25", label: "" });
+    if (user) trackSave(db.upsertLeaveLog(user.id, entry)).catch(e => {
+      console.error("Leave save failed:", e);
+      setLeaveLogs(prev => prev.filter(l => l.id !== entry.id));
+    });
   };
 
-  const deleteLeaveLog = async (id) => {
+  const deleteLeaveLog = (id) => {
     haptic("medium");
-    if (user) await db.deleteLeaveLog(id);
+    // Optimistic — remove from UI first
+    const removed = leaveLogs.find(l => l.id === id);
     setLeaveLogs(prev => prev.filter(l => l.id !== id));
+    if (user) trackSave(db.deleteLeaveLog(id)).catch(e => {
+      console.error("Leave delete failed:", e);
+      if (removed) setLeaveLogs(prev => [...prev, removed].sort((a,b) => new Date(b.date) - new Date(a.date)));
+    });
   };
 
   const saveLeaveSettings = async () => {
     haptic("success");
     setLeaveSettings(leaveDraftSettings);
-    if (user) await db.saveLeaveSettings(user.id, leaveDraftSettings);
+    if (user) await trackSave(() => db.saveLeaveSettings(user.id, leaveDraftSettings));
     setLeaveEditSettings(false);
   };
 
@@ -936,8 +1124,7 @@ export default function App() {
         const merged = [...prev, ...newEntries]
           .filter((e, i, arr) => arr.findIndex(x => x.date === e.date) === i)
           .sort((a, b) => new Date(b.date) - new Date(a.date));
-        // Upsert new entries to Supabase
-        if (user) newEntries.forEach(e => db.upsertLeaveLog(user.id, e).catch(()=>{}));
+        if (user) newEntries.forEach(e => trackSave(db.upsertLeaveLog(user.id, e)));
         return merged;
       });
     }
@@ -1052,7 +1239,7 @@ export default function App() {
   const [discrepancies, setDiscrepancies] = useState([]);
 
   const saveMonthlyTs = async (entry) => {
-    if (user) await db.upsertMonthlyTs(user.id, entry);
+    if (user) await trackSave(() => db.upsertMonthlyTs(user.id, entry));
     setMonthlyTs(prev => {
       return [...prev.filter(m => m.emailId !== entry.emailId && m.period !== entry.period), entry]
         .sort((a, b) => new Date(b.period.split(" to ")[0]) - new Date(a.period.split(" to ")[0]));
@@ -1099,7 +1286,7 @@ export default function App() {
       checkedAt: new Date().toISOString(),
     };
 
-    if (user) await db.upsertDiscrepancy(user.id, result);
+    if (user) await trackSave(() => db.upsertDiscrepancy(user.id, result));
     setDiscrepancies(prev => {
       return [...prev.filter(d => d.month !== tsEntry.month), result]
         .sort((a, b) => new Date(b.checkedAt) - new Date(a.checkedAt));
@@ -1165,7 +1352,7 @@ export default function App() {
   const saveScenario = async () => {
     if (!scenarioName.trim()) return;
     const s = { id: Date.now().toString(), name: scenarioName.trim(), stdHrs: ci.stdHrs, otHrs: ci.otHrs, weekendOtHrs: ci.weekendOtHrs, bonus: ci.bonus, tierOverride: tierOverride };
-    if (user) await db.upsertScenario(user.id, s);
+    if (user) await trackSave(() => db.upsertScenario(user.id, s));
     setScenarios(prev => [...prev.filter(x=>x.name!==s.name), s]);
     setScenarioName("");
   };
@@ -1175,21 +1362,21 @@ export default function App() {
     setShowScenarios(false);
   };
   const deleteScenario = async (id) => {
-    if (user) await db.deleteScenario(id);
+    if (user) await trackSave(() => db.deleteScenario(id));
     setScenarios(prev => prev.filter(s=>s.id!==id));
   };
 
   // Tier override — resets if stored month doesn't match current month
   const currentMonthStr = MONTHS[new Date().getMonth()]+" "+new Date().getFullYear();
   const [tierOverride,setTierOverride]=useState(()=>{
-    const stored=load(SK.tierOverride,null);
+    const stored=tierOverride;
     if(stored && stored.month===currentMonthStr) return stored.tierIdx;
     return null; // null = auto (inferred from latest payslip)
   });
   const saveTierOverride=(tierIdx)=>{
     const val=tierIdx===null?null:{tierIdx,month:currentMonthStr};
     setTierOverride(tierIdx);
-    save(SK.tierOverride,val);
+
   };
 
   // Timesheet state
@@ -1197,7 +1384,7 @@ export default function App() {
   const [tsProgress,setTsProgress]=useState(null);
   const [tsResults,setTsResults]=useState([]);
   const [tsPending,setTsPending]=useState(null); // extracted data awaiting confirmation
-  const [tsLastUpload,setTsLastUpload]=useState(()=>load(SK.tsLastUpload,null));
+  const [tsLastUpload,setTsLastUpload]=useState(null);
   const [accumulated,setAccumulated]=useState({otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null});
   const showTsReminder=shouldShowTimesheetReminder(tsLastUpload);
 
@@ -1238,14 +1425,54 @@ export default function App() {
   }),[history]);
 
   const updH=h=>{setHistory(h);};
-  const updSB=b=>{setSharedBills(b);save(SK.sharedBills,b);};
-  const updGB=b=>{setGlynBills(b);save(SK.glynBills,b);};
-  const updC=c=>{setCats(c);save(SK.cats,c);};
-  const updBC=bc=>{setBillCats(bc);save(SK.billCats,bc);};
-  const updGC=c=>{setGlynCats(c);save(SK.glynCats,c);};
-  const updGBC=bc=>{setGlynBillCats(bc);save(SK.glynBillCats,bc);};
-  const setC=useCallback((k,v)=>{setCi(p=>{const n={...p,[k]:v};save(SK.calcInputs,n);return n;});},[]);
-  const updNotes=n=>{setNotes(n);save(SK.notes,n);};
+  // Bills — write each changed bill to Supabase (bulk reconcile)
+  const updSB=async (b)=>{
+    setSharedBills(b);
+    if (user) {
+      // Find changes vs current state - simplest: upsert all, delete missing
+      for (const bill of b) trackSave(db.upsertSharedBill(bill));
+      const currentIds = new Set(sharedBills.map(x => x.id));
+      const newIds = new Set(b.map(x => x.id));
+      for (const id of currentIds) if (!newIds.has(id)) trackSave(db.deleteSharedBill(id));
+    }
+  };
+  const updGB=async (b)=>{
+    setGlynBills(b);
+    if (user) {
+      for (const bill of b) trackSave(db.upsertGlynBill(bill));
+      const currentIds = new Set(glynBills.map(x => x.id));
+      const newIds = new Set(b.map(x => x.id));
+      for (const id of currentIds) if (!newIds.has(id)) trackSave(db.deleteGlynBill(id));
+    }
+  };
+  // Categories - store in app_settings (shared per user account)
+  const updC=c=>{
+    setCats(c);
+    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats: c, billCats, glynCats, glynBillCats } }));
+  };
+  const updBC=bc=>{
+    setBillCats(bc);
+    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats: bc, glynCats, glynBillCats } }));
+  };
+  const updGC=c=>{
+    setGlynCats(c);
+    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats, glynCats: c, glynBillCats } }));
+  };
+  const updGBC=bc=>{
+    setGlynBillCats(bc);
+    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats, glynCats, glynBillCats: bc } }));
+  };
+  const setC=useCallback((k,v)=>{
+    setCi(p=>{
+      const n={...p,[k]:v};
+      if (user) trackSave(db.saveAppSettings(user.id, { calc_inputs: n }));
+      return n;
+    });
+  },[user]);
+  const updNotes=n=>{
+    setNotes(n);
+    if (user) trackSave(db.saveAppSettings(user.id, { notes: n }));
+  };
   const deletePayslip=month=>{updH(history.filter(h=>h.month!==month));setDeleteConfirm(null);setExpandedPayslip(null);};
 
   const handleUpload=async e=>{
@@ -1339,7 +1566,7 @@ export default function App() {
         if(d.billCats){updBC(d.billCats);}
         if(d.glynCats){updGC(d.glynCats);}
         if(d.glynBillCats){updGBC(d.glynBillCats);}
-        if(d.calcInputs){setCi(d.calcInputs);save(SK.calcInputs,d.calcInputs);}
+        if(d.calcInputs){setCi(d.calcInputs);if(user) db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
         if(d.notes){updNotes(d.notes);}
         setImportMsg("✓ Data restored successfully");
       } catch{setImportMsg("⚠ Invalid backup file");}
@@ -1466,7 +1693,6 @@ const calcTimesheetTotals = days => {
         const merged = [...prev, ...newLeaveEntries].filter((entry, idx, arr) =>
           arr.findIndex(e => e.date === entry.date) === idx
         ).sort((a, b) => new Date(b.date) - new Date(a.date));
-        save(SK.leaveLogs, merged);
         return merged;
       });
     }
@@ -1497,7 +1723,7 @@ const calcTimesheetTotals = days => {
       lastUpload: now,
     };
     setAccumulated(newAcc);
-    if (user) await db.saveAccumulator(user.id, newAcc, now);
+    if (user) await trackSave(() => db.saveAccumulator(user.id, newAcc, now));
     setTsLastUpload(now);
     setC("otHrs", newAcc.otHrs);
     setC("weekendOtHrs", newAcc.weekendOtHrs);
@@ -1542,8 +1768,10 @@ const calcTimesheetTotals = days => {
 
   // Auth loading
   if (authLoading) {
-    return <div style={{minHeight:"100vh",background:"#0d0f14",display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{color:"#4a9eff",fontSize:14}}>Loading…</div>
+    return <div style={{minHeight:"100vh",background:"#0d0f14",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
+      <div style={{fontSize:42,opacity:0.7}}>🔐</div>
+      <h1 style={{margin:0,fontSize:18,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
+      <div style={{color:"#3a4460",fontSize:11}}>Checking session…</div>
     </div>;
   }
 
@@ -1552,12 +1780,30 @@ const calcTimesheetTotals = days => {
     return <LoginScreen onLogin={u => setUser(u)} />;
   }
 
-  // Data loading
+  // Data loading - show skeleton matching dashboard shape
   if (dataLoading) {
-    return <div style={{minHeight:"100vh",background:"#0d0f14",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
-      <div style={{fontSize:48}}>🔐</div>
-      <div style={{color:"#4a9eff",fontSize:14,fontWeight:600}}>Loading your data…</div>
-    </div>;
+    const skBox = { background:"#141824", borderRadius:12, border:"1px solid #1e2535", animation:"pulse 1.5s ease-in-out infinite" };
+    return (
+      <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
+        <style>{`@keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 0.7; } }`}</style>
+        <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"14px 14px 12px",position:"sticky",top:0,zIndex:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
+            <div style={{color:"#4a9eff",fontSize:11,fontWeight:600}}>Loading…</div>
+          </div>
+        </div>
+        <div style={{padding:"14px 12px"}}>
+          <div style={{...skBox, height:80, marginBottom:14}}/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+            <div style={{...skBox, height:62}}/>
+            <div style={{...skBox, height:62}}/>
+            <div style={{...skBox, height:62}}/>
+          </div>
+          <div style={{...skBox, height:140, marginBottom:14}}/>
+          <div style={{...skBox, height:200}}/>
+        </div>
+      </div>
+    );
   }
 
 
@@ -1576,8 +1822,11 @@ const calcTimesheetTotals = days => {
           <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}>
             <span style={{color:"#4a9eff"}}>V</span>AULTED
           </h1>
-          <button onClick={()=>{haptic("medium");handleSignOut();}} title="Sign out"
-            style={{background:"none",border:"none",color:"#3a4460",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <SyncIndicator/>
+            <button onClick={()=>{haptic("medium");handleSignOut();}} title="Sign out"
+              style={{background:"none",border:"none",color:"#3a4460",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
+          </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:11,color:"#5a6480"}}>{history.length} payslips</div>
             <div style={{fontSize:11,color:"#3a4460"}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> · {nextPayday.date}</div>
@@ -1617,6 +1866,17 @@ const calcTimesheetTotals = days => {
                   </div>
                 </div>
                 <span style={{fontSize:11,color:"#ff6b8a",fontWeight:700}}>Review →</span>
+              </div>
+            )}
+
+            {sessionWarning && (
+              <div style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:20}}>⏰</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Session expiring soon</div>
+                  <div style={{fontSize:11,color:"#7a6030",marginTop:2}}>You'\''ll be signed out shortly. Refresh data or sign in again to extend.</div>
+                </div>
+                <button onClick={refreshAll} style={{background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"6px 10px",cursor:"pointer"}}>Refresh</button>
               </div>
             )}
 
@@ -1815,6 +2075,31 @@ const calcTimesheetTotals = days => {
                 </div>
               );
             })()}
+            {billChanges.length > 0 && (
+              <div style={{background:"#0a1525",border:"1px solid #4a9eff44",borderRadius:12,padding:"12px 14px",marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <span style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>📊 Bills changed</span>
+                  <button onClick={dismissBillChanges} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer"}}>Dismiss</button>
+                </div>
+                {billChanges.map((c,i)=>{
+                  const diff = c.new - c.old;
+                  const up = diff > 0;
+                  return (
+                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:11}}>
+                      <span style={{color:"#8892b0"}}>{c.name}</span>
+                      <span>
+                        <span style={{color:"#5a6480"}}>{fmt(c.old)} → </span>
+                        <span style={{color:"#e8eaf0",fontWeight:600}}>{fmt(c.new)}</span>
+                        <span style={{color:up?"#ff8c4a":"#00c88c",marginLeft:6,fontWeight:700}}>
+                          {up?"+":""}{fmt(diff)}
+                        </span>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
               {[
                 {label:"Shared (my half)",value:fmt(shGlyn),  accent:"#4a9eff"},
@@ -2267,7 +2552,18 @@ const calcTimesheetTotals = days => {
                     )}
                   </div>
                 ))}
-                {filteredHistory.length===0&&<div style={{padding:"32px",textAlign:"center",color:"#3a4460",fontSize:13}}>No payslips match "{payslipSearch}"</div>}
+                {filteredHistory.length===0&&(
+                  history.length === 0 ? (
+                    <div style={{padding:"40px 20px",textAlign:"center"}}>
+                      <div style={{fontSize:36,marginBottom:8}}>💼</div>
+                      <div style={{fontSize:14,color:"#8892b0",fontWeight:600,marginBottom:6}}>No payslips yet</div>
+                      <div style={{fontSize:12,color:"#3a4460",marginBottom:14}}>Upload your first payslip PDF to start tracking</div>
+                      <button onClick={()=>{haptic();setTab("Upload");}} style={{background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:12,fontWeight:700,padding:"10px 18px",cursor:"pointer"}}>Go to Upload</button>
+                    </div>
+                  ) : (
+                    <div style={{padding:"32px",textAlign:"center",color:"#3a4460",fontSize:13}}>No payslips match "{payslipSearch}"</div>
+                  )
+                )}
                 <div style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"10px",fontSize:11,fontWeight:700,background:"#0d1117",borderTop:"2px solid #2a3050"}}>
                   <span style={{color:"#5a6480",fontSize:10,textTransform:"uppercase",letterSpacing:0.5}}>Totals</span>
                   <span style={{textAlign:"right"}}>
@@ -2492,7 +2788,11 @@ const calcTimesheetTotals = days => {
               )}
 
               {yearLogs.length === 0 && (
-                <div style={{textAlign:"center",padding:"32px 0",color:"#3a4460",fontSize:13}}>No leave logged for {year} yet</div>
+                <div style={{textAlign:"center",padding:"32px 20px"}}>
+                  <div style={{fontSize:36,marginBottom:8}}>🏖️</div>
+                  <div style={{fontSize:14,color:"#8892b0",fontWeight:600,marginBottom:6}}>No leave logged for {year} yet</div>
+                  <div style={{fontSize:12,color:"#3a4460"}}>Log leave above or it'\''ll auto-import from your monthly timesheets</div>
+                </div>
               )}
 
             </div>
@@ -2581,6 +2881,38 @@ const calcTimesheetTotals = days => {
                 </div>
               );
             })()}
+          </div>
+
+          <div style={{...card,marginBottom:14}}>
+            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Account</div>
+            <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535",marginBottom:10}}>
+              <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>Signed in as</div>
+              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:600,wordBreak:"break-all"}}>{user?.email || "—"}</div>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button onClick={()=>{haptic("medium");refreshAll();}}
+                style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#4a9eff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
+                🔄 Refresh data
+              </button>
+              <button onClick={()=>{
+                const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,exportedAt:new Date().toISOString()};
+                const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+                const url=URL.createObjectURL(blob);
+                const a=document.createElement("a");
+                a.href=url;a.download=`vaulted-backup-${new Date().toISOString().slice(0,10)}.json`;
+                a.click();URL.revokeObjectURL(url);
+              }}
+                style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
+                📥 Export backup
+              </button>
+              <button onClick={async ()=>{
+                if(!window.confirm("Sign out? You'\''ll need to log in again to access your data.")) return;
+                haptic("heavy");await handleSignOut();
+              }}
+                style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
+                🚪 Sign out
+              </button>
+            </div>
           </div>
 
           <div style={{...card,marginBottom:14}}>
@@ -2790,6 +3122,114 @@ const calcTimesheetTotals = days => {
             })()}
 
             {(()=>{
+              // Year-over-year comparison
+              const thisYear = new Date().getFullYear();
+              const yearTotals = (yr) => history.filter(r => {
+                const [, y] = r.month.split(" ");
+                return parseInt(y) === yr;
+              }).reduce((acc, r) => ({
+                gross: acc.gross + (r.gross||0),
+                net: acc.net + (r.net||0),
+                tax: acc.tax + (r.tax||0),
+                ni: acc.ni + (r.ni||0),
+                nest: acc.nest + (r.nest||0),
+                sl: acc.sl + (r.sl||0),
+                bonus: acc.bonus + (r.bonus||0),
+                ot: acc.ot + (r.ot||0),
+              }), {gross:0,net:0,tax:0,ni:0,nest:0,sl:0,bonus:0,ot:0});
+
+              const current = yearTotals(thisYear);
+              const previous = yearTotals(thisYear-1);
+              const hasPrev = Object.values(previous).some(v => v > 0);
+              if (!hasPrev) return null;
+
+              const diff = (key) => {
+                const c = current[key], p = previous[key];
+                if (p === 0) return null;
+                const pct = ((c - p) / p) * 100;
+                return { c, p, pct, abs: c - p };
+              };
+
+              const rows = [
+                { label: "Gross", key: "gross", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+                { label: "Net", key: "net", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+                { label: "Tax", key: "tax", colorUp: "#ff4a6a", colorDown: "#00c88c" },
+                { label: "NI", key: "ni", colorUp: "#ff4a6a", colorDown: "#00c88c" },
+                { label: "Student Loan", key: "sl", colorUp: "#ff4a6a", colorDown: "#00c88c" },
+                { label: "NEST", key: "nest", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+                { label: "Bonus", key: "bonus", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+                { label: "Overtime", key: "ot", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+              ];
+
+              return (
+                <div style={card}>
+                  <SectionLabel>Year-on-Year — {thisYear} vs {thisYear-1}</SectionLabel>
+                  <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>Calendar year totals from payslip history</div>
+                  {rows.map(r => {
+                    const d = diff(r.key);
+                    if (!d) return null;
+                    const up = d.abs > 0;
+                    const color = up ? r.colorUp : r.colorDown;
+                    return (
+                      <div key={r.key} style={{display:"grid",gridTemplateColumns:"80px 1fr 1fr 70px",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12,alignItems:"center"}}>
+                        <span style={{color:"#8892b0"}}>{r.label}</span>
+                        <span style={{textAlign:"right",color:"#5a6480"}}>{fmt(d.p)}</span>
+                        <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{fmt(d.c)}</span>
+                        <span style={{textAlign:"right",color,fontWeight:700,fontSize:11}}>
+                          {up?"↑":"↓"} {Math.abs(d.pct).toFixed(1)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
+            {(()=>{
+              // OT trend chart - last 12 months
+              if (history.length < 3) return null;
+              const sorted = sortH(history);
+              const recent = sorted.slice(-12);
+              const otData = recent.map(r => ({
+                month: r.month.split(" ")[0],
+                ot: r.ot || 0,
+                bonus: r.bonus || 0,
+              }));
+              const maxOt = Math.max(...otData.map(d => d.ot), 1);
+              const avgOt = otData.reduce((s,d) => s + d.ot, 0) / otData.length;
+
+              return (
+                <div style={{...card,marginBottom:14}}>
+                  <SectionLabel>OT Pay Trend — Last {otData.length} Months</SectionLabel>
+                  <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",gap:3,height:80,marginTop:8,marginBottom:8}}>
+                    {otData.map((d,i)=>{
+                      const h = Math.max(3, (d.ot / maxOt) * 70);
+                      const isAbove = d.ot > avgOt;
+                      return (
+                        <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                          <div style={{
+                            width:"100%", height:h+"px",
+                            background:isAbove?"linear-gradient(180deg,#4affd4,#00c88c)":"#3a4460",
+                            borderRadius:"3px 3px 0 0",
+                            transition:"height 0.4s"
+                          }} title={d.month+": "+fmt(d.ot)}/>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"#3a4460",marginTop:4}}>
+                    {otData.map((d,i)=><span key={i} style={{flex:1,textAlign:"center"}}>{d.month}</span>)}
+                  </div>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#5a6480",marginTop:10,paddingTop:8,borderTop:"1px solid #1a1f2e"}}>
+                    <span>Avg: <span style={{color:"#4affd4",fontWeight:700}}>{fmt(avgOt)}</span></span>
+                    <span>Peak: <span style={{color:"#00c88c",fontWeight:700}}>{fmt(maxOt)}</span></span>
+                    <span>Total: <span style={{color:"#e8eaf0",fontWeight:700}}>{fmt(otData.reduce((s,d)=>s+d.ot,0))}</span></span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {(()=>{
               // FY OT tracker from payslip history
               const now=new Date();
               const fyStart=now.getMonth()>=3?new Date(now.getFullYear(),3,1):new Date(now.getFullYear()-1,3,1);
@@ -2837,7 +3277,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.9.2</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.10.5</span>
       </div>
 
     </div>
