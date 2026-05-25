@@ -1366,13 +1366,9 @@ export default function App() {
     setScenarios(prev => prev.filter(s=>s.id!==id));
   };
 
-  // Tier override — resets if stored month doesn't match current month
+  // Tier override — initial value loaded from Supabase via app_settings later
   const currentMonthStr = MONTHS[new Date().getMonth()]+" "+new Date().getFullYear();
-  const [tierOverride,setTierOverride]=useState(()=>{
-    const stored=tierOverride;
-    if(stored && stored.month===currentMonthStr) return stored.tierIdx;
-    return null; // null = auto (inferred from latest payslip)
-  });
+  const [tierOverride,setTierOverride]=useState(null); // null = auto (inferred from latest payslip)
   const saveTierOverride=(tierIdx)=>{
     const val=tierIdx===null?null:{tierIdx,month:currentMonthStr};
     setTierOverride(tierIdx);
