@@ -802,11 +802,25 @@ export default function App() {
           if (appSettings.notes) setNotes(appSettings.notes);
         }
 
-        // Load accumulator from DB
+        // Load accumulator from DB - migrate from localStorage if DB is empty
         const accData = await db.getAccumulator(user.id);
-        if (accData) {
+        const localAcc = load(SK.timesheets, null);
+        const localLastUp = load(SK.tsLastUpload, null);
+
+        if (!accData && localAcc) {
+          // Fresh DB but localStorage has data — migrate it up
+          console.log("Migrating accumulator from localStorage to Supabase");
+          if (shouldResetTimesheet(localAcc.lastUpload)) {
+            const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+            setAccumulated(empty);
+            await db.saveAccumulator(user.id, empty, null);
+          } else {
+            setAccumulated(localAcc);
+            setTsLastUpload(localLastUp);
+            await db.saveAccumulator(user.id, localAcc, localLastUp);
+          }
+        } else if (accData) {
           if (accData.data && shouldResetTimesheet(accData.lastUpload)) {
-            // New pay period — reset to empty
             const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
             setAccumulated(empty);
             await db.saveAccumulator(user.id, empty, null);
@@ -2823,7 +2837,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.9.1</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.9.2</span>
       </div>
 
     </div>
