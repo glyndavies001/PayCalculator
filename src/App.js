@@ -1215,7 +1215,8 @@ export default function App() {
     // Merge into accumulated timesheet
     setAccumulated(prev => {
       const seen = new Set();
-      const merged = [...(prev.days || []), ...(currentDays.length > 0 ? currentDays : [])]
+      // NEW DATA FIRST so it wins on dedup conflicts (correct values from latest email)
+      const merged = [...(currentDays.length > 0 ? currentDays : []), ...(prev.days || [])]
         .sort((a, b) => {
           const [ad, am] = (a.date || "").split("/").map(Number);
           const [bd, bm] = (b.date || "").split("/").map(Number);
@@ -1226,6 +1227,14 @@ export default function App() {
           if (seen.has(key)) return false;
           seen.add(key); return true;
         });
+
+      // Safety check: never reduce days count from a merge (this should only grow or stay equal)
+      const prevDayCount = (prev.days || []).length;
+      if (merged.length < prevDayCount && currentDays.length > 0) {
+        console.warn(`Refusing to reduce days from ${prevDayCount} to ${merged.length}. Keeping previous data.`);
+        return prev;
+      }
+
       const totalOtHrs  = Math.round(merged.reduce((s, d) => s + (d.otHrs  || 0), 0) * 100) / 100;
       const totalWkndHrs= Math.round(merged.reduce((s, d) => s + (d.wkOtHrs|| 0), 0) * 100) / 100;
       const now = new Date().toISOString();
