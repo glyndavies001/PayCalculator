@@ -1278,6 +1278,9 @@ export default function App() {
         savedAt: new Date().toISOString(),
       };
       saveMonthlyTs(entry);
+
+      // Cross-check: does the monthly timesheet match the accumulated weekly timesheets?
+      checkMonthlyVsWeekly(days, accumulatedRef.current.days || [], meta);
     }
   }, [user]);
 
@@ -1323,6 +1326,7 @@ export default function App() {
   // -- Monthly timesheet history + discrepancy checker ---------------------
   const [monthlyTs, setMonthlyTs] = useState([]);
   const [discrepancies, setDiscrepancies] = useState([]);
+  const [weeklyCheck, setWeeklyCheck] = useState(null); // monthly-vs-weekly comparison result
 
   const saveMonthlyTs = async (entry) => {
     if (user) await trackSave(() => db.upsertMonthlyTs(user.id, entry));
@@ -1383,6 +1387,94 @@ export default function App() {
         "⚠️ Pay discrepancy -- " + tsEntry.month,
         items.length + " item" + (items.length>1?"s":"") + " don't match your timesheet. Check Vaulted.",
         "discrepancy-" + tsEntry.month
+      );
+    }
+  };
+
+  // Cross-check monthly timesheet against accumulated weekly timesheets (day-by-day)
+  const checkMonthlyVsWeekly = async (monthlyDays, weeklyDays, meta) => {
+    if (!monthlyDays || monthlyDays.length === 0) return;
+    if (!weeklyDays || weeklyDays.length === 0) {
+      // No weekly data to compare against
+      setWeeklyCheck({
+        status: "no_weekly",
+        period: meta?.period || "",
+        month: meta?.payMonth || "",
+        mismatches: [],
+        checkedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const pHM = str => {
+      const hMatch = (str||"").match(/(\d+)h/);
+      const mMatch = (str||"").match(/(\d+)m/);
+      return Math.round(((hMatch?parseInt(hMatch[1]):0) + (mMatch?parseInt(mMatch[1]):0)/60) * 100) / 100;
+    };
+
+    // Build a lookup of weekly days by date
+    const weeklyByDate = {};
+    weeklyDays.forEach(d => { weeklyByDate[d.date] = d; });
+
+    const mismatches = [];
+    let monthlyTotal = 0, weeklyTotal = 0;
+
+    monthlyDays.forEach(md => {
+      const mh = md.isHoliday ? 0 : pHM(md.hours);
+      monthlyTotal += mh;
+      const wd = weeklyByDate[md.date];
+      if (!wd) {
+        // Day in monthly but missing from weekly
+        if (mh > 0 || md.isHoliday) {
+          mismatches.push({ date: md.date, day: md.day, type: "missing_weekly", monthly: md.hours, weekly: "—" });
+        }
+        return;
+      }
+      const wh = wd.isHoliday ? 0 : pHM(wd.hours);
+      weeklyTotal += wh;
+      // Compare hours (allow 1 minute = 0.02h tolerance for rounding)
+      if (Math.abs(mh - wh) > 0.02) {
+        mismatches.push({ date: md.date, day: md.day, type: "hours_differ", monthly: md.hours, weekly: wd.hours });
+      }
+      // Compare holiday status
+      else if (!!md.isHoliday !== !!wd.isHoliday) {
+        mismatches.push({ date: md.date, day: md.day, type: "holiday_differ", monthly: md.isHoliday?(md.holiday||"Holiday"):"Worked", weekly: wd.isHoliday?(wd.holiday||"Holiday"):"Worked" });
+      }
+    });
+
+    // Check for days in weekly but missing from monthly
+    weeklyDays.forEach(wd => {
+      if (!monthlyDays.find(md => md.date === wd.date)) {
+        const wh = wd.isHoliday ? 0 : pHM(wd.hours);
+        if (wh > 0 || wd.isHoliday) {
+          mismatches.push({ date: wd.date, day: wd.day, type: "missing_monthly", monthly: "—", weekly: wd.hours });
+        }
+      }
+    });
+
+    // Sort mismatches by date
+    mismatches.sort((a,b) => {
+      const [ad,am] = (a.date||"").split("/").map(Number);
+      const [bd,bm] = (b.date||"").split("/").map(Number);
+      return am !== bm ? am - bm : ad - bd;
+    });
+
+    const result = {
+      status: mismatches.length === 0 ? "match" : "mismatch",
+      period: meta?.period || "",
+      month: meta?.payMonth || "",
+      mismatches,
+      monthlyTotal: Math.round(monthlyTotal * 100) / 100,
+      weeklyTotal: Math.round(weeklyTotal * 100) / 100,
+      checkedAt: new Date().toISOString(),
+    };
+    setWeeklyCheck(result);
+
+    if (mismatches.length > 0) {
+      sendNotification(
+        "Monthly vs Weekly mismatch -- " + (meta?.payMonth || ""),
+        mismatches.length + " day" + (mismatches.length>1?"s":"") + " don't match between your monthly and weekly timesheets.",
+        "weekly-check-" + (meta?.payMonth || "")
       );
     }
   };
@@ -1472,6 +1564,8 @@ export default function App() {
   const [tsPending,setTsPending]=useState(null); // extracted data awaiting confirmation
   const [tsLastUpload,setTsLastUpload]=useState(null);
   const [accumulated,setAccumulated]=useState({otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null});
+  const accumulatedRef = useRef(accumulated);
+  useEffect(() => { accumulatedRef.current = accumulated; }, [accumulated]);
 
   // Silent holiday resync whenever Leave tab is opened
   React.useEffect(() => {
@@ -3369,6 +3463,43 @@ const calcTimesheetTotals = days => {
                 </div>
               );
             })()}
+
+            {/* Monthly vs Weekly cross-check result */}
+            {weeklyCheck && (
+              <div style={{...card,marginBottom:14,borderLeft:"3px solid "+(weeklyCheck.status==="match"?"#00c88c":weeklyCheck.status==="no_weekly"?"#5a6480":"#ff6b8a")}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:weeklyCheck.status==="mismatch"?10:0}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:700,color:weeklyCheck.status==="match"?"#00c88c":weeklyCheck.status==="no_weekly"?"#8892b0":"#ff6b8a"}}>
+                      {weeklyCheck.status==="match" ? "✓ Monthly matches weekly" : weeklyCheck.status==="no_weekly" ? "No weekly data to compare" : "⚠ Monthly vs Weekly mismatch"}
+                    </div>
+                    <div style={{fontSize:11,color:"#5a6480",marginTop:2}}>{weeklyCheck.month}{weeklyCheck.status==="match"?" · totals reconcile":""}</div>
+                  </div>
+                  <button onClick={()=>setWeeklyCheck(null)} style={{background:"none",border:"none",color:"#3a4460",fontSize:16,cursor:"pointer"}}>✕</button>
+                </div>
+                {weeklyCheck.status==="mismatch" && (
+                  <>
+                    <div style={{fontSize:11,color:"#8892b0",marginBottom:8}}>
+                      Monthly total: {weeklyCheck.monthlyTotal}h · Weekly total: {weeklyCheck.weeklyTotal}h
+                      {Math.abs(weeklyCheck.monthlyTotal-weeklyCheck.weeklyTotal)>0.02 && <span style={{color:"#ff6b8a"}}> (off by {Math.round(Math.abs(weeklyCheck.monthlyTotal-weeklyCheck.weeklyTotal)*100)/100}h)</span>}
+                    </div>
+                    <div style={{background:"#0d1117",borderRadius:8,overflow:"hidden"}}>
+                      <div style={{display:"grid",gridTemplateColumns:"60px 40px 1fr 1fr",padding:"8px 10px",background:"#1a0a0a",fontSize:9,fontWeight:700,color:"#8a5a5a",letterSpacing:1,textTransform:"uppercase"}}>
+                        <span>Date</span><span>Day</span><span style={{textAlign:"right"}}>Monthly</span><span style={{textAlign:"right"}}>Weekly</span>
+                      </div>
+                      {weeklyCheck.mismatches.map((m,i)=>(
+                        <div key={i} style={{display:"grid",gridTemplateColumns:"60px 40px 1fr 1fr",padding:"8px 10px",fontSize:11,borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
+                          <span style={{color:"#8892b0",fontWeight:600}}>{m.date}</span>
+                          <span style={{color:"#5a6480"}}>{m.day}</span>
+                          <span style={{textAlign:"right",color:m.type==="missing_monthly"?"#ff6b8a":"#e8eaf0",fontWeight:600}}>{m.monthly}</span>
+                          <span style={{textAlign:"right",color:m.type==="missing_weekly"?"#ff6b8a":"#e8eaf0",fontWeight:600}}>{m.weekly}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p style={{fontSize:10,color:"#5a6480",marginTop:8,lineHeight:1.5}}>These days differ between JLI's monthly summary and the weekly emails. Worth querying with JLI if the monthly total is wrong.</p>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* Daily breakdown */}
             {accumulated.days&&accumulated.days.length>0?(
