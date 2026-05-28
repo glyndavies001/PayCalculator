@@ -556,21 +556,21 @@ function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,on
   return (
     <div draggable onDragStart={onDragStart} style={{
       display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",
-      padding:"9px 10px",fontSize:12,alignItems:"center",
-      background:idx%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"grab"
+      padding:"11px 12px",fontSize:13,alignItems:"center",
+      background:idx%2===0?"#161b28":"#11151f",borderBottom:"1px solid #1e2535",cursor:"grab"
     }}>
-      <span style={{color:"#8892b0"}}>{bill.name}</span>
+      <span style={{color:"#d8dcea",fontWeight:500}}>{bill.name}</span>
       {editing?(
         <input autoFocus type="number" value={val} onChange={e=>setVal(e.target.value)}
           onBlur={()=>onEditBlur(val)} onKeyDown={e=>e.key==="Enter"&&onEditBlur(val)}
-          style={{background:"#1e2535",border:"1px solid #4a9eff",borderRadius:4,color:"#e8eaf0",fontSize:11,padding:"2px 4px",width:"100%",textAlign:"right"}}/>
+          style={{background:"#1e2535",border:"1px solid #4a9eff",borderRadius:4,color:"#e8eaf0",fontSize:12,padding:"2px 4px",width:"100%",textAlign:"right"}}/>
       ):(
-        <span onClick={onEditStart} style={{textAlign:"right",color:isGlynOnly?"#4a9eff":"#5a6480",display:"block",cursor:"pointer",borderBottom:"1px dashed #2a3050",fontWeight:isGlynOnly?600:400}}>
+        <span onClick={onEditStart} style={{textAlign:"right",color:isGlynOnly?"#4a9eff":"#a8b0c4",display:"block",cursor:"pointer",borderBottom:"1px dashed #2a3050",fontWeight:600}}>
           {fmt(bill.total)}
         </span>
       )}
-      {!isGlynOnly&&<><span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(sh.glyn)}</span><span style={{textAlign:"right",color:"#c84aff",fontWeight:600}}>{fmt(sh.hollie)}</span></>}
-      <button onClick={onDelete} style={{background:"none",border:"none",color:"#3a4460",fontSize:12,cursor:"pointer",padding:0,textAlign:"center"}}>✕</button>
+      {!isGlynOnly&&<><span style={{textAlign:"right",color:"#4a9eff",fontWeight:700}}>{fmt(sh.glyn)}</span><span style={{textAlign:"right",color:"#c84aff",fontWeight:700}}>{fmt(sh.hollie)}</span></>}
+      <button onClick={onDelete} style={{background:"none",border:"none",color:"#5a6480",fontSize:13,cursor:"pointer",padding:0,textAlign:"center"}}>✕</button>
     </div>
   );
 }
@@ -584,16 +584,16 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
   return (
     <div onDragOver={e=>{e.preventDefault();setDragOver(cat.id);}} onDragLeave={()=>setDragOver(null)} onDrop={()=>onDrop(cat.id)}
       style={{border:"1px solid "+(dragOver===cat.id?"#4a9eff":"#1e2535"),borderTop:"none",transition:"border-color 0.15s"}}>
-      <div style={{display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",alignItems:"center",padding:"8px 10px",background:dragOver===cat.id?"#0d1525":"#0f1520"}}>
+      <div style={{display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",alignItems:"center",padding:"10px 12px",background:dragOver===cat.id?"#15203a":"#1a1f2e",borderBottom:"1px solid #2a3050"}}>
         {renaming?(
           <input autoFocus value={rv} onChange={e=>setRv(e.target.value)}
             onBlur={()=>{onCatRename(cat.id,rv);setRenaming(false);}}
             onKeyDown={e=>{if(e.key==="Enter"){onCatRename(cat.id,rv);setRenaming(false);}}}
-            style={{background:"#1e2535",border:"1px solid #4a9eff",borderRadius:4,color:"#e8eaf0",fontSize:12,padding:"3px 6px",marginRight:8}}/>
+            style={{background:"#1e2535",border:"1px solid #4a9eff",borderRadius:4,color:"#e8eaf0",fontSize:13,padding:"3px 6px",marginRight:8}}/>
         ):(
-          <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:11,fontWeight:700,color:"#8892b0",cursor:"text"}} title="Double-tap to rename">{cat.name}</span>
+          <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:13,fontWeight:800,color:"#fff",cursor:"text",letterSpacing:0.3}} title="Double-tap to rename">{cat.name}</span>
         )}
-        <span style={{textAlign:"right",fontSize:11,color:"#e8eaf0",fontWeight:700}}>{fmt(total)}</span>
+        <span style={{textAlign:"right",fontSize:13,color:"#fff",fontWeight:800}}>{fmt(total)}</span>
         {!isGlynOnly&&<><span></span><span></span></>}
         <div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"center"}}>
           <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>✏️</button>
@@ -1057,7 +1057,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.12.2"
+          version: "1.12.3"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1675,7 +1675,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.12.2"
+          version: "1.12.3"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -2440,8 +2440,8 @@ const calcTimesheetTotals = days => {
                     <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>✕</button>
                   </div>
                 )}
-                <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"8px 10px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",border:"1px solid #1e2535",borderBottom:"none"}}>
-                  <span>Bill</span><span style={{textAlign:"right"}}>Total</span><span style={{textAlign:"right"}}>Glyn</span><span style={{textAlign:"right"}}>Hollie</span><span></span>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"10px 12px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:10,fontWeight:700,color:"#7a8499",letterSpacing:1.5,textTransform:"uppercase",border:"1px solid #1e2535",borderBottom:"none"}}>
+                  <span>Bill</span><span style={{textAlign:"right"}}>Total</span><span style={{textAlign:"right",color:"#4a9eff"}}>Glyn</span><span style={{textAlign:"right",color:"#c84aff"}}>Hollie</span><span></span>
                 </div>
                 {cats.map(cat=>(
                   <CatSection key={cat.id} cat={cat} bills={sharedBills} billCats={billCats} isGlynOnly={false}
@@ -2500,8 +2500,8 @@ const calcTimesheetTotals = days => {
                     <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>✕</button>
                   </div>
                 )}
-                <div style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",padding:"8px 10px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",border:"1px solid #ff8c4a",borderBottom:"none"}}>
-                  <span>Bill</span><span style={{textAlign:"right"}}>Amount</span><span></span>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",padding:"10px 12px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:10,fontWeight:700,color:"#7a8499",letterSpacing:1.5,textTransform:"uppercase",border:"1px solid #ff8c4a",borderBottom:"none"}}>
+                  <span>Bill</span><span style={{textAlign:"right",color:"#ff8c4a"}}>Amount</span><span></span>
                 </div>
                 {glynCats.map(cat=>(
                   <CatSection key={cat.id} cat={cat} bills={glynBills} billCats={glynBillCats} isGlynOnly={true}
@@ -3466,7 +3466,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.12.2"
+                        version: "1.12.3"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3809,7 +3809,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.12.2</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.12.3</span>
       </div>
 
     </div>
