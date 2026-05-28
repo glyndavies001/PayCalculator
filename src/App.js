@@ -892,8 +892,10 @@ export default function App() {
     const checkExpiry = (session) => {
       if (!session?.expires_at) { setSessionWarning(false); return; }
       const msToExpiry = session.expires_at * 1000 - Date.now();
-      // Warn only if less than 1 hour remaining (Supabase auto-refreshes ~5min before expiry)
-      setSessionWarning(msToExpiry > 0 && msToExpiry < 60*60*1000);
+      // Only warn if expiry is imminent (< 90 seconds) AND auto-refresh hasn't kicked in.
+      // Supabase auto-refreshes ~60s before expiry on the supabase-js v2 default,
+      // so this warning only appears when refresh has actually failed (e.g. offline).
+      setSessionWarning(msToExpiry > 0 && msToExpiry < 90 * 1000);
     };
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user || null);
@@ -904,11 +906,11 @@ export default function App() {
       setUser(session?.user || null);
       checkExpiry(session);
     });
-    // Recheck every 5 min in case Supabase auto-refreshes
+    // Recheck every 30s when we're close to potential expiry territory
     const interval = setInterval(async () => {
       const { data: { session } } = await supabase.auth.getSession();
       checkExpiry(session);
-    }, 5 * 60 * 1000);
+    }, 30 * 1000);
     return () => { subscription.unsubscribe(); clearInterval(interval); };
   }, []);
 
