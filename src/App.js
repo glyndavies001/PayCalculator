@@ -49,8 +49,29 @@ function getWorkingDaysInMonth(year, month) {
   return count;
 }
 function getCurrentMonthHours() {
+  // Returns standard hours for the current pay period (29th -> 28th)
+  // and uses the applicable contract hours (8h before May 2026, 8.25h after)
   const now = new Date();
-  return Math.round(getWorkingDaysInMonth(now.getFullYear(), now.getMonth()) * 8.25 * 100) / 100;
+  // Determine current pay period start
+  let periodStart, periodEnd;
+  if (now.getDate() >= 29) {
+    periodStart = new Date(now.getFullYear(), now.getMonth(), 29);
+    periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 28);
+  } else {
+    periodStart = new Date(now.getFullYear(), now.getMonth() - 1, 29);
+    periodEnd = new Date(now.getFullYear(), now.getMonth(), 28);
+  }
+  // Count working days in this period (Mon-Fri only)
+  let workDays = 0;
+  for (let d = new Date(periodStart); d <= periodEnd; d.setDate(d.getDate() + 1)) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) workDays++;
+  }
+  // Use the rate config that applies to the pay month (the month containing periodEnd)
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const payMonthStr = months[periodEnd.getMonth()] + " " + periodEnd.getFullYear();
+  const rate = (typeof getRateFor === "function") ? getRateFor(payMonthStr) : { stdDayHrs: 8.25 };
+  return Math.round(workDays * rate.stdDayHrs * 100) / 100;
 }
 
 // Historical pay rates -- used for retroactive calculations
@@ -482,18 +503,6 @@ function groupByFY(history) {
   return Object.values(fyMap).sort((a,b)=>b.fyYear-a.fyYear);
 }
 
-function getCurrentFYOT(history) {
-  const now = new Date();
-  const fyStart = now.getMonth()>=3 ? new Date(now.getFullYear(),3,1) : new Date(now.getFullYear()-1,3,1);
-  return history.filter(r=>{
-    const[mo,yr]=r.month.split(" ");
-    return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;
-  }).reduce((s,r)=>({
-    otPay: s.otPay+(r.ot||0),
-    // estimate OT hours from pay -- weekday OT at £17.40, but we only have £ so show £
-  }),{otPay:0});
-}
-
 function SectionLabel({children}) {
   return <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>{children}</div>;
 }
@@ -619,10 +628,23 @@ function getLeaveYear() {
 const STD_DAY_HRS = 8.25; // standard working day in hours
 
 function effectiveEntitlementDays(baseEntitlement, serviceDays) {
-  // Service days are added June 1st each year, capped at 6
+  // Service days accumulate each year up to a cap of 6.
+  // The current year's allocation kicks in on June 1st.
+  // Before June 1st: only the days earned by the previous June 1st apply.
+  // After June 1st: all days up to the cap apply.
+  // If already at or past the cap, the cap applies all year.
   const now = new Date();
   const juneFirst = new Date(now.getFullYear(), 5, 1);
-  const serviceAdded = now >= juneFirst ? Math.min(serviceDays, 6) : Math.min(Math.max(serviceDays - 1, 0), 6);
+  const cap = 6;
+  const earned = Math.max(0, serviceDays);
+  let serviceAdded;
+  if (earned >= cap) {
+    serviceAdded = cap; // Capped - all year
+  } else if (now >= juneFirst) {
+    serviceAdded = earned; // Current year's day already kicked in
+  } else {
+    serviceAdded = Math.max(0, earned - 1); // Pre-June: this year's day not yet added
+  }
   return baseEntitlement + serviceAdded;
 }
 
@@ -941,7 +963,7 @@ export default function App() {
         if (scens.length > 0) setScenarios(scens);
         if (appSettings) {
           if (appSettings.calc_inputs) setCi(appSettings.calc_inputs);
-          if (appSettings.tier_override) setTierOverrideState(appSettings.tier_override);
+          if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
           if (appSettings.notes) setNotes(appSettings.notes);
           if (appSettings.cats_data) {
             const cd = appSettings.cats_data;
@@ -1061,7 +1083,7 @@ export default function App() {
       setScenarios(scens);
       if (appSettings) {
         if (appSettings.calc_inputs) setCi(appSettings.calc_inputs);
-        if (appSettings.tier_override) setTierOverrideState(appSettings.tier_override);
+        if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
         if (appSettings.notes) setNotes(appSettings.notes);
       }
       if (accData && accData.data) {
@@ -1342,7 +1364,15 @@ export default function App() {
     const payslip = hist.find(h => h.month === tsEntry.month);
     if (!payslip) return; // payslip not yet uploaded -- will recheck when payslip arrives
 
-    const allowance = PAY.bonusTiers[5].allowance; // Tier 6 default; ideally from tierOverride
+    // Infer tier allowance from the payslip's actual bonus amount
+    let tierIdx = 0;
+    for (let i = PAY.bonusTiers.length - 1; i >= 0; i--) {
+      if ((payslip.bonus || 0) >= PAY.bonusTiers[i].bonus && PAY.bonusTiers[i].bonus > 0) {
+        tierIdx = i;
+        break;
+      }
+    }
+    const allowance = PAY.bonusTiers[tierIdx].allowance;
     const expected = calcPay({
       stdHrs: tsEntry.stdHrs,
       otHrs: tsEntry.otHrs,
@@ -1639,7 +1669,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.10.2"
+          version: "1.12.0"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -1777,13 +1807,6 @@ export default function App() {
     setUploadProgress(null);
     setUploading(false);
     e.target.value="";
-  };
-
-  const confirmAdd=()=>{
-    if(!pending)return;
-    const exists=history.find(h=>h.month===pending.month);
-    updH(exists?history.map(h=>h.month===pending.month?pending:h):sortH([...history,pending]));
-    setPending(null);setUploadRes(null);setTab("Payslips");
   };
 
   const hSB=(id,v)=>{const n=parseFloat(v);updSB(sharedBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditSh(null);};
@@ -2306,7 +2329,6 @@ const calcTimesheetTotals = days => {
             <div style={{fontSize:12,color:"#5a6480",fontWeight:600,marginBottom:8}}>Historical Charts</div>
             {[
               {title:"Gross Pay",    key:"gross", color:"#7c6fff"},
-              {title:"Net Pay",      key:"net",   color:"#4a9eff"},
               {title:"Tax Paid",     key:"tax",   color:"#ff6b8a"},
               {title:"NI Paid",      key:"ni",    color:"#ff8c4a"},
               {title:"NEST Pension", key:"nest",  color:"#00c88c"},
@@ -2327,7 +2349,7 @@ const calcTimesheetTotals = days => {
               return (
                 <div style={{...card,marginBottom:12,background:"linear-gradient(135deg,#0a1520,#0d1117)",border:"1px solid #1e2535"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                    <span style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Savings Rate</span>
+                    <span style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Monthly Surplus</span>
                     <span style={{fontSize:22,fontWeight:800,color:srColor}}>{savingsRate}%</span>
                   </div>
                   <div style={{background:"#1e2535",borderRadius:99,height:8,overflow:"hidden",marginBottom:6}}>
@@ -2702,10 +2724,6 @@ const calcTimesheetTotals = days => {
                   </div>
                 ))}
               </div>
-              <div style={{background:"#0d1117",borderRadius:8,padding:"10px 12px",display:"flex",justifyContent:"space-between"}}>
-                <span style={{fontSize:12,color:"#5a6480"}}>This Month's Hours</span>
-                <span style={{fontSize:12,fontWeight:700,color:"#e8eaf0"}}>{getCurrentMonthHours()}hrs</span>
-              </div>
             </div>
             <div style={card}>
               <SectionLabel>Employment Details</SectionLabel>
@@ -2716,7 +2734,7 @@ const calcTimesheetTotals = days => {
                 ["NEST Pension",       "5% employee contribution"],
                 ["Student Loan",       "Plan 2 (30-year write-off)"],
                 ["Tax-Free Allowance", fmt(PAY.taxFreeMonthly)+"/mo"],
-                ["Standard Day",       "8hrs 15min"],
+                ["Standard Day",       (typeof getRateFor === "function" ? (() => { const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; const now = new Date(); const monthStr = months[now.getMonth()] + " " + now.getFullYear(); const rate = getRateFor(monthStr); const h = Math.floor(rate.stdDayHrs); const m = Math.round((rate.stdDayHrs - h) * 60); return h + "hrs" + (m > 0 ? " " + m + "min" : ""); })() : "8hrs 15min")],
                 ["This Month's Hours", getCurrentMonthHours()+"hrs"],
               ].map(([l,v],i,arr)=>(
                 <StatRow key={l} label={l} value={v} last={i===arr.length-1}/>
@@ -2884,6 +2902,70 @@ const calcTimesheetTotals = days => {
               <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>Tax Year Summaries</div>
               <p style={{fontSize:11,color:"#3a4460",margin:0}}>Apr - Mar breakdown from your payslip history</p>
             </div>
+            {(()=>{
+              // Year-over-year comparison
+              const thisYear = new Date().getFullYear();
+              const yearTotals = (yr) => history.filter(r => {
+                const [, y] = r.month.split(" ");
+                return parseInt(y) === yr;
+              }).reduce((acc, r) => ({
+                gross: acc.gross + (r.gross||0),
+                net: acc.net + (r.net||0),
+                tax: acc.tax + (r.tax||0),
+                ni: acc.ni + (r.ni||0),
+                nest: acc.nest + (r.nest||0),
+                sl: acc.sl + (r.sl||0),
+                bonus: acc.bonus + (r.bonus||0),
+                ot: acc.ot + (r.ot||0),
+              }), {gross:0,net:0,tax:0,ni:0,nest:0,sl:0,bonus:0,ot:0});
+
+              const current = yearTotals(thisYear);
+              const previous = yearTotals(thisYear-1);
+              const hasPrev = Object.values(previous).some(v => v > 0);
+              if (!hasPrev) return null;
+
+              const diff = (key) => {
+                const c = current[key], p = previous[key];
+                if (p === 0) return null;
+                const pct = ((c - p) / p) * 100;
+                return { c, p, pct, abs: c - p };
+              };
+
+              const rows = [
+                { label: "Gross", key: "gross", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+                { label: "Net", key: "net", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+                { label: "Tax", key: "tax", colorUp: "#ff4a6a", colorDown: "#00c88c" },
+                { label: "NI", key: "ni", colorUp: "#ff4a6a", colorDown: "#00c88c" },
+                { label: "Student Loan", key: "sl", colorUp: "#ff4a6a", colorDown: "#00c88c" },
+                { label: "NEST", key: "nest", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+                { label: "Bonus", key: "bonus", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+                { label: "Overtime", key: "ot", colorUp: "#00c88c", colorDown: "#ff4a6a" },
+              ];
+
+              return (
+                <div style={card}>
+                  <SectionLabel>Year-on-Year -- {thisYear} vs {thisYear-1}</SectionLabel>
+                  <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>Calendar year totals from payslip history</div>
+                  {rows.map(r => {
+                    const d = diff(r.key);
+                    if (!d) return null;
+                    const up = d.abs > 0;
+                    const color = up ? r.colorUp : r.colorDown;
+                    return (
+                      <div key={r.key} style={{display:"grid",gridTemplateColumns:"80px 1fr 1fr 70px",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12,alignItems:"center"}}>
+                        <span style={{color:"#8892b0"}}>{r.label}</span>
+                        <span style={{textAlign:"right",color:"#5a6480"}}>{fmt(d.p)}</span>
+                        <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{fmt(d.c)}</span>
+                        <span style={{textAlign:"right",color,fontWeight:700,fontSize:11}}>
+                          {up?"^":"v"} {Math.abs(d.pct).toFixed(1)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
             {groupByFY(history).map((fy,i)=>{
               const isCurrent=i===0;
               return(
@@ -2934,7 +3016,6 @@ const calcTimesheetTotals = days => {
           const taken = hoursTakenInYear(leaveLogs, year);
           const remaining = Math.round((entitlement - taken) * 100) / 100;
           const pct = Math.min(100, Math.round((taken / entitlement) * 100));
-          const remainPct = 100 - pct;
           const yearLogs = logsForYear(leaveLogs, year);
           const inp2 = {background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px",width:"100%",boxSizing:"border-box",fontFamily:"inherit"};
 
@@ -3622,70 +3703,6 @@ const calcTimesheetTotals = days => {
             })()}
 
             {(()=>{
-              // Year-over-year comparison
-              const thisYear = new Date().getFullYear();
-              const yearTotals = (yr) => history.filter(r => {
-                const [, y] = r.month.split(" ");
-                return parseInt(y) === yr;
-              }).reduce((acc, r) => ({
-                gross: acc.gross + (r.gross||0),
-                net: acc.net + (r.net||0),
-                tax: acc.tax + (r.tax||0),
-                ni: acc.ni + (r.ni||0),
-                nest: acc.nest + (r.nest||0),
-                sl: acc.sl + (r.sl||0),
-                bonus: acc.bonus + (r.bonus||0),
-                ot: acc.ot + (r.ot||0),
-              }), {gross:0,net:0,tax:0,ni:0,nest:0,sl:0,bonus:0,ot:0});
-
-              const current = yearTotals(thisYear);
-              const previous = yearTotals(thisYear-1);
-              const hasPrev = Object.values(previous).some(v => v > 0);
-              if (!hasPrev) return null;
-
-              const diff = (key) => {
-                const c = current[key], p = previous[key];
-                if (p === 0) return null;
-                const pct = ((c - p) / p) * 100;
-                return { c, p, pct, abs: c - p };
-              };
-
-              const rows = [
-                { label: "Gross", key: "gross", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-                { label: "Net", key: "net", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-                { label: "Tax", key: "tax", colorUp: "#ff4a6a", colorDown: "#00c88c" },
-                { label: "NI", key: "ni", colorUp: "#ff4a6a", colorDown: "#00c88c" },
-                { label: "Student Loan", key: "sl", colorUp: "#ff4a6a", colorDown: "#00c88c" },
-                { label: "NEST", key: "nest", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-                { label: "Bonus", key: "bonus", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-                { label: "Overtime", key: "ot", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-              ];
-
-              return (
-                <div style={card}>
-                  <SectionLabel>Year-on-Year -- {thisYear} vs {thisYear-1}</SectionLabel>
-                  <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>Calendar year totals from payslip history</div>
-                  {rows.map(r => {
-                    const d = diff(r.key);
-                    if (!d) return null;
-                    const up = d.abs > 0;
-                    const color = up ? r.colorUp : r.colorDown;
-                    return (
-                      <div key={r.key} style={{display:"grid",gridTemplateColumns:"80px 1fr 1fr 70px",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12,alignItems:"center"}}>
-                        <span style={{color:"#8892b0"}}>{r.label}</span>
-                        <span style={{textAlign:"right",color:"#5a6480"}}>{fmt(d.p)}</span>
-                        <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{fmt(d.c)}</span>
-                        <span style={{textAlign:"right",color,fontWeight:700,fontSize:11}}>
-                          {up?"^":"v"} {Math.abs(d.pct).toFixed(1)}%
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-
-            {(()=>{
               // OT trend chart - last 12 months
               if (history.length < 3) return null;
               const sorted = sortH(history);
@@ -3738,10 +3755,6 @@ const calcTimesheetTotals = days => {
               const fyRows=history.filter(r=>{const[mo,yr]=r.month.split(" ");return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;});
               const fyOTPay=fyRows.reduce((s,r)=>s+(r.ot||0),0);
               const fyOTHrsEst=Math.round(fyOTPay/PAY.otRate*100)/100;
-              const fyWkndPayEst=fyRows.reduce((s,r)=>{
-                // Weekend OT can't be split from total OT in stored data, show total OT pay
-                return s;
-              },0);
               if(fyRows.length===0) return null;
               return(
                 <div style={{...card,marginBottom:14,border:"1px solid #2a4a4a"}}>
