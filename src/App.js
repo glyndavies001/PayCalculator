@@ -114,16 +114,18 @@ function getAllowanceForBonus(bonus) {
   return tier ? tier.allowance : 0;
 }
 
-function calcPay({ stdHrs, otHrs, weekendOtHrs, bonus, perfAllowance, _allowanceOverride }) {
+function calcPay({ stdHrs, otHrs, weekendOtHrs, bonus, perfAllowance, _allowanceOverride, _rateOverride }) {
   const allowance = _allowanceOverride !== undefined
     ? _allowanceOverride
     : perfAllowance !== undefined
       ? (perfAllowance ? getAllowanceForBonus(bonus) || 1.00 : 0)
       : getAllowanceForBonus(bonus);
-  const rate = PAY.baseRate + allowance;
+  // Allow historical rate override for accurate retroactive calcs
+  const rates = _rateOverride || { baseRate: PAY.baseRate, otRate: PAY.otRate, weekendOtRate: PAY.weekendOtRate };
+  const rate = rates.baseRate + allowance;
   const stdPay = stdHrs * rate;
-  const otPay = otHrs * PAY.otRate;
-  const wkPay = weekendOtHrs * PAY.weekendOtRate;
+  const otPay = otHrs * rates.otRate;
+  const wkPay = weekendOtHrs * rates.weekendOtRate;
   const gross = stdPay + otPay + wkPay + bonus;
   const taxable = Math.max(0, gross - PAY.taxFreeMonthly);
   const tax = taxable * 0.20;
@@ -1053,7 +1055,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.10.1"
+          version: "1.12.1"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1373,12 +1375,15 @@ export default function App() {
       }
     }
     const allowance = PAY.bonusTiers[tierIdx].allowance;
+    // Use historical rates for retroactive accuracy
+    const rateConfig = (typeof getRateFor === "function") ? getRateFor(tsEntry.month) : null;
     const expected = calcPay({
       stdHrs: tsEntry.stdHrs,
       otHrs: tsEntry.otHrs,
       weekendOtHrs: tsEntry.wkndHrs,
       bonus: payslip.bonus, // use actual bonus from payslip
       _allowanceOverride: allowance,
+      _rateOverride: rateConfig ? { baseRate: rateConfig.baseRate, otRate: rateConfig.otRate, weekendOtRate: rateConfig.weekendOtRate } : undefined,
     });
 
     const THRESH = 1.00; // £1 tolerance for rounding
@@ -1601,14 +1606,13 @@ export default function App() {
   React.useEffect(() => {
     if (tab !== "Leave" || !user) return;
     if (!accumulated.days || accumulated.days.length === 0) return;
-    const STD_DAY_HRS_LOCAL = 8.25;
     const holDays = accumulated.days.filter(d=>d.isHoliday);
     if (holDays.length === 0) return;
     const newEntries = holDays.map(d=>{
       const [dd, mm] = d.date.split("/").map(Number);
       const year = new Date().getFullYear();
       const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
-      return { id: genUUID(), date: dateStr, hours: d.isHalf ? STD_DAY_HRS_LOCAL/2 : STD_DAY_HRS_LOCAL, label: "Annual Leave (auto)" };
+      return { id: genUUID(), date: dateStr, hours: d.isHalf ? STD_DAY_HRS/2 : STD_DAY_HRS, label: "Annual Leave (auto)" };
     });
     const existing = new Set(leaveLogs.map(l => l.date));
     const toAdd = newEntries.filter(e => !existing.has(e.date));
@@ -1669,7 +1673,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.12.0"
+          version: "1.12.1"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -1768,7 +1772,7 @@ export default function App() {
 
   const handleUpload=async e=>{
     const files=Array.from(e.target.files);if(!files.length)return;
-    setUploading(true);setUploadRes(null);setUploadErr(null);setPending(null);setMultiResults([]);
+    setUploading(true);setMultiResults([]);
     const results=[];
     const successful=[];
     for(let i=0;i<files.length;i++){
@@ -1779,7 +1783,7 @@ export default function App() {
         const resp=await fetch(API_PROXY,{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:[
+          body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:1000,messages:[{role:"user",content:[
             {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
             {type:"text",text:'Extract payslip data. Return ONLY JSON:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00}\nmonth=payment month/year, ot=total overtime, sl=student loan, nest=pension, bonus=performance bonus.'}
           ]}]})
@@ -1924,7 +1928,7 @@ const calcTimesheetTotals = days => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "claude-sonnet-4-20250514", max_tokens: 1000,
+            model: "claude-sonnet-4-5", max_tokens: 1000,
             messages: [{ role: "user", content: [
               contentBlock,
               { type: "text", text: 'This is a JLI work timesheet email. Extract each row as a JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m","holiday":""},{"date":"DD/MM","day":"Mon","hours":"0h 00m","holiday":"Full Day"}]\nRules:\n- Include ALL rows including weekends, holidays, and zero-hour days\n- "holiday" field: copy the EXACT text from the Holiday column. If the column is empty or shows "-", use "" (empty string). Do NOT normalise or reword it -- preserve whatever text JLI put there (e.g. "Full Day", "Half Day", "Annual Leave", "AL", "H", "0.5" etc)\n- Holiday rows typically have "-" for In/Out and "0h 00m" for hours\n- Use the hours column value exactly as shown' }
@@ -2031,11 +2035,17 @@ const calcTimesheetTotals = days => {
   const missingMonths=useMemo(()=>getMissingMonths(history),[history]);
   const budgetVsActual=useMemo(()=>sortH(history).slice(-12).map(r=>({month:r.month,actual:r.net,estimated:cr.net})),[history,cr.net]);
 
+  const [nowTick, setNowTick] = useState(Date.now());
+  React.useEffect(() => {
+    // Update every hour to keep the payday countdown accurate
+    const timer = setInterval(() => setNowTick(Date.now()), 60 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
   const nextPayday=useMemo(()=>{
     const pd=getNextPayday();
-    const days=Math.ceil((pd-new Date())/(1000*60*60*24));
+    const days=Math.ceil((pd-new Date(nowTick))/(1000*60*60*24));
     return {date:pd.toLocaleDateString("en-GB",{day:"numeric",month:"short"}),days};
-  },[]);
+  },[nowTick]);
 
   const slProgress=useMemo(()=>{
     const elapsed=new Date().getFullYear()-SL_START_YEAR;
@@ -2214,18 +2224,25 @@ const calcTimesheetTotals = days => {
               return(
                 <div style={{...card,marginBottom:12}}>
                   <SectionLabel>Latest vs Previous Month</SectionLabel>
+                  <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>{latest.month} vs {prevMonth.month}</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
                     {[
-                      {label:"Gross",diff:latest.gross-prevMonth.gross,val:fmt(latest.gross)},
-                      {label:"Net",  diff:latest.net-prevMonth.net,    val:fmt(latest.net)},
-                      {label:"Bonus",diff:latest.bonus-prevMonth.bonus,val:fmt(latest.bonus)},
-                    ].map(k=>(
-                      <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
-                        <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>{k.label}</div>
-                        <div style={{fontSize:14,fontWeight:700,color:"#e8eaf0"}}>{k.val}</div>
-                        <div style={{fontSize:11,fontWeight:600,color:k.diff>=0?"#00c88c":"#ff6b8a",marginTop:3}}>{k.diff>=0?"+":""}{fmt(Math.abs(k.diff))}</div>
-                      </div>
-                    ))}
+                      {label:"Gross",diff:latest.gross-prevMonth.gross,prev:prevMonth.gross,val:fmt(latest.gross)},
+                      {label:"Net",  diff:latest.net-prevMonth.net,    prev:prevMonth.net,  val:fmt(latest.net)},
+                      {label:"Bonus",diff:latest.bonus-prevMonth.bonus,prev:prevMonth.bonus,val:fmt(latest.bonus)},
+                    ].map(k=>{
+                      const pct = k.prev > 0 ? Math.round((k.diff/k.prev)*1000)/10 : null;
+                      return (
+                        <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                          <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>{k.label}</div>
+                          <div style={{fontSize:14,fontWeight:700,color:"#e8eaf0"}}>{k.val}</div>
+                          <div style={{fontSize:11,fontWeight:600,color:k.diff>=0?"#00c88c":"#ff6b8a",marginTop:3}}>
+                            {k.diff>=0?"+":""}{fmt(Math.abs(k.diff))}
+                            {pct !== null && <span style={{fontSize:9,marginLeft:4,opacity:0.7}}>({pct>=0?"+":""}{pct}%)</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -2568,11 +2585,11 @@ const calcTimesheetTotals = days => {
               <div style={{marginBottom:10}}>
                 <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Performance Bonus</label>
                 <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
-                  {[0,100,160,240].map(b=>(
-                    <button key={b} onClick={()=>setC("bonus",b)} style={{
-                      background:ci.bonus===b?"#4a9eff":"#1e2535",color:ci.bonus===b?"#fff":"#5a6480",
-                      border:"1px solid "+(ci.bonus===b?"#4a9eff":"#2a3050"),borderRadius:6,padding:"5px 12px",fontSize:12,fontWeight:600,cursor:"pointer"
-                    }}>{b===0?"None":fmt(b)}</button>
+                  {PAY.bonusTiers.map(t=>(
+                    <button key={t.bonus} onClick={()=>setC("bonus",t.bonus)} style={{
+                      background:ci.bonus===t.bonus?"#4a9eff":"#1e2535",color:ci.bonus===t.bonus?"#fff":"#5a6480",
+                      border:"1px solid "+(ci.bonus===t.bonus?"#4a9eff":"#2a3050"),borderRadius:6,padding:"5px 10px",fontSize:11,fontWeight:600,cursor:"pointer"
+                    }}>{t.bonus===0?"None":fmt(t.bonus)}</button>
                   ))}
                 </div>
                 <input type="number" value={ci.bonus} onChange={e=>setC("bonus",parseFloat(e.target.value)||0)} style={numI}/>
@@ -3447,7 +3464,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.10.1"
+                        version: "1.12.1"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3538,7 +3555,7 @@ const calcTimesheetTotals = days => {
                     <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
                       <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
                       <div style={{fontSize:20,fontWeight:700,color:k.accent}}>{k.value}</div>
-                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>this month</div>
+                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>this period</div>
                     </div>
                   ))}
                 </div>
@@ -3790,7 +3807,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.10.5</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.12.1</span>
       </div>
 
     </div>
