@@ -874,6 +874,81 @@ function SyncIndicator() {
   );
 }
 
+// Temporary on-screen PWA diagnostic (no devtools needed). Shows why Chrome
+// may not be offering install. Remove once the install issue is resolved.
+function PwaDebug({ prompt }) {
+  const [open, setOpen] = React.useState(false);
+  const [info, setInfo] = React.useState(null);
+  const run = React.useCallback(async () => {
+    const out = {};
+    out.secure = window.isSecureContext;
+    out.swSupported = "serviceWorker" in navigator;
+    out.standalone = window.matchMedia("(display-mode: standalone)").matches;
+    out.controller = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
+    if (navigator.serviceWorker) {
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        out.regCount = regs.length;
+        const r = regs[0];
+        out.swState = r ? (r.active ? "active" : r.waiting ? "waiting" : r.installing ? "installing" : "none") : "none";
+        out.swScript = r ? ((r.active || r.waiting || r.installing || {}).scriptURL || "") : "";
+        out.swScope = r ? r.scope : "";
+      } catch (e) { out.regErr = String(e.message || e); }
+    } else { out.regErr = "serviceWorker unavailable"; }
+    try {
+      const m = await fetch("/manifest.json", { cache: "no-store" });
+      out.manifestStatus = m.status;
+      out.manifestType = m.headers.get("content-type") || "";
+      const mj = await m.json();
+      out.manifestName = mj.name || "(none)";
+      out.iconCount = (mj.icons || []).length;
+    } catch (e) { out.manifestErr = String(e.message || e); }
+    try {
+      const s = await fetch("/sw.js", { cache: "no-store" });
+      out.swStatus = s.status;
+      out.swType = s.headers.get("content-type") || "";
+    } catch (e) { out.swFetchErr = String(e.message || e); }
+    setInfo(out);
+  }, []);
+  React.useEffect(() => { run(); }, [run]);
+  const Row = ({ k, v }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "2px 0", fontSize: 11 }}>
+      <span style={{ color: "#5a6480" }}>{k}</span>
+      <span style={{ color: "#c8cee0", textAlign: "right", wordBreak: "break-all" }}>{String(v)}</span>
+    </div>
+  );
+  return (
+    <div style={{ margin: "0 14px 16px" }}>
+      <button onClick={() => { setOpen(o => !o); run(); }}
+        style={{ width: "100%", background: "#12161f", border: "1px solid #1e2535", borderRadius: 8, color: "#5a6480", fontSize: 11, fontWeight: 600, padding: "8px", cursor: "pointer" }}>
+        {open ? "\u25be" : "\u25b8"} PWA status
+      </button>
+      {open && info && (
+        <div style={{ background: "#0d1117", border: "1px solid #1e2535", borderTop: "none", borderRadius: "0 0 8px 8px", padding: "8px 12px" }}>
+          <Row k="install prompt fired" v={prompt ? "YES" : "no"} />
+          <Row k="secure context" v={info.secure} />
+          <Row k="SW supported" v={info.swSupported} />
+          <Row k="registrations" v={info.regCount} />
+          <Row k="SW state" v={info.swState} />
+          <Row k="controlling page" v={info.controller} />
+          <Row k="SW script" v={info.swScript} />
+          <Row k="SW scope" v={info.swScope} />
+          <Row k="/sw.js status" v={info.swStatus} />
+          <Row k="/sw.js type" v={info.swType} />
+          <Row k="manifest status" v={info.manifestStatus} />
+          <Row k="manifest type" v={info.manifestType} />
+          <Row k="manifest name" v={info.manifestName} />
+          <Row k="icon count" v={info.iconCount} />
+          {info.regErr && <Row k="reg error" v={info.regErr} />}
+          {info.manifestErr && <Row k="manifest error" v={info.manifestErr} />}
+          {info.swFetchErr && <Row k="sw fetch error" v={info.swFetchErr} />}
+          <button onClick={run} style={{ marginTop: 8, width: "100%", background: "#1a2535", border: "1px solid #4a9eff", borderRadius: 6, color: "#4a9eff", fontSize: 11, fontWeight: 700, padding: "6px", cursor: "pointer" }}>Re-check</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [tab,setTab]=useState("Dashboard");
   const [user,setUser]=useState(null);
@@ -1130,7 +1205,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.18"
+          version: "1.13.19"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1777,7 +1852,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.18"
+          version: "1.13.19"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -3632,7 +3707,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.18"
+                        version: "1.13.19"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3971,8 +4046,10 @@ const calcTimesheetTotals = days => {
 
       </div>
 
+      <PwaDebug prompt={pwaPrompt}/>
+
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.18</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.19</span>
       </div>
 
     </div>
