@@ -882,7 +882,6 @@ export default function App() {
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
   const [uploadProgress,setUploadProgress]=useState(null);
-  const [uploadDebug,setUploadDebug]=useState("");
   const [notes,setNotes]=useState({});
   const [expandedPayslip,setExpandedPayslip]=useState(null);
   const [deleteConfirm,setDeleteConfirm]=useState(null);
@@ -1065,7 +1064,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.12"
+          version: "1.13.13"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1708,7 +1707,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.12"
+          version: "1.13.13"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -1806,15 +1805,10 @@ export default function App() {
   const deletePayslip=month=>{updH(history.filter(h=>h.month!==month));setDeleteConfirm(null);setExpandedPayslip(null);};
 
   const handleUpload=async e=>{
-    try { setUploadDebug("handleUpload entered with "+(e.target?.files?.length||0)+" files at "+new Date().toLocaleTimeString()); } catch(err) {}
     const files=Array.from(e.target.files);
-    if(!files.length) {
-      try { setUploadDebug("handleUpload: 0 files, exiting"); } catch(err) {}
-      return;
-    }
+    if(!files.length) return;
     setUploading(true);
     setMultiResults([]);
-    try { setUploadDebug("handleUpload: starting loop for "+files.length+" file(s)"); } catch(err) {}
     const results=[];
     const successful=[];
     for(let i=0;i<files.length;i++){
@@ -2162,18 +2156,6 @@ const calcTimesheetTotals = days => {
   return (
     <ErrorBoundary>
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
-      {/* DIAGNOSTIC: button that proves React state updates work */}
-      {tab==="Upload" && (
-        <div style={{position:"fixed",bottom:80,left:8,right:8,zIndex:9999,background:"#1a0a2a",border:"2px solid #c84aff",borderRadius:8,padding:10,fontSize:11,fontFamily:"monospace"}}>
-          <div style={{color:"#c84aff",fontWeight:700,marginBottom:6}}>REACT TEST (v1.13.9)</div>
-          <div style={{color:"#fff",marginBottom:6}}>Counter: {uploadDebug || "0"}</div>
-          <button onClick={()=>{
-            const n = String(parseInt(uploadDebug||"0",10)+1);
-            setUploadDebug(n);
-          }} style={{background:"#c84aff",color:"#fff",border:"none",borderRadius:4,padding:"6px 12px",fontSize:11,fontWeight:700,cursor:"pointer",marginRight:6}}>Tap to increment</button>
-          <button onClick={()=>setUploadDebug("")} style={{background:"#5a6480",color:"#fff",border:"none",borderRadius:4,padding:"6px 12px",fontSize:11,cursor:"pointer"}}>Reset</button>
-        </div>
-      )}
       {/* Auto-import toast */}
       {tsAutoMsg && (
         <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:999,background:tsAutoMsg.ok?"#0a1a10":"#1a0a10",border:"1px solid "+(tsAutoMsg.ok?"#00c88c":"#ff4a6a"),borderRadius:10,padding:"10px 18px",fontSize:13,fontWeight:600,color:tsAutoMsg.ok?"#00c88c":"#ff6b8a",boxShadow:"0 4px 20px #000a",whiteSpace:"nowrap"}}>
@@ -3312,33 +3294,14 @@ const calcTimesheetTotals = days => {
             <div style={{fontSize:32,marginBottom:10}}>📄</div>
             <h2 style={{margin:"0 0 6px",fontSize:16,color:"#e8eaf0"}}>Upload Payslips</h2>
             <p style={{fontSize:12,color:"#5a6480",marginBottom:24}}>Select one or more payslip PDFs. They'll be read and added to your history automatically.</p>
-            {uploadDebug && (
-              <div style={{marginBottom:10,padding:10,background:"#1a0a0a",border:"1px solid #5a1a2a",borderRadius:8,fontSize:11,color:"#ff6b8a",fontFamily:"monospace",wordBreak:"break-all"}}>
-                DEBUG: {uploadDebug}
-              </div>
-            )}
-            {uploading ? (
-              <div style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",textAlign:"center"}}>
-                <div style={{fontSize:20,marginBottom:6}}>⏳</div>
-                <div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing..."}</div>
-              </div>
-            ) : (
-              <div style={{background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",textAlign:"center"}}>
-                <div style={{fontSize:20,marginBottom:6}}>☁️</div>
-                <div style={{color:"#4a9eff",fontSize:13,fontWeight:600,marginBottom:14}}>Upload Payslips</div>
-                <input type="file" accept=".pdf,application/pdf,*/*" multiple
-                  onChange={(e)=>{
-                    alert("ONCHANGE FIRED. Files: "+(e.target.files?.length||0));
-                    try { setUploadDebug("onChange at "+new Date().toLocaleTimeString()+" files="+(e.target.files?.length||0)); } catch(err) {}
-                    handleUpload(e);
-                  }}
-                  onInput={(e)=>{
-                    try { setUploadDebug("onInput at "+new Date().toLocaleTimeString()+" files="+(e.target.files?.length||0)); } catch(err) {}
-                  }}
-                  style={{display:"block",margin:"0 auto",color:"#e8eaf0",fontSize:12,maxWidth:"100%"}}/>
-                <div style={{color:"#3a4460",fontSize:11,marginTop:10}}>You can select multiple files at once</div>
-              </div>
-            )}
+            <label htmlFor="payslip-upload-input" style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer",position:"relative"}}>
+              <input id="payslip-upload-input" type="file" accept=".pdf,application/pdf" multiple onChange={handleUpload} disabled={uploading}
+                style={{position:"absolute",left:0,top:0,width:"100%",height:"100%",opacity:0,cursor:uploading?"not-allowed":"pointer"}}/>
+              {uploading
+                ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing..."}</div></div>
+                :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
+              }
+            </label>
             {multiResults.length>0&&(
               <div style={{marginTop:16,textAlign:"left"}}>
                 <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
@@ -3570,7 +3533,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.12"
+                        version: "1.13.13"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3913,7 +3876,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.12</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.13</span>
       </div>
 
     </div>
