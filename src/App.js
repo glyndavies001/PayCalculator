@@ -883,6 +883,7 @@ export default function App() {
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
   const [uploadProgress,setUploadProgress]=useState(null);
+  const [uploadDebug,setUploadDebug]=useState("");
   const [notes,setNotes]=useState({});
   const [expandedPayslip,setExpandedPayslip]=useState(null);
   const [deleteConfirm,setDeleteConfirm]=useState(null);
@@ -1065,7 +1066,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.4"
+          version: "1.13.5"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1708,7 +1709,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.4"
+          version: "1.13.5"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -3295,8 +3296,23 @@ const calcTimesheetTotals = days => {
             <div style={{fontSize:32,marginBottom:10}}>📄</div>
             <h2 style={{margin:"0 0 6px",fontSize:16,color:"#e8eaf0"}}>Upload Payslips</h2>
             <p style={{fontSize:12,color:"#5a6480",marginBottom:24}}>Select one or more payslip PDFs. They'll be read and added to your history automatically.</p>
-            <input ref={payslipFileInputRef} type="file" accept=".pdf" multiple onChange={handleUpload} style={{display:"none"}} disabled={uploading}/>
-            <button onClick={()=>payslipFileInputRef.current?.click()} disabled={uploading} style={{display:"block",width:"100%",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer",color:"inherit",font:"inherit"}}>
+            {uploadDebug && (
+              <div style={{marginBottom:10,padding:10,background:"#1a0a0a",border:"1px solid #5a1a2a",borderRadius:8,fontSize:11,color:"#ff6b8a",fontFamily:"monospace",wordBreak:"break-all"}}>
+                DEBUG: {uploadDebug}
+              </div>
+            )}
+            <input ref={payslipFileInputRef} type="file" accept=".pdf" multiple onChange={(e)=>{
+              try { setUploadDebug("onChange fired with "+(e.target.files?.length||0)+" file(s) at "+new Date().toLocaleTimeString()); } catch(err) {}
+              handleUpload(e);
+            }} style={{display:"none"}}/>
+            <button onClick={()=>{
+              try { setUploadDebug("Button tapped at "+new Date().toLocaleTimeString()+", ref="+(payslipFileInputRef.current?"OK":"NULL")); } catch(err) {}
+              if (payslipFileInputRef.current) {
+                payslipFileInputRef.current.click();
+              } else {
+                try { setUploadDebug("ERROR: payslipFileInputRef.current is null"); } catch(err) {}
+              }
+            }} style={{display:"block",width:"100%",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:"pointer",color:"inherit",font:"inherit"}}>
               {uploading
                 ?<div><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing..."}</div></div>
                 :<div><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
@@ -3533,7 +3549,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.4"
+                        version: "1.13.5"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3876,7 +3892,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.4</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.5</span>
       </div>
 
     </div>
