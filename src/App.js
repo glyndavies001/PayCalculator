@@ -1065,7 +1065,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.8"
+          version: "1.13.9"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1708,7 +1708,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.8"
+          version: "1.13.9"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -2162,6 +2162,18 @@ const calcTimesheetTotals = days => {
   return (
     <ErrorBoundary>
     <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
+      {/* DIAGNOSTIC: button that proves React state updates work */}
+      {tab==="Upload" && (
+        <div style={{position:"fixed",bottom:80,left:8,right:8,zIndex:9999,background:"#1a0a2a",border:"2px solid #c84aff",borderRadius:8,padding:10,fontSize:11,fontFamily:"monospace"}}>
+          <div style={{color:"#c84aff",fontWeight:700,marginBottom:6}}>REACT TEST (v1.13.9)</div>
+          <div style={{color:"#fff",marginBottom:6}}>Counter: {uploadDebug || "0"}</div>
+          <button onClick={()=>{
+            const n = String(parseInt(uploadDebug||"0",10)+1);
+            setUploadDebug(n);
+          }} style={{background:"#c84aff",color:"#fff",border:"none",borderRadius:4,padding:"6px 12px",fontSize:11,fontWeight:700,cursor:"pointer",marginRight:6}}>Tap to increment</button>
+          <button onClick={()=>setUploadDebug("")} style={{background:"#5a6480",color:"#fff",border:"none",borderRadius:4,padding:"6px 12px",fontSize:11,cursor:"pointer"}}>Reset</button>
+        </div>
+      )}
       {/* Auto-import toast */}
       {tsAutoMsg && (
         <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:999,background:tsAutoMsg.ok?"#0a1a10":"#1a0a10",border:"1px solid "+(tsAutoMsg.ok?"#00c88c":"#ff4a6a"),borderRadius:10,padding:"10px 18px",fontSize:13,fontWeight:600,color:tsAutoMsg.ok?"#00c88c":"#ff6b8a",boxShadow:"0 4px 20px #000a",whiteSpace:"nowrap"}}>
@@ -3552,7 +3564,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.8"
+                        version: "1.13.9"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3895,7 +3907,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.8</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.9</span>
       </div>
 
     </div>
