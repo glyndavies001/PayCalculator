@@ -483,8 +483,9 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const APP_VERSION = "1.13.20";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
-const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload"];
+const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
 const SL_START_YEAR = 2019;
 const SL_WRITEOFF_YEAR = 2049;
@@ -876,75 +877,86 @@ function SyncIndicator() {
 
 // Temporary on-screen PWA diagnostic (no devtools needed). Shows why Chrome
 // may not be offering install. Remove once the install issue is resolved.
-function PwaDebug({ prompt }) {
-  const [open, setOpen] = React.useState(false);
+function DiagProbe({ prompt, user }) {
   const [info, setInfo] = React.useState(null);
+  const [backup, setBackup] = React.useState("checking...");
   const run = React.useCallback(async () => {
     const out = {};
     out.secure = window.isSecureContext;
     out.swSupported = "serviceWorker" in navigator;
     out.standalone = window.matchMedia("(display-mode: standalone)").matches;
     out.controller = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
+    out.online = navigator.onLine;
+    out.host = window.location.host;
     if (navigator.serviceWorker) {
       try {
         const regs = await navigator.serviceWorker.getRegistrations();
         out.regCount = regs.length;
         const r = regs[0];
         out.swState = r ? (r.active ? "active" : r.waiting ? "waiting" : r.installing ? "installing" : "none") : "none";
-        out.swScript = r ? ((r.active || r.waiting || r.installing || {}).scriptURL || "") : "";
         out.swScope = r ? r.scope : "";
       } catch (e) { out.regErr = String(e.message || e); }
     } else { out.regErr = "serviceWorker unavailable"; }
     try {
       const m = await fetch("/manifest.json", { cache: "no-store" });
       out.manifestStatus = m.status;
-      out.manifestType = m.headers.get("content-type") || "";
       const mj = await m.json();
-      out.manifestName = mj.name || "(none)";
       out.iconCount = (mj.icons || []).length;
     } catch (e) { out.manifestErr = String(e.message || e); }
     try {
       const s = await fetch("/sw.js", { cache: "no-store" });
       out.swStatus = s.status;
-      out.swType = s.headers.get("content-type") || "";
     } catch (e) { out.swFetchErr = String(e.message || e); }
     setInfo(out);
   }, []);
   React.useEffect(() => { run(); }, [run]);
-  const Row = ({ k, v }) => (
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "2px 0", fontSize: 11 }}>
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!user) { setBackup("not signed in"); return; }
+      try {
+        const b = await db.getBackups(user.id, 1);
+        if (!alive) return;
+        if (b && b.length) {
+          const d = new Date(b[0].created_at);
+          setBackup(d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }));
+        } else { setBackup("none found"); }
+      } catch (e) { if (alive) setBackup("error"); }
+    })();
+    return () => { alive = false; };
+  }, [user]);
+
+  const host = info ? info.host : "";
+  const isLocal = /localhost|127\.0\.0\.1/.test(host);
+  const isProd = /pay-calculator-iota\.vercel\.app/.test(host);
+  const urlBad = !!info && !isLocal && !isProd;
+
+  const Row = ({ k, v, warn }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "3px 0", fontSize: 11.5 }}>
       <span style={{ color: "#5a6480" }}>{k}</span>
-      <span style={{ color: "#c8cee0", textAlign: "right", wordBreak: "break-all" }}>{String(v)}</span>
+      <span style={{ color: warn ? "#ff6b8a" : "#c8cee0", textAlign: "right", wordBreak: "break-all", fontWeight: warn ? 700 : 400 }}>{String(v)}</span>
     </div>
   );
+
+  if (!info) return <div style={{ fontSize: 11, color: "#5a6480" }}>Checking...</div>;
   return (
-    <div style={{ margin: "0 14px 16px" }}>
-      <button onClick={() => { setOpen(o => !o); run(); }}
-        style={{ width: "100%", background: "#12161f", border: "1px solid #1e2535", borderRadius: 8, color: "#5a6480", fontSize: 11, fontWeight: 600, padding: "8px", cursor: "pointer" }}>
-        {open ? "\u25be" : "\u25b8"} PWA status
-      </button>
-      {open && info && (
-        <div style={{ background: "#0d1117", border: "1px solid #1e2535", borderTop: "none", borderRadius: "0 0 8px 8px", padding: "8px 12px" }}>
-          <Row k="install prompt fired" v={prompt ? "YES" : "no"} />
-          <Row k="secure context" v={info.secure} />
-          <Row k="SW supported" v={info.swSupported} />
-          <Row k="registrations" v={info.regCount} />
-          <Row k="SW state" v={info.swState} />
-          <Row k="controlling page" v={info.controller} />
-          <Row k="SW script" v={info.swScript} />
-          <Row k="SW scope" v={info.swScope} />
-          <Row k="/sw.js status" v={info.swStatus} />
-          <Row k="/sw.js type" v={info.swType} />
-          <Row k="manifest status" v={info.manifestStatus} />
-          <Row k="manifest type" v={info.manifestType} />
-          <Row k="manifest name" v={info.manifestName} />
-          <Row k="icon count" v={info.iconCount} />
-          {info.regErr && <Row k="reg error" v={info.regErr} />}
-          {info.manifestErr && <Row k="manifest error" v={info.manifestErr} />}
-          {info.swFetchErr && <Row k="sw fetch error" v={info.swFetchErr} />}
-          <button onClick={run} style={{ marginTop: 8, width: "100%", background: "#1a2535", border: "1px solid #4a9eff", borderRadius: 6, color: "#4a9eff", fontSize: 11, fontWeight: 700, padding: "6px", cursor: "pointer" }}>Re-check</button>
-        </div>
-      )}
+    <div>
+      <Row k="deploy URL" v={info.host} warn={urlBad} />
+      {urlBad && <div style={{ fontSize: 10.5, color: "#ff6b8a", padding: "2px 0 4px" }}>This isn't the stable URL. Use pay-calculator-iota.vercel.app so install &amp; updates work.</div>}
+      <Row k="install prompt fired" v={prompt ? "YES" : "no"} />
+      <Row k="installed (standalone)" v={info.standalone} />
+      <Row k="online" v={info.online} warn={!info.online} />
+      <Row k="last backup" v={backup} />
+      <Row k="secure context" v={info.secure} warn={!info.secure} />
+      <Row k="SW state" v={info.swState} warn={info.swState !== "active"} />
+      <Row k="controlling page" v={info.controller} warn={!info.controller} />
+      <Row k="/sw.js status" v={info.swStatus} warn={info.swStatus !== 200} />
+      <Row k="manifest status" v={info.manifestStatus} warn={info.manifestStatus !== 200} />
+      <Row k="icon count" v={info.iconCount} warn={!info.iconCount} />
+      {info.regErr && <Row k="reg error" v={info.regErr} warn />}
+      {info.manifestErr && <Row k="manifest error" v={info.manifestErr} warn />}
+      {info.swFetchErr && <Row k="sw fetch error" v={info.swFetchErr} warn />}
+      <button onClick={run} style={{ marginTop: 8, width: "100%", background: "#1a2535", border: "1px solid #4a9eff", borderRadius: 6, color: "#4a9eff", fontSize: 11, fontWeight: 700, padding: "8px", cursor: "pointer" }}>Re-check</button>
     </div>
   );
 }
@@ -1205,7 +1217,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.19"
+          version: APP_VERSION
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1852,7 +1864,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.19"
+          version: APP_VERSION
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -3707,7 +3719,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.19"
+                        version: APP_VERSION
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -4044,12 +4056,64 @@ const calcTimesheetTotals = days => {
           </div>
         )}
 
+        {tab==="Diag"&&(
+          <div>
+            <div style={{...card,marginBottom:12}}>
+              <div style={hdr}>App</div>
+              {(()=>{
+                const now=new Date();
+                let ps,pe;
+                if(now.getDate()>=29){ps=new Date(now.getFullYear(),now.getMonth(),29);pe=new Date(now.getFullYear(),now.getMonth()+1,28);}
+                else{ps=new Date(now.getFullYear(),now.getMonth()-1,29);pe=new Date(now.getFullYear(),now.getMonth(),28);}
+                const fmt=(d)=>d.toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
+                return (
+                  <>
+                    <div style={row}><span style={{color:"#5a6480"}}>Version</span><span style={{color:"#c8cee0",fontWeight:700}}>v{APP_VERSION}</span></div>
+                    <div style={row}><span style={{color:"#5a6480"}}>Signed in</span><span style={{color:"#c8cee0",wordBreak:"break-all"}}>{user?user.email:"no"}</span></div>
+                    <div style={row}><span style={{color:"#5a6480"}}>Pay period</span><span style={{color:"#c8cee0"}}>{fmt(ps)} – {fmt(pe)}</span></div>
+                    <div style={{...row,borderBottom:"none"}}><span style={{color:"#5a6480"}}>Standard hours</span><span style={{color:"#c8cee0",fontWeight:700}}>{getCurrentMonthHours()}h</span></div>
+                  </>
+                );
+              })()}
+            </div>
+
+            <div style={{...card,marginBottom:12}}>
+              <div style={hdr}>Data</div>
+              {[
+                ["Payslips",history.length],
+                ["Shared bills",sharedBills.length],
+                ["Glyn bills",glynBills.length],
+                ["Categories",cats.length+glynCats.length],
+                ["Monthly timesheets",monthlyTs.length],
+                ["Leave logs",leaveLogs.length],
+                ["Scenarios",scenarios.length],
+                ["Accumulator days",(accumulated.days||[]).length],
+              ].map((pair,i,a)=>(
+                <div key={pair[0]} style={i===a.length-1?{...row,borderBottom:"none"}:row}>
+                  <span style={{color:"#5a6480"}}>{pair[0]}</span>
+                  <span style={{color:"#c8cee0",fontWeight:700}}>{pair[1]}</span>
+                </div>
+              ))}
+              <div style={{fontSize:11,color:"#3a4460",marginTop:8,paddingTop:8,borderTop:"1px solid #1a1f2e"}}>
+                Accumulator OT {accumulated.otHrs||0}h · weekend {accumulated.weekendOtHrs||0}h
+              </div>
+            </div>
+
+            <div style={{...card,marginBottom:12}}>
+              <div style={hdr}>PWA / Sync</div>
+              <DiagProbe prompt={pwaPrompt} user={user}/>
+            </div>
+
+            <button onClick={()=>{haptic();setTab("Timesheet");}} style={{width:"100%",background:"#1a2535",border:"1px solid #2a3a5a",borderRadius:8,color:"#a0c0ff",fontSize:12,fontWeight:600,padding:"12px",cursor:"pointer"}}>
+              Timesheet queue controls →
+            </button>
+          </div>
+        )}
+
       </div>
 
-      <PwaDebug prompt={pwaPrompt}/>
-
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.19</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>{`VAULTED v${APP_VERSION}`}</span>
       </div>
 
     </div>
