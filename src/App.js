@@ -77,12 +77,15 @@ function getCurrentMonthHours() {
 // Returns a key identifying the current pay period (29th -> 28th),
 // e.g. "2026-06" for the period that ends 28 Jun 2026. Used to detect when a
 // new pay period has begun so the Pay Calculator can reset.
-function getCurrentPayPeriodKey() {
-  const now = new Date();
-  const periodEnd = now.getDate() >= 29
-    ? new Date(now.getFullYear(), now.getMonth() + 1, 28)
-    : new Date(now.getFullYear(), now.getMonth(), 28);
+function payPeriodKeyForDate(date) {
+  const d = new Date(date);
+  const periodEnd = d.getDate() >= 29
+    ? new Date(d.getFullYear(), d.getMonth() + 1, 28)
+    : new Date(d.getFullYear(), d.getMonth(), 28);
   return periodEnd.getFullYear() + "-" + String(periodEnd.getMonth() + 1).padStart(2, "0");
+}
+function getCurrentPayPeriodKey() {
+  return payPeriodKeyForDate(new Date());
 }
 
 // When a saved set of Pay Calculator inputs belongs to a previous pay period,
@@ -436,12 +439,10 @@ function getNextPayday() {
 }
 
 function shouldResetTimesheet(tsLastUpload) {
+  // Reset when the accumulator's data belongs to an earlier pay period (29th -> 28th)
+  // than the current one. Keyed to the fixed pay-period boundary, not the variable payday.
   if (!tsLastUpload) return false;
-  const last = new Date(tsLastUpload);
-  const now = new Date();
-  const payday = getPayday(last.getFullYear(), last.getMonth());
-  // If payday has passed since last upload, reset
-  return now > payday && now.getMonth() !== last.getMonth();
+  return payPeriodKeyForDate(tsLastUpload) !== getCurrentPayPeriodKey();
 }
 
 // Check if a Monday reminder should show
@@ -1035,6 +1036,11 @@ export default function App() {
             const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
             setAccumulated(empty);
             await db.saveAccumulator(user.id, empty, null);
+            // New pay period: clear the calculator's variable hours and recompute standard hours.
+            setC("otHrs", 0);
+            setC("weekendOtHrs", 0);
+            setC("holidayHrs", 0);
+            setC("stdHrs", getCurrentMonthHours());
           } else if (accData.data) {
             setAccumulated(accData.data);
             setTsLastUpload(accData.lastUpload);
@@ -1098,7 +1104,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.15"
+          version: "1.13.16"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1746,7 +1752,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.15"
+          version: "1.13.16"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -1898,6 +1904,17 @@ export default function App() {
       const last=successful[successful.length-1];
       setC("bonus", last.bonus);
       setC("perfAllowance", last.perfAllowance);
+      // A payslip means a pay period has closed. If the accumulator still holds a
+      // previous period's hours, reset it and clear the calculator now.
+      if (shouldResetTimesheet(accumulatedRef.current.lastUpload)) {
+        const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+        setAccumulated(empty);
+        if (user) db.saveAccumulator(user.id, empty, null);
+        setC("otHrs", 0);
+        setC("weekendOtHrs", 0);
+        setC("holidayHrs", 0);
+        setC("stdHrs", getCurrentMonthHours());
+      }
     }
     setMultiResults(results);
     setUploadProgress(null);
@@ -3572,7 +3589,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.15"
+                        version: "1.13.16"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3915,7 +3932,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.15</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.16</span>
       </div>
 
     </div>
