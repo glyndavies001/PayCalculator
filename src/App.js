@@ -78,9 +78,9 @@ function getCurrentMonthHours() {
 // Each entry: { from: "YYYY-MM" (inclusive), baseRate, otRate, weekendOtRate, stdDayHrs, stdMonthlyHrs }
 const PAY_HISTORY = [
   // Contract until April 2026: £14/hr base, 8-hour days
-  { from: "2022-04", baseRate: 14.00, otRate: 16.80, weekendOtRate: 21.00, stdDayHrs: 8.00, stdMonthlyHrs: 160 },
+  { from: "2022-04", baseRate: 14.00, otRate: 17.50, weekendOtRate: 21.00, stdDayHrs: 8.00, stdMonthlyHrs: 160 },
   // From May 2026 (paid end of May): £14.50/hr base, 8.25-hour days
-  { from: "2026-05", baseRate: 14.50, otRate: 17.40, weekendOtRate: 21.75, stdDayHrs: 8.25, stdMonthlyHrs: 165 },
+  { from: "2026-05", baseRate: 14.50, otRate: 18.125, weekendOtRate: 21.75, stdDayHrs: 8.25, stdMonthlyHrs: 165 },
 ];
 
 // Returns the rate config that applies to a given payslip month
@@ -95,7 +95,7 @@ function getRateFor(monthStr) {
 }
 
 const PAY = {
-  baseRate: 14.50, otRate: 17.40, weekendOtRate: 21.75,
+  baseRate: 14.50, otRate: 18.125, weekendOtRate: 21.75,
   taxFreeMonthly: 1047.50, niPrimaryThreshold: 1048, niUpperThreshold: 4189,
   slThreshold: 2372, nestRate: 0.05, taxCode: "C1257L", niCategory: "A",
   bonusTiers: [
@@ -114,7 +114,7 @@ function getAllowanceForBonus(bonus) {
   return tier ? tier.allowance : 0;
 }
 
-function calcPay({ stdHrs, otHrs, weekendOtHrs, bonus, perfAllowance, _allowanceOverride, _rateOverride }) {
+function calcPay({ stdHrs, otHrs, weekendOtHrs, holidayHrs, bonus, perfAllowance, _allowanceOverride, _rateOverride }) {
   const allowance = _allowanceOverride !== undefined
     ? _allowanceOverride
     : perfAllowance !== undefined
@@ -123,7 +123,9 @@ function calcPay({ stdHrs, otHrs, weekendOtHrs, bonus, perfAllowance, _allowance
   // Allow historical rate override for accurate retroactive calcs
   const rates = _rateOverride || { baseRate: PAY.baseRate, otRate: PAY.otRate, weekendOtRate: PAY.weekendOtRate };
   const rate = rates.baseRate + allowance;
-  const stdPay = stdHrs * rate;
+  // Holiday hours are paid at the same base+allowance rate as worked hours
+  const holHrs = holidayHrs || 0;
+  const stdPay = (stdHrs + holHrs) * rate;
   const otPay = otHrs * rates.otRate;
   const wkPay = weekendOtHrs * rates.weekendOtRate;
   const gross = stdPay + otPay + wkPay + bonus;
@@ -245,10 +247,10 @@ const SK = {
 const db = {
   async getPayslips(userId) {
     const { data } = await supabase.from("payslips").select("*").eq("user_id", userId).order("date", { ascending: false });
-    return (data || []).map(r => ({ month: r.month, date: r.date, gross: r.gross, net: r.net, tax: r.tax, ni: r.ni, nest: r.nest, sl: r.sl, bonus: r.bonus, ot: r.ot, note: r.note }));
+    return (data || []).map(r => ({ month: r.month, date: r.date, gross: r.gross, net: r.net, tax: r.tax, ni: r.ni, nest: r.nest, sl: r.sl, bonus: r.bonus, ot: r.ot, weekendOt: r.weekend_ot, holidayPay: r.holiday_pay, hourlyAllowance: r.hourly_allowance, regularPay: r.regular_pay, note: r.note }));
   },
   async upsertPayslip(userId, p) {
-    await supabase.from("payslips").upsert({ user_id: userId, month: p.month, date: p.date, gross: p.gross, net: p.net, tax: p.tax, ni: p.ni, nest: p.nest, sl: p.sl, bonus: p.bonus, ot: p.ot, note: p.note || null }, { onConflict: "user_id,month" });
+    await supabase.from("payslips").upsert({ user_id: userId, month: p.month, date: p.date, gross: p.gross, net: p.net, tax: p.tax, ni: p.ni, nest: p.nest, sl: p.sl, bonus: p.bonus, ot: p.ot, weekend_ot: p.weekendOt || 0, holiday_pay: p.holidayPay || 0, hourly_allowance: p.hourlyAllowance || 0, regular_pay: p.regularPay || 0, note: p.note || null }, { onConflict: "user_id,month" });
   },
   async deletePayslip(userId, month) {
     await supabase.from("payslips").delete().eq("user_id", userId).eq("month", month);
@@ -832,7 +834,7 @@ export default function App() {
   const [billCats,setBillCats]=useState(()=>load(SK.billCats,{}));
   const [glynCats,setGlynCats]=useState(()=>load(SK.glynCats,[]));
   const [glynBillCats,setGlynBillCats]=useState(()=>load(SK.glynBillCats,{}));
-  const defCalc={stdHrs:getCurrentMonthHours(),otHrs:0,weekendOtHrs:0,bonus:240,perfAllowance:true};
+  const defCalc={stdHrs:getCurrentMonthHours(),otHrs:0,weekendOtHrs:0,holidayHrs:0,bonus:240,perfAllowance:true};
   const [ci,setCi]=useState(defCalc);
   const [editSh,setEditSh]=useState(null);
   const [editGl,setEditGl]=useState(null);
@@ -1005,6 +1007,9 @@ export default function App() {
             // Sync Pay Calc with loaded accumulator
             setC("otHrs", accData.data.otHrs || 0);
             setC("weekendOtHrs", accData.data.weekendOtHrs || 0);
+            // Compute holiday hours from days
+            const holHrs = (accData.data.days || []).reduce((s, d) => s + (d.isHoliday ? (d.isHalf ? STD_DAY_HRS/2 : STD_DAY_HRS) : 0), 0);
+            setC("holidayHrs", Math.round(holHrs * 100) / 100);
           }
         }
 
@@ -1038,6 +1043,8 @@ export default function App() {
             setTsLastUpload(acc.lastUpload);
             setC("otHrs", acc.data.otHrs || 0);
             setC("weekendOtHrs", acc.data.weekendOtHrs || 0);
+            const holHrs = (acc.data.days || []).reduce((s, d) => s + (d.isHoliday ? (d.isHalf ? STD_DAY_HRS/2 : STD_DAY_HRS) : 0), 0);
+            setC("holidayHrs", Math.round(holHrs * 100) / 100);
           }
         });
       })
@@ -1057,7 +1064,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.12.3"
+          version: "1.13.1"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1266,9 +1273,12 @@ export default function App() {
       const now = new Date().toISOString();
       const newAcc = { otHrs: totalOtHrs, weekendOtHrs: totalWkndHrs, weeks: [...(prev.weeks||[]), { uploadedAt: now }], days: merged, lastUpload: now };
       if (user) db.saveAccumulator(user.id, newAcc, now).catch(e => console.error("Acc save failed:", e));
-      // Update Pay Calc with new OT totals
+      // Calculate total holiday hours from days
+      const totalHolHrs = merged.reduce((s, d) => s + (d.isHoliday ? (d.isHalf ? STD_DAY_HRS/2 : STD_DAY_HRS) : 0), 0);
+      // Update Pay Calc with new OT and holiday totals
       setC("otHrs", totalOtHrs);
       setC("weekendOtHrs", totalWkndHrs);
+      setC("holidayHrs", Math.round(totalHolHrs * 100) / 100);
       return newAcc;
     });
 
@@ -1306,7 +1316,8 @@ export default function App() {
       saveMonthlyTs(entry);
 
       // Cross-check: does the monthly timesheet match the accumulated weekly timesheets?
-      checkMonthlyVsWeekly(days, accumulatedRef.current.days || [], meta);
+      // Pass enrichedDays so isHoliday/hrs are already normalised, matching the accumulator format
+      checkMonthlyVsWeekly(enrichedDays, accumulatedRef.current.days || [], meta);
     }
   }, [user]);
 
@@ -1383,6 +1394,7 @@ export default function App() {
       stdHrs: tsEntry.stdHrs,
       otHrs: tsEntry.otHrs,
       weekendOtHrs: tsEntry.wkndHrs,
+      holidayHrs: tsEntry.holHrs, // include paid holiday hours
       bonus: payslip.bonus, // use actual bonus from payslip
       _allowanceOverride: allowance,
       _rateOverride: rateConfig ? { baseRate: rateConfig.baseRate, otRate: rateConfig.otRate, weekendOtRate: rateConfig.weekendOtRate } : undefined,
@@ -1456,26 +1468,46 @@ export default function App() {
     const mismatches = [];
     let monthlyTotal = 0, weeklyTotal = 0;
 
+    // Calculate the date threshold: ignore monthly days from the last 8 days
+    // (weeklies arrive on Mondays for the previous week, so the current incomplete week
+    // and any pending Monday email shouldn't be flagged as missing yet)
+    const now = new Date();
+    const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 8);
+
     monthlyDays.forEach(md => {
-      const mh = md.isHoliday ? 0 : pHM(md.hours);
+      // Use already-enriched hrs/isHoliday if present, else parse from raw fields
+      const mh = (md.hrs !== undefined) ? md.hrs : (md.isHoliday ? 0 : pHM(md.hours));
       monthlyTotal += mh;
+
+      // Parse the day's date to see if it's recent enough to skip
+      const [dd, mm] = (md.date || "").split("/").map(Number);
+      let dayDate = null;
+      if (dd && mm) {
+        const yr = now.getFullYear();
+        // Handle month-end rollover (Dec dates in Jan etc.)
+        const guessedYear = (mm > now.getMonth() + 1) ? yr - 1 : yr;
+        dayDate = new Date(guessedYear, mm - 1, dd);
+      }
+      const isRecent = dayDate && dayDate > cutoff;
+
       const wd = weeklyByDate[md.date];
       if (!wd) {
-        // Day in monthly but missing from weekly
-        if (mh > 0 || md.isHoliday) {
+        // Day in monthly but missing from weekly - only flag if older than the recent window
+        // Skip holidays from missing-weekly flagging (they auto-log to leave separately)
+        if ((mh > 0 || md.isHoliday) && !isRecent && !md.isHoliday) {
           mismatches.push({ date: md.date, day: md.day, type: "missing_weekly", monthly: md.hours, weekly: "—" });
         }
         return;
       }
-      const wh = wd.isHoliday ? 0 : pHM(wd.hours);
+      const wh = (wd.hrs !== undefined) ? wd.hrs : (wd.isHoliday ? 0 : pHM(wd.hours));
       weeklyTotal += wh;
+      // If either says it's a holiday, skip the comparison (both should match in JLI's data)
+      if (md.isHoliday || wd.isHoliday) {
+        return;
+      }
       // Compare hours (allow 1 minute = 0.02h tolerance for rounding)
       if (Math.abs(mh - wh) > 0.02) {
         mismatches.push({ date: md.date, day: md.day, type: "hours_differ", monthly: md.hours, weekly: wd.hours });
-      }
-      // Compare holiday status
-      else if (!!md.isHoliday !== !!wd.isHoliday) {
-        mismatches.push({ date: md.date, day: md.day, type: "holiday_differ", monthly: md.isHoliday?(md.holiday||"Holiday"):"Worked", weekly: wd.isHoliday?(wd.holiday||"Holiday"):"Worked" });
       }
     });
 
@@ -1566,13 +1598,13 @@ export default function App() {
   const [showScenarios, setShowScenarios] = useState(false);
   const saveScenario = async () => {
     if (!scenarioName.trim()) return;
-    const s = { id: genUUID(), name: scenarioName.trim(), stdHrs: ci.stdHrs, otHrs: ci.otHrs, weekendOtHrs: ci.weekendOtHrs, bonus: ci.bonus, tierOverride: tierOverride };
+    const s = { id: genUUID(), name: scenarioName.trim(), stdHrs: ci.stdHrs, otHrs: ci.otHrs, weekendOtHrs: ci.weekendOtHrs, holidayHrs: ci.holidayHrs, bonus: ci.bonus, tierOverride: tierOverride };
     if (user) await trackSave(() => db.upsertScenario(user.id, s));
     setScenarios(prev => [...prev.filter(x=>x.name!==s.name), s]);
     setScenarioName("");
   };
   const loadScenario = (s) => {
-    setCi(prev => { const n={...prev,stdHrs:s.stdHrs,otHrs:s.otHrs,weekendOtHrs:s.weekendOtHrs,bonus:s.bonus}; if(user) db.saveAppSettings(user.id,{calc_inputs:n}); return n; });
+    setCi(prev => { const n={...prev,stdHrs:s.stdHrs,otHrs:s.otHrs,weekendOtHrs:s.weekendOtHrs,holidayHrs:s.holidayHrs||0,bonus:s.bonus}; if(user) db.saveAppSettings(user.id,{calc_inputs:n}); return n; });
     saveTierOverride(s.tierOverride);
     setShowScenarios(false);
   };
@@ -1675,7 +1707,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.12.3"
+          version: "1.13.1"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -1787,7 +1819,7 @@ export default function App() {
           headers:{"Content-Type":"application/json"},
           body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:1000,messages:[{role:"user",content:[
             {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
-            {type:"text",text:'Extract payslip data. Return ONLY JSON:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00}\nmonth=payment month/year, ot=total overtime, sl=student loan, nest=pension, bonus=performance bonus.'}
+            {type:"text",text:'Extract payslip data. Return ONLY valid JSON with this exact shape:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00,"weekendOt":0.00,"holidayPay":0.00,"hourlyAllowance":0.00,"regularPay":0.00}\n\nField definitions:\n- month: payment month/year (e.g. "May 2026")\n- date: payment date as DD/MM/YYYY\n- gross: TOTAL gross pay (sum of all earnings)\n- net: net pay (gross minus all deductions)\n- tax: PAYE total\n- ni: Employee National Insurance Contribution\n- nest: NEST pension contribution\n- sl: Student Loan deduction\n- bonus: Performance Bonus line only\n- ot: Overtime line ONLY (not weekend hours, not holiday pay)\n- weekendOt: Weekend Hours line (£ amount)\n- holidayPay: SUM of all "Holiday" earning lines (could be multiple, may include "Holiday (Contracted Staff YYYY)")\n- hourlyAllowance: SUM of all "Hourly Allowance" lines including any with brackets like "Hourly Allowance (Hols)"\n- regularPay: Regular Hours line (£ amount only)\nIf a field is not present, use 0.00. Return JSON only, no markdown, no explanation.'}
           ]}]})
         });
         const data=await resp.json();
@@ -2583,6 +2615,13 @@ const calcTimesheetTotals = days => {
                     style={{width:"100%",accentColor:"#00c88c",marginBottom:6,cursor:"pointer"}}/>
                   <input type="number" value={ci.weekendOtHrs} onChange={e=>setC("weekendOtHrs",parseFloat(e.target.value)||0)} style={numI}/>
                 </div>
+                <div>
+                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Holiday Hrs <span style={{color:"#3a4460"}}>paid @ base rate</span></span><span style={{color:"#ffb84a",fontWeight:700}}>{ci.holidayHrs||0}h</span></label>
+                  <input type="range" min={0} max={80} step={0.25} value={ci.holidayHrs||0}
+                    onChange={e=>setC("holidayHrs",parseFloat(e.target.value))}
+                    style={{width:"100%",accentColor:"#ffb84a",marginBottom:6,cursor:"pointer"}}/>
+                  <input type="number" value={ci.holidayHrs||0} onChange={e=>setC("holidayHrs",parseFloat(e.target.value)||0)} style={numI}/>
+                </div>
               </div>
               <div style={{marginBottom:10}}>
                 <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Performance Bonus</label>
@@ -3115,12 +3154,20 @@ const calcTimesheetTotals = days => {
                   history.forEach(p => {
                     const rate = getRateFor(p.month);
                     if (!rate) return;
-                    // Calculate worked hours from gross - bonus - ot (the OT pay portion)
-                    // gross = (standard_hrs + leave_hrs) x baseRate + ot + bonus
-                    // So: standard_hrs + leave_hrs = (gross - ot - bonus) / baseRate
-                    const baseLeavePay = p.gross - (p.ot || 0) - (p.bonus || 0);
-                    const totalPaidHrs = baseLeavePay / rate.baseRate;
-                    const leaveHrs = Math.max(0, totalPaidHrs - rate.stdMonthlyHrs);
+                    let leaveHrs = 0;
+                    if (p.holidayPay && p.holidayPay > 0) {
+                      // New payslip format: direct holiday pay -> hours
+                      leaveHrs = p.holidayPay / rate.baseRate;
+                    } else {
+                      // Legacy fallback: estimate from gross minus everything else
+                      const ot = (p.ot || 0);
+                      const wknd = (p.weekendOt || 0);
+                      const hrlyAllowance = (p.hourlyAllowance || 0);
+                      const bonus = (p.bonus || 0);
+                      const baseLeavePay = p.gross - ot - wknd - hrlyAllowance - bonus;
+                      const totalPaidHrs = baseLeavePay / rate.baseRate;
+                      leaveHrs = Math.max(0, totalPaidHrs - rate.stdMonthlyHrs);
+                    }
 
                     if (leaveHrs >= 0.5) {
                       // Round to nearest 0.25 (quarter hour)
@@ -3466,7 +3513,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.12.3"
+                        version: "1.13.1"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3809,7 +3856,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.12.3</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.1</span>
       </div>
 
     </div>
