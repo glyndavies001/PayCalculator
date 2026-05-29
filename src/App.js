@@ -1130,7 +1130,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.17"
+          version: "1.13.18"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1777,7 +1777,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.17"
+          version: "1.13.18"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -1860,6 +1860,18 @@ export default function App() {
   const updGBC=bc=>{
     setGlynBillCats(bc);
     if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats, glynCats, glynBillCats: bc } }));
+  };
+  // Restore all four category maps from a backup in ONE write, so the saves
+  // can't race and overwrite each other (that race stopped restores sticking).
+  const restoreCats = d => {
+    const cd = {
+      cats: d.cats !== undefined ? d.cats : cats,
+      billCats: d.billCats !== undefined ? d.billCats : billCats,
+      glynCats: d.glynCats !== undefined ? d.glynCats : glynCats,
+      glynBillCats: d.glynBillCats !== undefined ? d.glynBillCats : glynBillCats,
+    };
+    setCats(cd.cats); setBillCats(cd.billCats); setGlynCats(cd.glynCats); setGlynBillCats(cd.glynBillCats);
+    if (user) db.saveAppSettings(user.id, { cats_data: cd });
   };
   const setC=useCallback((k,v)=>{
     setCi(p=>{
@@ -1955,8 +1967,17 @@ export default function App() {
   const addGlBill=()=>{if(!newGl.name.trim())return;updGB([...glynBills,{id:Date.now(),name:newGl.name.trim(),total:parseFloat(newGl.total)||0}]);setNewGl({name:"",total:""});setAddGl(false);};
   const addCategory=(isGlyn)=>{if(!newCat.trim())return;const c={id:Date.now(),name:newCat.trim()};isGlyn?updGC([...glynCats,c]):updC([...cats,c]);setNewCat("");setAddingCat(null);};
   const delCat=(id,isGlyn)=>{
-    if(isGlyn){updGC(glynCats.filter(c=>c.id!==id));const bc={...glynBillCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});updGBC(bc);}
-    else{updC(cats.filter(c=>c.id!==id));const bc={...billCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});updBC(bc);}
+    if(isGlyn){
+      const nc=glynCats.filter(c=>c.id!==id);
+      const bc={...glynBillCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});
+      setGlynCats(nc);setGlynBillCats(bc);
+      if(user) db.saveAppSettings(user.id,{cats_data:{cats,billCats,glynCats:nc,glynBillCats:bc}});
+    } else {
+      const nc=cats.filter(c=>c.id!==id);
+      const bc={...billCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});
+      setCats(nc);setBillCats(bc);
+      if(user) db.saveAppSettings(user.id,{cats_data:{cats:nc,billCats:bc,glynCats,glynBillCats}});
+    }
   };
   const renCat=(id,name,isGlyn)=>{isGlyn?updGC(glynCats.map(c=>c.id===id?{...c,name}:c)):updC(cats.map(c=>c.id===id?{...c,name}:c));};
   const drop=(catId,isGlyn)=>{
@@ -1984,10 +2005,7 @@ export default function App() {
         if(d.history){updH(d.history);}
         if(d.sharedBills){updSB(d.sharedBills);}
         if(d.glynBills){updGB(d.glynBills);}
-        if(d.cats){updC(d.cats);}
-        if(d.billCats){updBC(d.billCats);}
-        if(d.glynCats){updGC(d.glynCats);}
-        if(d.glynBillCats){updGBC(d.glynBillCats);}
+        restoreCats(d);
         if(d.calcInputs){setCi(d.calcInputs);if(user) db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
         if(d.notes){updNotes(d.notes);}
         setImportMsg("✓ Data restored successfully");
@@ -3614,7 +3632,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.17"
+                        version: "1.13.18"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3643,10 +3661,7 @@ const calcTimesheetTotals = days => {
                             if(d.history){updH(d.history);}
                             if(d.sharedBills){updSB(d.sharedBills);}
                             if(d.glynBills){updGB(d.glynBills);}
-                            if(d.cats){updC(d.cats);}
-                            if(d.billCats){updBC(d.billCats);}
-                            if(d.glynCats){updGC(d.glynCats);}
-                            if(d.glynBillCats){updGBC(d.glynBillCats);}
+                            restoreCats(d);
                             if(d.calcInputs){setCi(d.calcInputs);if(user)db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
                             if(d.notes){updNotes(d.notes);}
                             if(d.leaveLogs){setLeaveLogs(d.leaveLogs);}
@@ -3957,7 +3972,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.17</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.18</span>
       </div>
 
     </div>
