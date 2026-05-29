@@ -1065,7 +1065,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.11"
+          version: "1.13.12"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1708,7 +1708,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.11"
+          version: "1.13.12"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -3328,12 +3328,12 @@ const calcTimesheetTotals = days => {
                 <div style={{color:"#4a9eff",fontSize:13,fontWeight:600,marginBottom:14}}>Upload Payslips</div>
                 <input type="file" accept=".pdf,application/pdf,*/*" multiple
                   onChange={(e)=>{
+                    alert("ONCHANGE FIRED. Files: "+(e.target.files?.length||0));
                     try { setUploadDebug("onChange at "+new Date().toLocaleTimeString()+" files="+(e.target.files?.length||0)); } catch(err) {}
                     handleUpload(e);
                   }}
                   onInput={(e)=>{
                     try { setUploadDebug("onInput at "+new Date().toLocaleTimeString()+" files="+(e.target.files?.length||0)); } catch(err) {}
-                    handleUpload(e);
                   }}
                   style={{display:"block",margin:"0 auto",color:"#e8eaf0",fontSize:12,maxWidth:"100%"}}/>
                 <div style={{color:"#3a4460",fontSize:11,marginTop:10}}>You can select multiple files at once</div>
@@ -3570,7 +3570,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.11"
+                        version: "1.13.12"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3913,7 +3913,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.11</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.12</span>
       </div>
 
     </div>
