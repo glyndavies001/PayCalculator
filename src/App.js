@@ -1064,7 +1064,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.2"
+          version: "1.13.3"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1707,7 +1707,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.2"
+          version: "1.13.3"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -1805,8 +1805,14 @@ export default function App() {
   const deletePayslip=month=>{updH(history.filter(h=>h.month!==month));setDeleteConfirm(null);setExpandedPayslip(null);};
 
   const handleUpload=async e=>{
-    const files=Array.from(e.target.files);if(!files.length)return;
-    setUploading(true);setMultiResults([]);
+    // DEBUG: confirm handler is called
+    try { setMultiResults([{ok:false, name:"DEBUG", err:"handleUpload was called with "+(e.target.files?.length||0)+" files"}]); } catch {}
+    const files=Array.from(e.target.files);
+    if(!files.length) {
+      try { setMultiResults([{ok:false, name:"DEBUG", err:"No files in event.target.files"}]); } catch {}
+      return;
+    }
+    setUploading(true);
     const results=[];
     const successful=[];
     for(let i=0;i<files.length;i++){
@@ -3530,7 +3536,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.2"
+                        version: "1.13.3"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3873,7 +3879,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.2</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.3</span>
       </div>
 
     </div>
