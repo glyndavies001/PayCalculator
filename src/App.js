@@ -74,6 +74,35 @@ function getCurrentMonthHours() {
   return Math.round(workDays * rate.stdDayHrs * 100) / 100;
 }
 
+// Returns a key identifying the current pay period (29th -> 28th),
+// e.g. "2026-06" for the period that ends 28 Jun 2026. Used to detect when a
+// new pay period has begun so the Pay Calculator can reset.
+function getCurrentPayPeriodKey() {
+  const now = new Date();
+  const periodEnd = now.getDate() >= 29
+    ? new Date(now.getFullYear(), now.getMonth() + 1, 28)
+    : new Date(now.getFullYear(), now.getMonth(), 28);
+  return periodEnd.getFullYear() + "-" + String(periodEnd.getMonth() + 1).padStart(2, "0");
+}
+
+// When a saved set of Pay Calculator inputs belongs to a previous pay period,
+// reset the variable fields (OT, weekend OT, holiday) to 0 and recompute the
+// standard hours for the new period. Tier settings (bonus, allowance) carry
+// forward. Returns the original object unchanged if it is already current.
+function applyPeriodRollover(saved) {
+  if (!saved) return saved;
+  const currentKey = getCurrentPayPeriodKey();
+  if (saved.period === currentKey) return saved;
+  return {
+    ...saved,
+    stdHrs: getCurrentMonthHours(),
+    otHrs: 0,
+    weekendOtHrs: 0,
+    holidayHrs: 0,
+    period: currentKey,
+  };
+}
+
 // Historical pay rates -- used for retroactive calculations
 // Each entry: { from: "YYYY-MM" (inclusive), baseRate, otRate, weekendOtRate, stdDayHrs, stdMonthlyHrs }
 const PAY_HISTORY = [
@@ -834,7 +863,7 @@ export default function App() {
   const [billCats,setBillCats]=useState(()=>load(SK.billCats,{}));
   const [glynCats,setGlynCats]=useState(()=>load(SK.glynCats,[]));
   const [glynBillCats,setGlynBillCats]=useState(()=>load(SK.glynBillCats,{}));
-  const defCalc={stdHrs:getCurrentMonthHours(),otHrs:0,weekendOtHrs:0,holidayHrs:0,bonus:240,perfAllowance:true};
+  const defCalc={stdHrs:getCurrentMonthHours(),otHrs:0,weekendOtHrs:0,holidayHrs:0,bonus:240,perfAllowance:true,period:getCurrentPayPeriodKey()};
   const [ci,setCi]=useState(defCalc);
   const [editSh,setEditSh]=useState(null);
   const [editGl,setEditGl]=useState(null);
@@ -968,7 +997,12 @@ export default function App() {
         if (discs.length > 0) setDiscrepancies(discs);
         if (scens.length > 0) setScenarios(scens);
         if (appSettings) {
-          if (appSettings.calc_inputs) setCi(appSettings.calc_inputs);
+          if (appSettings.calc_inputs) {
+            const rolled = applyPeriodRollover(appSettings.calc_inputs);
+            setCi(rolled);
+            // New pay period detected: persist the reset so it sticks across reloads.
+            if (rolled !== appSettings.calc_inputs) db.saveAppSettings(user.id, { calc_inputs: rolled });
+          }
           if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
           if (appSettings.notes) setNotes(appSettings.notes);
           if (appSettings.cats_data) {
@@ -1064,7 +1098,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.14"
+          version: "1.13.15"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1093,7 +1127,12 @@ export default function App() {
       setDiscrepancies(discs);
       setScenarios(scens);
       if (appSettings) {
-        if (appSettings.calc_inputs) setCi(appSettings.calc_inputs);
+        if (appSettings.calc_inputs) {
+          const rolled = applyPeriodRollover(appSettings.calc_inputs);
+          setCi(rolled);
+          // New pay period detected: persist the reset so it sticks across reloads.
+          if (rolled !== appSettings.calc_inputs) db.saveAppSettings(user.id, { calc_inputs: rolled });
+        }
         if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
         if (appSettings.notes) setNotes(appSettings.notes);
       }
@@ -1707,7 +1746,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.14"
+          version: "1.13.15"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -3533,7 +3572,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.14"
+                        version: "1.13.15"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3876,7 +3915,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.14</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.15</span>
       </div>
 
     </div>
