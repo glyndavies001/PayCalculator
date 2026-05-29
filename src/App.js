@@ -661,6 +661,28 @@ function getLeaveYear() {
 
 const STD_DAY_HRS = 8.25; // standard working day in hours
 
+// Sum the calculator-relevant hours from only the days that fall in the current
+// pay period (29th -> 28th). The accumulator can hold leftover days from a
+// previous period, so the calculator always recomputes from in-period days.
+function currentPeriodTotals(days) {
+  const cur = getCurrentPayPeriodKey();
+  const now = new Date();
+  const inPeriod = (days || []).filter(d => {
+    if (!d || !d.date) return false;
+    const [dd, mm] = String(d.date).split("/").map(Number);
+    if (!dd || !mm) return false;
+    // day.date carries no year; infer it, handling the Dec -> Jan pay-period wrap.
+    let yr = now.getFullYear();
+    if (now.getMonth() === 0 && mm === 12) yr -= 1;
+    else if (now.getMonth() === 11 && mm === 1) yr += 1;
+    return payPeriodKeyForDate(new Date(yr, mm - 1, dd)) === cur;
+  });
+  const otHrs = Math.round(inPeriod.reduce((s, d) => s + (d.otHrs || 0), 0) * 100) / 100;
+  const weekendOtHrs = Math.round(inPeriod.reduce((s, d) => s + (d.wkOtHrs || 0), 0) * 100) / 100;
+  const holidayHrs = Math.round(inPeriod.reduce((s, d) => s + (d.isHoliday ? (d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS) : 0), 0) * 100) / 100;
+  return { otHrs, weekendOtHrs, holidayHrs, days: inPeriod };
+}
+
 function effectiveEntitlementDays(baseEntitlement, serviceDays) {
   // Service days accumulate each year up to a cap of 6.
   // The current year's allocation kicks in on June 1st.
@@ -1042,14 +1064,18 @@ export default function App() {
             setC("holidayHrs", 0);
             setC("stdHrs", getCurrentMonthHours());
           } else if (accData.data) {
-            setAccumulated(accData.data);
+            // Count only the current pay period's days; drop leftovers from a prior period.
+            const t = currentPeriodTotals(accData.data.days);
+            const cleaned = { ...accData.data, days: t.days, otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs };
+            setAccumulated(cleaned);
             setTsLastUpload(accData.lastUpload);
-            // Sync Pay Calc with loaded accumulator
-            setC("otHrs", accData.data.otHrs || 0);
-            setC("weekendOtHrs", accData.data.weekendOtHrs || 0);
-            // Compute holiday hours from days
-            const holHrs = (accData.data.days || []).reduce((s, d) => s + (d.isHoliday ? (d.isHalf ? STD_DAY_HRS/2 : STD_DAY_HRS) : 0), 0);
-            setC("holidayHrs", Math.round(holHrs * 100) / 100);
+            setC("otHrs", t.otHrs);
+            setC("weekendOtHrs", t.weekendOtHrs);
+            setC("holidayHrs", t.holidayHrs);
+            // Persist the cleaned accumulator so the stale days don't linger.
+            if (t.days.length !== (accData.data.days || []).length) {
+              db.saveAccumulator(user.id, cleaned, accData.lastUpload);
+            }
           }
         }
 
@@ -1079,12 +1105,12 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "timesheet_accumulator", filter: "user_id=eq."+user.id }, () => {
         db.getAccumulator(user.id).then(acc => {
           if (acc && acc.data) {
-            setAccumulated(acc.data);
+            const t = currentPeriodTotals(acc.data.days);
+            setAccumulated({ ...acc.data, days: t.days, otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs });
             setTsLastUpload(acc.lastUpload);
-            setC("otHrs", acc.data.otHrs || 0);
-            setC("weekendOtHrs", acc.data.weekendOtHrs || 0);
-            const holHrs = (acc.data.days || []).reduce((s, d) => s + (d.isHoliday ? (d.isHalf ? STD_DAY_HRS/2 : STD_DAY_HRS) : 0), 0);
-            setC("holidayHrs", Math.round(holHrs * 100) / 100);
+            setC("otHrs", t.otHrs);
+            setC("weekendOtHrs", t.weekendOtHrs);
+            setC("holidayHrs", t.holidayHrs);
           }
         });
       })
@@ -1104,7 +1130,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.16"
+          version: "1.13.17"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1318,12 +1344,11 @@ export default function App() {
       const now = new Date().toISOString();
       const newAcc = { otHrs: totalOtHrs, weekendOtHrs: totalWkndHrs, weeks: [...(prev.weeks||[]), { uploadedAt: now }], days: merged, lastUpload: now };
       if (user) db.saveAccumulator(user.id, newAcc, now).catch(e => console.error("Acc save failed:", e));
-      // Calculate total holiday hours from days
-      const totalHolHrs = merged.reduce((s, d) => s + (d.isHoliday ? (d.isHalf ? STD_DAY_HRS/2 : STD_DAY_HRS) : 0), 0);
-      // Update Pay Calc with new OT and holiday totals
-      setC("otHrs", totalOtHrs);
-      setC("weekendOtHrs", totalWkndHrs);
-      setC("holidayHrs", Math.round(totalHolHrs * 100) / 100);
+      // Update Pay Calc, counting only the current pay period's days.
+      const pt = currentPeriodTotals(merged);
+      setC("otHrs", pt.otHrs);
+      setC("weekendOtHrs", pt.weekendOtHrs);
+      setC("holidayHrs", pt.holidayHrs);
       return newAcc;
     });
 
@@ -1752,7 +1777,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.16"
+          version: "1.13.17"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -3589,7 +3614,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.16"
+                        version: "1.13.17"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3932,7 +3957,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.16</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.17</span>
       </div>
 
     </div>
