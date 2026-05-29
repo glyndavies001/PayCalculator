@@ -1064,7 +1064,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.1"
+          version: "1.13.2"
         };
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
@@ -1707,7 +1707,7 @@ export default function App() {
           monthlyTs, discrepancies, scenarios,
           accumulated, tierOverride,
           exportedAt: new Date().toISOString(),
-          version: "1.13.1"
+          version: "1.13.2"
         };
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
@@ -1817,25 +1817,42 @@ export default function App() {
         const resp=await fetch(API_PROXY,{
           method:"POST",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:1000,messages:[{role:"user",content:[
+          body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:1500,messages:[{role:"user",content:[
             {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
             {type:"text",text:'Extract payslip data. Return ONLY valid JSON with this exact shape:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00,"weekendOt":0.00,"holidayPay":0.00,"hourlyAllowance":0.00,"regularPay":0.00}\n\nField definitions:\n- month: payment month/year (e.g. "May 2026")\n- date: payment date as DD/MM/YYYY\n- gross: TOTAL gross pay (sum of all earnings)\n- net: net pay (gross minus all deductions)\n- tax: PAYE total\n- ni: Employee National Insurance Contribution\n- nest: NEST pension contribution\n- sl: Student Loan deduction\n- bonus: Performance Bonus line only\n- ot: Overtime line ONLY (not weekend hours, not holiday pay)\n- weekendOt: Weekend Hours line (£ amount)\n- holidayPay: SUM of all "Holiday" earning lines (could be multiple, may include "Holiday (Contracted Staff YYYY)")\n- hourlyAllowance: SUM of all "Hourly Allowance" lines including any with brackets like "Hourly Allowance (Hols)"\n- regularPay: Regular Hours line (£ amount only)\nIf a field is not present, use 0.00. Return JSON only, no markdown, no explanation.'}
           ]}]})
         });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error("API " + resp.status + ": " + text.slice(0, 200));
+        }
         const data=await resp.json();
-        if(data.error) throw new Error(data.error.message);
-        const parsed=JSON.parse(data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim());
+        if(data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+        if(!data.content) throw new Error("No content in API response: " + JSON.stringify(data).slice(0, 200));
+        const rawText = data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim();
+        let parsed;
+        try { parsed = JSON.parse(rawText); }
+        catch(jsonErr) { throw new Error("Could not parse JSON: " + rawText.slice(0, 200)); }
+        if(!parsed.month) throw new Error("Missing 'month' field in extracted data");
         // Allowance is active whenever a performance bonus was paid (they're the same tier)
         parsed.perfAllowance = (parsed.bonus || 0) > 0;
+        // Save to Supabase
+        if (user) {
+          try { await trackSave(db.upsertPayslip(user.id, parsed)); }
+          catch(dbErr) { console.error("Supabase save failed:", dbErr); }
+        }
         successful.push(parsed);
         results.push({ok:true,parsed});
-      } catch(err){results.push({ok:false,name:file.name,err:err.message||"Unknown error"});}
+      } catch(err){
+        console.error("Upload error for", file.name, err);
+        results.push({ok:false,name:file.name,err:err.message||String(err)||"Unknown error"});
+      }
     }
     if(successful.length>0){
       setHistory(prev=>{
         let h=[...prev];
         successful.forEach(p=>{const exists=h.find(x=>x.month===p.month);h=exists?h.map(x=>x.month===p.month?p:x):[...h,p];});
-        const sorted=sortH(h);return sorted;
+        return sortH(h);
       });
       const last=successful[successful.length-1];
       setC("bonus", last.bonus);
@@ -3513,7 +3530,7 @@ const calcTimesheetTotals = days => {
                         monthlyTs, discrepancies, scenarios,
                         accumulated, tierOverride,
                         exportedAt: new Date().toISOString(),
-                        version: "1.13.1"
+                        version: "1.13.2"
                       };
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
@@ -3856,7 +3873,7 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.1</span>
+        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>VAULTED v1.13.2</span>
       </div>
 
     </div>
