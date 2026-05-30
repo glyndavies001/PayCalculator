@@ -540,7 +540,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.24";
+const APP_VERSION = "1.13.25";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -731,6 +731,20 @@ function haptic(style = "light") {
   if (style === "heavy")  navigator.vibrate([30, 10, 30]);
   if (style === "success")navigator.vibrate([10, 50, 30]);
   if (style === "error")  navigator.vibrate([40, 20, 40, 20, 40]);
+}
+
+// True if the touch is inside a scrollable element that is NOT at its top --
+// in that case we must let the list scroll and NOT start pull-to-refresh.
+function scrollableAncestorScrolled(el) {
+  let node = el;
+  while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
+    if (node.scrollHeight > node.clientHeight + 1) {
+      const oy = getComputedStyle(node).overflowY;
+      if ((oy === "auto" || oy === "scroll") && node.scrollTop > 0) return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
 }
 
 // -- Annual leave helpers ------------------------------------------------------
@@ -2463,8 +2477,8 @@ const calcTimesheetTotals = days => {
   return (
     <ErrorBoundary>
     <div
-      onTouchStart={e=>{ if(window.scrollY<=0&&!showMore&&!moveBill){pullStart.current=e.touches[0].clientY;pullDist.current=0;} else {pullStart.current=null;} }}
-      onTouchMove={e=>{ if(pullStart.current==null||refreshing)return; const dy=e.touches[0].clientY-pullStart.current; if(dy>0&&window.scrollY<=0){const d=Math.min(dy*0.5,90);pullDist.current=d;setPullY(d);} else if(dy<=0&&pullDist.current!==0){pullDist.current=0;setPullY(0);} }}
+      onTouchStart={e=>{ if(window.scrollY<=0&&!showMore&&!moveBill&&!scrollableAncestorScrolled(e.target)){pullStart.current=e.touches[0].clientY;pullDist.current=0;} else {pullStart.current=null;} }}
+      onTouchMove={e=>{ if(pullStart.current==null||refreshing)return; if(window.scrollY>0){pullStart.current=null;pullDist.current=0;if(pullY!==0)setPullY(0);return;} const dy=e.touches[0].clientY-pullStart.current; if(dy>12){const d=Math.min((dy-12)*0.5,90);pullDist.current=d;setPullY(d);} else if(pullDist.current!==0){pullDist.current=0;setPullY(0);} }}
       onTouchEnd={()=>{ if(pullStart.current==null)return; const d=pullDist.current; pullStart.current=null; pullDist.current=0; if(d>70&&!refreshing){setRefreshing(true);setPullY(0);haptic("medium");Promise.resolve(refreshAll&&refreshAll()).finally(()=>setTimeout(()=>setRefreshing(false),600));} else {setPullY(0);} }}
       style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:"calc(96px + env(safe-area-inset-bottom))"}}>
       {/* Auto-import toast */}
