@@ -39,6 +39,17 @@ const SUPABASE_URL = "https://yfbarahnwcrwewtpithb.supabase.co";
 const SUPABASE_KEY = "sb_publishable_ItUAbr04KIijWuO-JWgDNg_J5YCwaqK";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// Headers for /api/claude calls -- include the Supabase login token so the proxy
+// can reject anyone who isn't signed in.
+async function authHeaders() {
+  const h = { "Content-Type": "application/json" };
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session && session.access_token) h.Authorization = "Bearer " + session.access_token;
+  } catch (e) {}
+  return h;
+}
+
 function getWorkingDaysInMonth(year, month) {
   const days = new Date(year, month + 1, 0).getDate();
   let count = 0;
@@ -278,108 +289,143 @@ const SK = {
 // Supabase DB helpers
 const db = {
   async getPayslips(userId) {
-    const { data } = await supabase.from("payslips").select("*").eq("user_id", userId).order("date", { ascending: false });
+    const { data, error } = await supabase.from("payslips").select("*").eq("user_id", userId).order("date", { ascending: false });
+    reportDbError("getPayslips", error);
     return (data || []).map(r => ({ month: r.month, date: r.date, gross: r.gross, net: r.net, tax: r.tax, ni: r.ni, nest: r.nest, sl: r.sl, bonus: r.bonus, ot: r.ot, weekendOt: r.weekend_ot, holidayPay: r.holiday_pay, hourlyAllowance: r.hourly_allowance, regularPay: r.regular_pay, note: r.note }));
   },
   async upsertPayslip(userId, p) {
-    await supabase.from("payslips").upsert({ user_id: userId, month: p.month, date: p.date, gross: p.gross, net: p.net, tax: p.tax, ni: p.ni, nest: p.nest, sl: p.sl, bonus: p.bonus, ot: p.ot, weekend_ot: p.weekendOt || 0, holiday_pay: p.holidayPay || 0, hourly_allowance: p.hourlyAllowance || 0, regular_pay: p.regularPay || 0, note: p.note || null }, { onConflict: "user_id,month" });
+    const { error } = await supabase.from("payslips").upsert({ user_id: userId, month: p.month, date: p.date, gross: p.gross, net: p.net, tax: p.tax, ni: p.ni, nest: p.nest, sl: p.sl, bonus: p.bonus, ot: p.ot, weekend_ot: p.weekendOt || 0, holiday_pay: p.holidayPay || 0, hourly_allowance: p.hourlyAllowance || 0, regular_pay: p.regularPay || 0, note: p.note || null }, { onConflict: "user_id,month" });
+    reportDbError("upsertPayslip", error);
   },
   async deletePayslip(userId, month) {
-    await supabase.from("payslips").delete().eq("user_id", userId).eq("month", month);
+    const { error } = await supabase.from("payslips").delete().eq("user_id", userId).eq("month", month);
+    reportDbError("deletePayslip", error);
   },
   async getSharedBills() {
-    const { data } = await supabase.from("shared_bills").select("*").order("bill_id");
+    const { data, error } = await supabase.from("shared_bills").select("*").order("bill_id");
+    reportDbError("getSharedBills", error);
     return data || [];
   },
   async upsertSharedBill(b) {
-    await supabase.from("shared_bills").upsert({ bill_id: b.id, name: b.name, total: b.total, is_car_glyn: b.isCarGlyn || false }, { onConflict: "bill_id" });
+    const { error } = await supabase.from("shared_bills").upsert({ bill_id: b.id, name: b.name, total: b.total, is_car_glyn: b.isCarGlyn || false }, { onConflict: "bill_id" });
+    reportDbError("upsertSharedBill", error);
   },
   async deleteSharedBill(billId) {
-    await supabase.from("shared_bills").delete().eq("bill_id", billId);
+    const { error } = await supabase.from("shared_bills").delete().eq("bill_id", billId);
+    reportDbError("deleteSharedBill", error);
   },
   async getGlynBills() {
-    const { data } = await supabase.from("glyn_bills").select("*").order("bill_id");
+    const { data, error } = await supabase.from("glyn_bills").select("*").order("bill_id");
+    reportDbError("getGlynBills", error);
     return data || [];
   },
   async upsertGlynBill(b) {
-    await supabase.from("glyn_bills").upsert({ bill_id: b.id, name: b.name, total: b.total }, { onConflict: "bill_id" });
+    const { error } = await supabase.from("glyn_bills").upsert({ bill_id: b.id, name: b.name, total: b.total }, { onConflict: "bill_id" });
+    reportDbError("upsertGlynBill", error);
   },
   async deleteGlynBill(billId) {
-    await supabase.from("glyn_bills").delete().eq("bill_id", billId);
+    const { error } = await supabase.from("glyn_bills").delete().eq("bill_id", billId);
+    reportDbError("deleteGlynBill", error);
   },
   async getLeaveLogs(userId) {
-    const { data } = await supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false });
+    const { data, error } = await supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false });
+    reportDbError("getLeaveLogs", error);
     return (data || []).map(r => ({ id: r.id, date: r.date, hours: r.hours, label: r.label }));
   },
   async upsertLeaveLog(userId, entry) {
-    await supabase.from("leave_logs").upsert({ id: entry.id, user_id: userId, date: entry.date, hours: entry.hours, label: entry.label || null });
+    const { error } = await supabase.from("leave_logs").upsert({ id: entry.id, user_id: userId, date: entry.date, hours: entry.hours, label: entry.label || null });
+    reportDbError("upsertLeaveLog", error);
   },
   async deleteLeaveLog(id) {
-    await supabase.from("leave_logs").delete().eq("id", id);
+    const { error } = await supabase.from("leave_logs").delete().eq("id", id);
+    reportDbError("deleteLeaveLog", error);
   },
   async getLeaveSettings(userId) {
-    const { data } = await supabase.from("leave_settings").select("*").eq("user_id", userId).single();
+    const { data, error } = await supabase.from("leave_settings").select("*").eq("user_id", userId).single();
+    if (error && error.code !== "PGRST116") reportDbError("getLeaveSettings", error);
     return data ? { baseEntitlement: data.base_entitlement, serviceDays: data.service_days, startYear: data.start_year } : null;
   },
   async saveLeaveSettings(userId, s) {
-    await supabase.from("leave_settings").upsert({ user_id: userId, base_entitlement: s.baseEntitlement, service_days: s.serviceDays, start_year: s.startYear, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    const { error } = await supabase.from("leave_settings").upsert({ user_id: userId, base_entitlement: s.baseEntitlement, service_days: s.serviceDays, start_year: s.startYear, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    reportDbError("saveLeaveSettings", error);
   },
   async getMonthlyTs(userId) {
-    const { data } = await supabase.from("monthly_timesheets").select("*").eq("user_id", userId).order("saved_at", { ascending: false });
+    const { data, error } = await supabase.from("monthly_timesheets").select("*").eq("user_id", userId).order("saved_at", { ascending: false });
+    reportDbError("getMonthlyTs", error);
     return (data || []).map(r => ({ emailId: r.email_id, period: r.period, month: r.month, totalHrs: r.total_hrs, stdHrs: r.std_hrs, otHrs: r.ot_hrs, wkndHrs: r.wknd_hrs, holHrs: r.hol_hrs, days: r.days, savedAt: r.saved_at }));
   },
   async upsertMonthlyTs(userId, entry) {
-    await supabase.from("monthly_timesheets").upsert({ user_id: userId, email_id: entry.emailId, period: entry.period, month: entry.month, total_hrs: entry.totalHrs, std_hrs: entry.stdHrs, ot_hrs: entry.otHrs, wknd_hrs: entry.wkndHrs, hol_hrs: entry.holHrs, days: entry.days, saved_at: entry.savedAt }, { onConflict: "email_id" });
+    const { error } = await supabase.from("monthly_timesheets").upsert({ user_id: userId, email_id: entry.emailId, period: entry.period, month: entry.month, total_hrs: entry.totalHrs, std_hrs: entry.stdHrs, ot_hrs: entry.otHrs, wknd_hrs: entry.wkndHrs, hol_hrs: entry.holHrs, days: entry.days, saved_at: entry.savedAt }, { onConflict: "email_id" });
+    reportDbError("upsertMonthlyTs", error);
   },
   async getDiscrepancies(userId) {
-    const { data } = await supabase.from("discrepancies").select("*").eq("user_id", userId).order("checked_at", { ascending: false });
+    const { data, error } = await supabase.from("discrepancies").select("*").eq("user_id", userId).order("checked_at", { ascending: false });
+    reportDbError("getDiscrepancies", error);
     return (data || []).map(r => ({ month: r.month, period: r.period, status: r.status, items: r.items, ts: r.ts_data, payslip: r.payslip_data, expected: r.expected_data, checkedAt: r.checked_at }));
   },
   async upsertDiscrepancy(userId, d) {
-    await supabase.from("discrepancies").upsert({ user_id: userId, month: d.month, period: d.period, status: d.status, items: d.items, ts_data: d.ts, payslip_data: d.payslip, expected_data: d.expected, checked_at: d.checkedAt }, { onConflict: "user_id,month" });
+    const { error } = await supabase.from("discrepancies").upsert({ user_id: userId, month: d.month, period: d.period, status: d.status, items: d.items, ts_data: d.ts, payslip_data: d.payslip, expected_data: d.expected, checked_at: d.checkedAt }, { onConflict: "user_id,month" });
+    reportDbError("upsertDiscrepancy", error);
   },
   async getScenarios(userId) {
-    const { data } = await supabase.from("scenarios").select("*").eq("user_id", userId).order("created_at");
+    const { data, error } = await supabase.from("scenarios").select("*").eq("user_id", userId).order("created_at");
+    reportDbError("getScenarios", error);
     return (data || []).map(r => ({ id: r.id, name: r.name, stdHrs: r.std_hrs, otHrs: r.ot_hrs, weekendOtHrs: r.weekend_ot_hrs, bonus: r.bonus, tierOverride: r.tier_override }));
   },
   async upsertScenario(userId, s) {
-    await supabase.from("scenarios").upsert({ id: s.id, user_id: userId, name: s.name, std_hrs: s.stdHrs, ot_hrs: s.otHrs, weekend_ot_hrs: s.weekendOtHrs, bonus: s.bonus, tier_override: s.tierOverride }, { onConflict: "user_id,name" });
+    const { error } = await supabase.from("scenarios").upsert({ id: s.id, user_id: userId, name: s.name, std_hrs: s.stdHrs, ot_hrs: s.otHrs, weekend_ot_hrs: s.weekendOtHrs, bonus: s.bonus, tier_override: s.tierOverride }, { onConflict: "user_id,name" });
+    reportDbError("upsertScenario", error);
   },
   async deleteScenario(id) {
-    await supabase.from("scenarios").delete().eq("id", id);
+    const { error } = await supabase.from("scenarios").delete().eq("id", id);
+    reportDbError("deleteScenario", error);
   },
   async getAppSettings(userId) {
-    const { data } = await supabase.from("app_settings").select("*").eq("user_id", userId).single();
+    const { data, error } = await supabase.from("app_settings").select("*").eq("user_id", userId).single();
+    if (error && error.code !== "PGRST116") reportDbError("getAppSettings", error);
     return data || null;
   },
   async saveAppSettings(userId, settings) {
-    await supabase.from("app_settings").upsert({ user_id: userId, ...settings, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    const { error } = await supabase.from("app_settings").upsert({ user_id: userId, ...settings, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    reportDbError("saveAppSettings", error);
   },
   async getAccumulator(userId) {
-    const { data } = await supabase.from("timesheet_accumulator").select("*").eq("user_id", userId).single();
+    const { data, error } = await supabase.from("timesheet_accumulator").select("*").eq("user_id", userId).single();
+    if (error && error.code !== "PGRST116") reportDbError("getAccumulator", error);
     return data ? { data: data.data, lastUpload: data.last_upload } : null;
   },
   async saveAccumulator(userId, accumulator, lastUpload) {
-    await supabase.from("timesheet_accumulator").upsert({ user_id: userId, data: accumulator, last_upload: lastUpload, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    const { error } = await supabase.from("timesheet_accumulator").upsert({ user_id: userId, data: accumulator, last_upload: lastUpload, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    reportDbError("saveAccumulator", error);
   },
-  // Categories -- these are part of shared app_settings (bills are shared, so categorisations are too)
+  // Categories -- part of shared app_settings (bills are shared, so categorisations are too)
   async saveCats(userId, cats) {
-    await supabase.from("app_settings").upsert({ user_id: userId, cats_data: cats, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    const { error } = await supabase.from("app_settings").upsert({ user_id: userId, cats_data: cats, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    reportDbError("saveCats", error);
   },
   async createBackup(userId, data, trigger = "auto") {
     const json = JSON.stringify(data);
-    await supabase.from("backups").insert({ user_id: userId, data, size_bytes: json.length, trigger });
+    const { error } = await supabase.from("backups").insert({ user_id: userId, data, size_bytes: json.length, trigger });
+    reportDbError("createBackup", error);
+    // Prune: keep only the 30 most recent backups so the table doesn't grow forever
+    try {
+      const { data: old } = await supabase.from("backups").select("id").eq("user_id", userId).order("created_at", { ascending: false }).range(30, 999);
+      if (old && old.length) await supabase.from("backups").delete().in("id", old.map(r => r.id));
+    } catch (e) {}
   },
   async getBackups(userId, limit = 30) {
-    const { data } = await supabase.from("backups").select("id, size_bytes, trigger, created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(limit);
+    const { data, error } = await supabase.from("backups").select("id, size_bytes, trigger, created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(limit);
+    reportDbError("getBackups", error);
     return data || [];
   },
   async getBackup(backupId) {
-    const { data } = await supabase.from("backups").select("*").eq("id", backupId).single();
+    const { data, error } = await supabase.from("backups").select("*").eq("id", backupId).single();
+    if (error && error.code !== "PGRST116") reportDbError("getBackup", error);
     return data;
   },
   async deleteBackup(backupId) {
-    await supabase.from("backups").delete().eq("id", backupId);
+    const { error } = await supabase.from("backups").delete().eq("id", backupId);
+    reportDbError("deleteBackup", error);
   },
 };
 
@@ -399,6 +445,17 @@ let outstandingSaves = 0;
 const syncListeners = new Set();
 function notifySyncChange() {
   syncListeners.forEach(fn => fn(outstandingSaves));
+}
+
+// -- Supabase error surfacing -------------------------------------------------
+// db methods report failures here so they can show on-screen (no devtools on mobile).
+let lastDbError = null;
+const dbErrorListeners = new Set();
+function reportDbError(where, error) {
+  if (!error) return;
+  lastDbError = { where, message: (error && error.message) || String(error), at: Date.now() };
+  try { console.error("[Supabase] " + where + ":", error.message || error); } catch (e) {}
+  dbErrorListeners.forEach(fn => fn(lastDbError));
 }
 // trackSave accepts either a promise or a function returning a promise
 async function trackSave(promiseOrFn) {
@@ -483,7 +540,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.22";
+const APP_VERSION = "1.13.23";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -864,24 +921,28 @@ function LoginScreen({ onLogin }) {
 function SyncIndicator() {
   const [pending, setPending] = useState(0);
   const [online, setOnline] = useState(navigator.onLine);
+  const [dbErr, setDbErr] = useState(lastDbError);
 
   useEffect(() => {
     const update = (n) => setPending(n);
     syncListeners.add(update);
     setPending(outstandingSaves);
+    const onDbErr = (e) => setDbErr(e);
+    dbErrorListeners.add(onDbErr);
     const onOnline = () => setOnline(true);
     const onOffline = () => setOnline(false);
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
     return () => {
       syncListeners.delete(update);
+      dbErrorListeners.delete(onDbErr);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
     };
   }, []);
 
-  const color = !online ? "#ff4a6a" : pending > 0 ? "#ffb84a" : "#00c88c";
-  const title = !online ? "Offline" : pending > 0 ? `Saving ${pending}...` : "Synced";
+  const color = (!online || dbErr) ? "#ff4a6a" : pending > 0 ? "#ffb84a" : "#00c88c";
+  const title = dbErr ? "Sync error -- see Diagnostics" : !online ? "Offline" : pending > 0 ? `Saving ${pending}...` : "Synced";
 
   return (
     <div title={title} style={{display:"flex",alignItems:"center",gap:4}}>
@@ -1037,6 +1098,7 @@ export default function App() {
   const dragBill=useRef(null);
   const [chartRange,setChartRange]=useState("All");
   const [netTrendOpen,setNetTrendOpen]=useState(false);
+  const [dbError,setDbError]=useState(lastDbError);
   const [uploading,setUploading]=useState(false);
   const [pending,setPending]=useState(null);
   const [importMsg,setImportMsg]=useState(null);
@@ -1292,6 +1354,13 @@ export default function App() {
     } catch(e) { console.error("Refresh error:", e); }
     setDataLoading(false);
   }, [user]);
+
+  // Surface Supabase errors on-screen (Diagnostics tab + sync dot)
+  useEffect(() => {
+    const onErr = (e) => setDbError(e);
+    dbErrorListeners.add(onErr);
+    return () => dbErrorListeners.delete(onErr);
+  }, []);
 
   // Keyboard shortcuts (desktop)
   useEffect(() => {
@@ -2016,7 +2085,7 @@ export default function App() {
         const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
         const resp=await fetch(API_PROXY,{
           method:"POST",
-          headers:{"Content-Type":"application/json"},
+          headers:await authHeaders(),
           body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:1500,messages:[{role:"user",content:[
             {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
             {type:"text",text:'Extract payslip data. Return ONLY valid JSON with this exact shape:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00,"weekendOt":0.00,"holidayPay":0.00,"hourlyAllowance":0.00,"regularPay":0.00}\n\nField definitions:\n- month: payment month/year (e.g. "May 2026")\n- date: payment date as DD/MM/YYYY\n- gross: TOTAL gross pay (sum of all earnings)\n- net: net pay (gross minus all deductions)\n- tax: PAYE total\n- ni: Employee National Insurance Contribution\n- nest: NEST pension contribution\n- sl: Student Loan deduction\n- bonus: Performance Bonus line only\n- ot: Overtime line ONLY (not weekend hours, not holiday pay)\n- weekendOt: Weekend Hours line (£ amount)\n- holidayPay: SUM of all "Holiday" earning lines (could be multiple, may include "Holiday (Contracted Staff YYYY)")\n- hourlyAllowance: SUM of all "Hourly Allowance" lines including any with brackets like "Hourly Allowance (Hols)"\n- regularPay: Regular Hours line (£ amount only)\nIf a field is not present, use 0.00. Return JSON only, no markdown, no explanation.'}
@@ -2194,7 +2263,7 @@ const calcTimesheetTotals = days => {
           : { type: "image", source: { type: "base64", media_type: mediaType, data: b64 } };
         const resp = await fetch(API_PROXY, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: await authHeaders(),
           body: JSON.stringify({
             model: "claude-sonnet-4-5", max_tokens: 1000,
             messages: [{ role: "user", content: [
@@ -4041,6 +4110,18 @@ const calcTimesheetTotals = days => {
             <div style={{...card,marginBottom:12}}>
               <div style={hdr}>PWA / Sync</div>
               <DiagProbe prompt={pwaPrompt} user={user}/>
+              <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #1a1f2e"}}>
+                {dbError ? (
+                  <div style={{background:"#1a0a0a",border:"1px solid #3a1a1a",borderRadius:8,padding:"10px 12px"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:"#ff6b8a",marginBottom:4}}>⚠ Last sync error</div>
+                    <div style={{fontSize:11,color:"#e8eaf0",wordBreak:"break-all"}}>{dbError.where}: {dbError.message}</div>
+                    <div style={{fontSize:10,color:"#5a6480",marginTop:4}}>{new Date(dbError.at).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</div>
+                    <button onClick={()=>{haptic();lastDbError=null;dbErrorListeners.forEach(fn=>fn(null));}} style={{marginTop:8,width:"100%",background:"#141824",border:"1px solid #2a3050",borderRadius:6,color:"#8892b0",fontSize:11,fontWeight:600,padding:"7px",cursor:"pointer"}}>Clear</button>
+                  </div>
+                ) : (
+                  <div style={{fontSize:11,color:"#3a4460"}}>No sync errors logged.</div>
+                )}
+              </div>
             </div>
 
             <button onClick={()=>{haptic();setTab("Timesheet");}} style={{width:"100%",background:"#1a2535",border:"1px solid #2a3a5a",borderRadius:8,color:"#a0c0ff",fontSize:12,fontWeight:600,padding:"12px",cursor:"pointer"}}>
