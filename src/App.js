@@ -483,7 +483,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.20";
+const APP_VERSION = "1.13.21";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -502,6 +502,24 @@ function fyAvgNet(history) {
   const fyStart = now.getMonth()>=3 ? new Date(now.getFullYear(),3,1) : new Date(now.getFullYear()-1,3,1);
   const fy = history.filter(r=>{const[mo,yr]=r.month.split(" ");return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;});
   return fy.length>0 ? fy.reduce((s,r)=>s+r.net,0)/fy.length : 0;
+}
+
+// Tax-year-to-date totals + a simple full-year projection (avg per payslip x 12).
+// fyLabel like "2026/27". Used for the Dashboard "on track" card.
+function fyTotals(history) {
+  const now = new Date();
+  const fyStartYear = now.getMonth()>=3 ? now.getFullYear() : now.getFullYear()-1;
+  const fyStart = new Date(fyStartYear,3,1);
+  const fy = history.filter(r=>{const[mo,yr]=r.month.split(" ");return new Date(parseInt(yr),MONTHS.indexOf(mo),1)>=fyStart;});
+  const count = fy.length;
+  const gross = fy.reduce((s,r)=>s+(r.gross||0),0);
+  const net = fy.reduce((s,r)=>s+(r.net||0),0);
+  return {
+    count, gross, net,
+    projGross: count>0 ? (gross/count)*12 : 0,
+    projNet:   count>0 ? (net/count)*12   : 0,
+    fyLabel: fyStartYear + "/" + String((fyStartYear+1)%100).padStart(2,"0"),
+  };
 }
 
 function getMissingMonths(history) {
@@ -616,7 +634,7 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
   const glynTotal=isGlynOnly?total:cb.reduce((s,b)=>s+billShares(b).glyn,0);
   return (
     <div onDragOver={e=>{e.preventDefault();setDragOver(cat.id);}} onDragLeave={()=>setDragOver(null)} onDrop={()=>onDrop(cat.id)}
-      style={{border:"1px solid "+(dragOver===cat.id?"#4a9eff":"#1e2535"),borderTop:"none",transition:"border-color 0.15s"}}>
+      style={{border:"1px solid "+(dragOver===cat.id?"#4a9eff":(isGlynOnly?"#ff8c4a":"#1e2535")),borderTop:"none",transition:"border-color 0.15s"}}>
       <div style={{display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",alignItems:"center",padding:"10px 12px",background:dragOver===cat.id?"#15203a":"#1a1f2e",borderBottom:"1px solid #2a3050"}}>
         {renaming?(
           <input autoFocus value={rv} onChange={e=>setRv(e.target.value)}
@@ -624,12 +642,14 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
             onKeyDown={e=>{if(e.key==="Enter"){onCatRename(cat.id,rv);setRenaming(false);}}}
             style={{background:"#1e2535",border:"1px solid #4a9eff",borderRadius:4,color:"#e8eaf0",fontSize:13,padding:"3px 6px",marginRight:8}}/>
         ):(
-          <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:13,fontWeight:800,color:"#fff",cursor:"text",letterSpacing:0.3}} title="Double-tap to rename">{cat.name}</span>
+          <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
+            <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:13,fontWeight:800,color:"#fff",cursor:"text",letterSpacing:0.3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title="Double-tap to rename">{cat.name}</span>
+            <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px",flexShrink:0}}>✏️</button>
+          </div>
         )}
         <span style={{textAlign:"right",fontSize:13,color:"#fff",fontWeight:800}}>{fmt(total)}</span>
         {!isGlynOnly&&<><span></span><span></span></>}
-        <div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"center"}}>
-          <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>✏️</button>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center"}}>
           <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 5px"}}>✕</button>
         </div>
       </div>
@@ -1016,6 +1036,7 @@ export default function App() {
   },[billSnapshot, sharedBills, glynBills]);
   const dragBill=useRef(null);
   const [chartRange,setChartRange]=useState("All");
+  const [netTrendOpen,setNetTrendOpen]=useState(false);
   const [uploading,setUploading]=useState(false);
   const [pending,setPending]=useState(null);
   const [importMsg,setImportMsg]=useState(null);
@@ -1115,6 +1136,7 @@ export default function App() {
           }
           if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
           if (appSettings.notes) setNotes(appSettings.notes);
+          if (appSettings.dismissed_discrepancies) setDismissedDiscs(appSettings.dismissed_discrepancies);
           if (appSettings.cats_data) {
             const cd = appSettings.cats_data;
             if (cd.cats) setCats(cd.cats);
@@ -1254,6 +1276,7 @@ export default function App() {
         }
         if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
         if (appSettings.notes) setNotes(appSettings.notes);
+        if (appSettings.dismissed_discrepancies) setDismissedDiscs(appSettings.dismissed_discrepancies);
       }
       if (accData && accData.data) {
         setAccumulated(accData.data);
@@ -1520,7 +1543,24 @@ export default function App() {
   // -- Monthly timesheet history + discrepancy checker ---------------------
   const [monthlyTs, setMonthlyTs] = useState([]);
   const [discrepancies, setDiscrepancies] = useState([]);
+  const [dismissedDiscs, setDismissedDiscs] = useState([]); // months whose discrepancy alert is dismissed
   const [weeklyCheck, setWeeklyCheck] = useState(null); // monthly-vs-weekly comparison result
+
+  const dismissDisc = (month) => {
+    setDismissedDiscs(prev => {
+      if (prev.includes(month)) return prev;
+      const next = [...prev, month];
+      if (user) db.saveAppSettings(user.id, { dismissed_discrepancies: next }).catch(()=>{});
+      return next;
+    });
+  };
+  const restoreDisc = (month) => {
+    setDismissedDiscs(prev => {
+      const next = prev.filter(m => m !== month);
+      if (user) db.saveAppSettings(user.id, { dismissed_discrepancies: next }).catch(()=>{});
+      return next;
+    });
+  };
 
   const saveMonthlyTs = async (entry) => {
     if (user) await trackSave(() => db.upsertMonthlyTs(user.id, entry));
@@ -1751,24 +1791,6 @@ export default function App() {
   // -- Named Scenarios ------------------------------------------------------
   const [scenarios, setScenarios] = useState([]);
   const [expandedMonth, setExpandedMonth] = useState(null);
-  const [scenarioName, setScenarioName] = useState("");
-  const [showScenarios, setShowScenarios] = useState(false);
-  const saveScenario = async () => {
-    if (!scenarioName.trim()) return;
-    const s = { id: genUUID(), name: scenarioName.trim(), stdHrs: ci.stdHrs, otHrs: ci.otHrs, weekendOtHrs: ci.weekendOtHrs, holidayHrs: ci.holidayHrs, bonus: ci.bonus, tierOverride: tierOverride };
-    if (user) await trackSave(() => db.upsertScenario(user.id, s));
-    setScenarios(prev => [...prev.filter(x=>x.name!==s.name), s]);
-    setScenarioName("");
-  };
-  const loadScenario = (s) => {
-    setCi(prev => { const n={...prev,stdHrs:s.stdHrs,otHrs:s.otHrs,weekendOtHrs:s.weekendOtHrs,holidayHrs:s.holidayHrs||0,bonus:s.bonus}; if(user) db.saveAppSettings(user.id,{calc_inputs:n}); return n; });
-    saveTierOverride(s.tierOverride);
-    setShowScenarios(false);
-  };
-  const deleteScenario = async (id) => {
-    if (user) await trackSave(() => db.deleteScenario(id));
-    setScenarios(prev => prev.filter(s=>s.id!==id));
-  };
 
   // Tier override -- initial value loaded from Supabase via app_settings later
   const currentMonthStr = MONTHS[new Date().getMonth()]+" "+new Date().getFullYear();
@@ -2272,7 +2294,6 @@ const calcTimesheetTotals = days => {
 
   const allSorted=useMemo(()=>sortH(history),[history]);
   const missingMonths=useMemo(()=>getMissingMonths(history),[history]);
-  const budgetVsActual=useMemo(()=>sortH(history).slice(-12).map(r=>({month:r.month,actual:r.net,estimated:cr.net})),[history,cr.net]);
 
   const [nowTick, setNowTick] = useState(Date.now());
   React.useEffect(() => {
@@ -2388,13 +2409,13 @@ const calcTimesheetTotals = days => {
 
         {tab==="Dashboard"&&(
           <div>
-            {discrepancies.filter(d=>d.status==="discrepancy").length>0&&(
+            {discrepancies.filter(d=>d.status==="discrepancy"&&!dismissedDiscs.includes(d.month)).length>0&&(
               <div onClick={()=>{haptic();setTab("Timesheet");}} style={{background:"#1a0a0a",border:"1px solid #ff4a6a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>⚠️</span>
                 <div style={{flex:1}}>
                   <div style={{fontSize:13,fontWeight:700,color:"#ff6b8a"}}>Pay discrepancy detected</div>
                   <div style={{fontSize:11,color:"#8a3040",marginTop:2}}>
-                    {discrepancies.filter(d=>d.status==="discrepancy").map(d=>d.month).join(", ")} - Tap to review
+                    {discrepancies.filter(d=>d.status==="discrepancy"&&!dismissedDiscs.includes(d.month)).map(d=>d.month).join(", ")} - Tap to review
                   </div>
                 </div>
                 <span style={{fontSize:11,color:"#ff6b8a",fontWeight:700}}>Review -></span>
@@ -2459,6 +2480,29 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
 
+            {history.length>0&&(()=>{
+              const fyt=fyTotals(history);
+              if(fyt.count===0) return null;
+              return(
+                <div style={{...card,marginBottom:12}}>
+                  <SectionLabel>Tax Year {fyt.fyLabel} — On Track</SectionLabel>
+                  <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>Projected full year · based on {fyt.count}/12 payslips</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                    <div style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                      <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>Gross</div>
+                      <div style={{fontSize:16,fontWeight:700,color:"#7c6fff"}}>{fmt(fyt.projGross)}</div>
+                      <div style={{fontSize:10,color:"#3a4460",marginTop:3}}>{fmt(fyt.gross)} so far</div>
+                    </div>
+                    <div style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                      <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>Net</div>
+                      <div style={{fontSize:16,fontWeight:700,color:"#4a9eff"}}>{fmt(fyt.projNet)}</div>
+                      <div style={{fontSize:10,color:"#3a4460",marginTop:3}}>{fmt(fyt.net)} so far</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {latest&&prevMonth&&(()=>{
               return(
                 <div style={{...card,marginBottom:12}}>
@@ -2486,53 +2530,6 @@ const calcTimesheetTotals = days => {
                 </div>
               );
             })()}
-
-            <div style={{...card,marginBottom:14}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                <span style={{fontSize:11,fontWeight:600,color:"#8892b0"}}>Net Pay Trend</span>
-                <div style={{display:"flex",gap:3}}>
-                  {RANGES.map(r=>(
-                    <button key={r} onClick={()=>setChartRange(r)} style={{
-                      background:chartRange===r?"#4a9eff":"#1e2535",color:chartRange===r?"#fff":"#3a4460",
-                      border:"none",borderRadius:4,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer"
-                    }}>{r}</button>
-                  ))}
-                </div>
-              </div>
-              <ResponsiveContainer width="100%" height={160}>
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
-                  <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(chartData.length/7)-1)}/>
-                  <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
-                  <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
-                  <Line type="monotone" dataKey="net" stroke="#4a9eff" strokeWidth={2} dot={false} name="Net Pay"/>
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-
-            <div style={{...card,marginBottom:14}}>
-              <div style={{fontSize:11,fontWeight:600,color:"#8892b0",marginBottom:4}}>Budget vs Actual Net Pay</div>
-              <div style={{fontSize:10,color:"#3a4460",marginBottom:10}}>Current Pay Calc estimate vs actual received -- last 12 months</div>
-              <ResponsiveContainer width="100%" height={160}>
-                <BarChart data={budgetVsActual} margin={{top:4,right:4,left:0,bottom:0}}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
-                  <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(budgetVsActual.length/6)-1)}/>
-                  <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
-                  <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
-                  <Bar dataKey="estimated" fill="#2a3a5a" name="Estimated" radius={[2,2,0,0]}/>
-                  <Bar dataKey="actual" fill="#4a9eff" name="Actual" radius={[2,2,0,0]}/>
-                </BarChart>
-              </ResponsiveContainer>
-              {budgetVsActual.length>0&&(()=>{
-                const last=budgetVsActual[budgetVsActual.length-1];
-                const diff=last.actual-last.estimated;
-                return(
-                  <div style={{marginTop:8,fontSize:11,color:"#5a6480",textAlign:"center"}}>
-                    Last month ({last.month}): <span style={{color:diff>=0?"#00c88c":"#ff6b8a",fontWeight:700}}>{diff>=0?"+":""}{fmt(Math.abs(diff))} {diff>=0?"above":"below"} estimate</span>
-                  </div>
-                );
-              })()}
-            </div>
 
             <div style={{...card,marginBottom:12}}>
               <SectionLabel>Monthly Budget</SectionLabel>
@@ -2583,6 +2580,33 @@ const calcTimesheetTotals = days => {
             </div>
 
             <div style={{fontSize:12,color:"#5a6480",fontWeight:600,marginBottom:8}}>Historical Charts</div>
+            <div style={{border:"1px solid #1e2535",borderRadius:10,overflow:"hidden",marginBottom:8}}>
+              <button onClick={()=>{haptic();setNetTrendOpen(o=>!o);}} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 14px",background:"#141824",border:"none",cursor:"pointer",color:"#e8eaf0"}}>
+                <span style={{fontSize:13,fontWeight:600,color:"#8892b0"}}>Net Pay Trend</span>
+                <span style={{fontSize:12,color:"#3a4460"}}>{netTrendOpen?"A":"V"}</span>
+              </button>
+              {netTrendOpen&&(
+                <div style={{padding:"12px",background:"#111520"}}>
+                  <div style={{display:"flex",justifyContent:"flex-end",gap:3,marginBottom:10}}>
+                    {RANGES.map(r=>(
+                      <button key={r} onClick={()=>setChartRange(r)} style={{
+                        background:chartRange===r?"#4a9eff":"#1e2535",color:chartRange===r?"#fff":"#3a4460",
+                        border:"none",borderRadius:4,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer"
+                      }}>{r}</button>
+                    ))}
+                  </div>
+                  <ResponsiveContainer width="100%" height={160}>
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
+                      <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(chartData.length/7)-1)}/>
+                      <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
+                      <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
+                      <Line type="monotone" dataKey="net" stroke="#4a9eff" strokeWidth={2} dot={false} name="Net Pay"/>
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
             {[
               {title:"Gross Pay",    key:"gross", color:"#7c6fff"},
               {title:"Tax Paid",     key:"tax",   color:"#ff6b8a"},
@@ -2874,40 +2898,6 @@ const calcTimesheetTotals = days => {
               </div>
             </div>
             <div style={card}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                <SectionLabel>Scenarios</SectionLabel>
-                <button onClick={()=>setShowScenarios(s=>!s)} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:6,color:"#7c6fff",fontSize:11,fontWeight:600,padding:"5px 10px",cursor:"pointer"}}>{showScenarios?"Hide":"Manage"}</button>
-              </div>
-              {showScenarios&&(
-                <div>
-                  {scenarios.length>0&&(
-                    <div style={{marginBottom:12}}>
-                      {scenarios.map(s=>(
-                        <div key={s.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 10px",background:"#111520",borderRadius:8,marginBottom:6,border:"1px solid #1e2535"}}>
-                          <div>
-                            <div style={{fontSize:13,fontWeight:600,color:"#e8eaf0"}}>{s.name}</div>
-                            <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{s.stdHrs}h std - {s.otHrs}h OT - {s.weekendOtHrs}h wknd - {s.bonus>0?"£"+s.bonus+" bonus":"no bonus"}</div>
-                          </div>
-                          <div style={{display:"flex",gap:6}}>
-                            <button onClick={()=>loadScenario(s)} style={{background:"#7c6fff22",border:"1px solid #7c6fff",borderRadius:6,color:"#7c6fff",fontSize:11,fontWeight:700,padding:"5px 10px",cursor:"pointer"}}>Load</button>
-                            <button onClick={()=>deleteScenario(s.id)} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div style={{display:"flex",gap:8}}>
-                    <input placeholder="Scenario name..." value={scenarioName} onChange={e=>setScenarioName(e.target.value)}
-                      onKeyDown={e=>e.key==="Enter"&&saveScenario()}
-                      style={{...inp,flex:1,padding:"8px 10px",fontSize:12}}/>
-                    <button onClick={saveScenario} style={{background:"#7c6fff",border:"none",borderRadius:6,color:"#fff",fontWeight:700,fontSize:12,padding:"8px 14px",cursor:"pointer"}}>Save</button>
-                  </div>
-                  <p style={{fontSize:10,color:"#3a4460",marginTop:6,textAlign:"center"}}>Saves current hours, OT, weekend OT, bonus, and tier</p>
-                </div>
-              )}
-            </div>
-
-            <div style={card}>
               <SectionLabel>Gross Breakdown</SectionLabel>
               {[
                 ["Standard Pay", ci.stdHrs+"hrs x £"+(PAY.baseRate+effectiveAllowance).toFixed(2), fmt(cr.stdPay), "#e8eaf0"],
@@ -3165,69 +3155,6 @@ const calcTimesheetTotals = days => {
               <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>Tax Year Summaries</div>
               <p style={{fontSize:11,color:"#3a4460",margin:0}}>Apr - Mar breakdown from your payslip history</p>
             </div>
-            {(()=>{
-              // Year-over-year comparison
-              const thisYear = new Date().getFullYear();
-              const yearTotals = (yr) => history.filter(r => {
-                const [, y] = r.month.split(" ");
-                return parseInt(y) === yr;
-              }).reduce((acc, r) => ({
-                gross: acc.gross + (r.gross||0),
-                net: acc.net + (r.net||0),
-                tax: acc.tax + (r.tax||0),
-                ni: acc.ni + (r.ni||0),
-                nest: acc.nest + (r.nest||0),
-                sl: acc.sl + (r.sl||0),
-                bonus: acc.bonus + (r.bonus||0),
-                ot: acc.ot + (r.ot||0),
-              }), {gross:0,net:0,tax:0,ni:0,nest:0,sl:0,bonus:0,ot:0});
-
-              const current = yearTotals(thisYear);
-              const previous = yearTotals(thisYear-1);
-              const hasPrev = Object.values(previous).some(v => v > 0);
-              if (!hasPrev) return null;
-
-              const diff = (key) => {
-                const c = current[key], p = previous[key];
-                if (p === 0) return null;
-                const pct = ((c - p) / p) * 100;
-                return { c, p, pct, abs: c - p };
-              };
-
-              const rows = [
-                { label: "Gross", key: "gross", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-                { label: "Net", key: "net", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-                { label: "Tax", key: "tax", colorUp: "#ff4a6a", colorDown: "#00c88c" },
-                { label: "NI", key: "ni", colorUp: "#ff4a6a", colorDown: "#00c88c" },
-                { label: "Student Loan", key: "sl", colorUp: "#ff4a6a", colorDown: "#00c88c" },
-                { label: "NEST", key: "nest", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-                { label: "Bonus", key: "bonus", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-                { label: "Overtime", key: "ot", colorUp: "#00c88c", colorDown: "#ff4a6a" },
-              ];
-
-              return (
-                <div style={card}>
-                  <SectionLabel>Year-on-Year -- {thisYear} vs {thisYear-1}</SectionLabel>
-                  <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>Calendar year totals from payslip history</div>
-                  {rows.map(r => {
-                    const d = diff(r.key);
-                    if (!d) return null;
-                    const up = d.abs > 0;
-                    const color = up ? r.colorUp : r.colorDown;
-                    return (
-                      <div key={r.key} style={{display:"grid",gridTemplateColumns:"80px 1fr 1fr 70px",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12,alignItems:"center"}}>
-                        <span style={{color:"#8892b0"}}>{r.label}</span>
-                        <span style={{textAlign:"right",color:"#5a6480"}}>{fmt(d.p)}</span>
-                        <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{fmt(d.c)}</span>
-                        <span style={{textAlign:"right",color,fontWeight:700,fontSize:11}}>
-                          {up?"^":"v"} {Math.abs(d.pct).toFixed(1)}%
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
 
             {groupByFY(history).map((fy,i)=>{
               const isCurrent=i===0;
@@ -3903,6 +3830,7 @@ const calcTimesheetTotals = days => {
                     const disc = discrepancies.find(d => d.month === m.month);
                     const isOk = disc && disc.status === "ok";
                     const hasIssue = disc && disc.status === "discrepancy";
+                    const dismissed = hasIssue && dismissedDiscs.includes(m.month);
                     const expanded = expandedMonth === m.month;
                     return (
                       <div key={m.emailId||i}>
@@ -3910,8 +3838,8 @@ const calcTimesheetTotals = days => {
                           style={{display:"grid",gridTemplateColumns:"80px 1fr 60px 28px",padding:"10px 12px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center",cursor:"pointer"}}>
                           <span style={{color:"#8892b0",fontWeight:600,fontSize:11}}>{m.month||m.period.slice(0,5)}</span>
                           <span style={{color:"#5a6480",fontSize:10}}>{m.totalHrs} - {m.otHrs}h OT - {m.wkndHrs}h wknd</span>
-                          <span style={{textAlign:"right",fontSize:11,fontWeight:700,color:hasIssue?"#ff6b8a":isOk?"#00c88c":"#3a4460"}}>
-                            {hasIssue?"⚠️ "+disc.items.length+" issue"+(disc.items.length>1?"s":""):isOk?"✅ OK":"--"}
+                          <span style={{textAlign:"right",fontSize:11,fontWeight:700,color:dismissed?"#5a6480":hasIssue?"#ff6b8a":isOk?"#00c88c":"#3a4460"}}>
+                            {hasIssue?(dismissed?"hidden":"⚠️ "+disc.items.length+" issue"+(disc.items.length>1?"s":"")):isOk?"✅ OK":"--"}
                           </span>
                           <span style={{textAlign:"right",color:"#3a4460",fontSize:12}}>{expanded?"A":"V"}</span>
                         </div>
@@ -3950,6 +3878,11 @@ const calcTimesheetTotals = days => {
                                 <div style={{fontSize:10,color:"#5a3030",marginTop:8,lineHeight:1.6}}>
                                   These are estimates based on your stored rates. Rounding differences under £1 are ignored. If a gap is large, raise it with payroll.
                                 </div>
+                                {dismissed ? (
+                                  <button onClick={()=>{haptic();restoreDisc(m.month);}} style={{marginTop:10,width:"100%",background:"#141824",border:"1px solid #2a3050",borderRadius:6,color:"#8892b0",fontSize:11,fontWeight:600,padding:"9px",cursor:"pointer"}}>↩ Restore alert</button>
+                                ) : (
+                                  <button onClick={()=>{haptic();dismissDisc(m.month);}} style={{marginTop:10,width:"100%",background:"#141824",border:"1px solid #3a1a1a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:600,padding:"9px",cursor:"pointer"}}>Dismiss alert</button>
+                                )}
                               </div>
                             )}
                             {disc && disc.status === "ok" && (
@@ -4086,7 +4019,6 @@ const calcTimesheetTotals = days => {
                 ["Categories",cats.length+glynCats.length],
                 ["Monthly timesheets",monthlyTs.length],
                 ["Leave logs",leaveLogs.length],
-                ["Scenarios",scenarios.length],
                 ["Accumulator days",(accumulated.days||[]).length],
               ].map((pair,i,a)=>(
                 <div key={pair[0]} style={i===a.length-1?{...row,borderBottom:"none"}:row}>
