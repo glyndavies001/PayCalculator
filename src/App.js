@@ -540,7 +540,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.23";
+const APP_VERSION = "1.13.24";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -658,7 +658,7 @@ function CollapsibleChart({title,data,dataKey,color}) {
   );
 }
 
-function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,onDragStart}) {
+function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,onMove,onDragStart}) {
   const [val,setVal]=useState(String(bill.total));
   const sh=isGlynOnly?null:billShares(bill);
   return (
@@ -667,7 +667,7 @@ function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,on
       padding:"11px 12px",fontSize:13,alignItems:"center",
       background:idx%2===0?"#161b28":"#11151f",borderBottom:"1px solid #1e2535",cursor:"grab"
     }}>
-      <span style={{color:"#d8dcea",fontWeight:500}}>{bill.name}</span>
+      <span onClick={onMove} style={{color:"#d8dcea",fontWeight:500,cursor:"pointer"}}>{bill.name}</span>
       {editing?(
         <input autoFocus type="number" value={val} onChange={e=>setVal(e.target.value)}
           onBlur={()=>onEditBlur(val)} onKeyDown={e=>e.key==="Enter"&&onEditBlur(val)}
@@ -678,12 +678,12 @@ function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,on
         </span>
       )}
       {!isGlynOnly&&<><span style={{textAlign:"right",color:"#4a9eff",fontWeight:700}}>{fmt(sh.glyn)}</span><span style={{textAlign:"right",color:"#c84aff",fontWeight:700}}>{fmt(sh.hollie)}</span></>}
-      <button onClick={onDelete} style={{background:"none",border:"none",color:"#5a6480",fontSize:13,cursor:"pointer",padding:0,textAlign:"center"}}>✕</button>
+      <button onClick={onDelete} style={{background:"none",border:"none",color:"#5a6480",fontSize:16,cursor:"pointer",padding:"8px 4px",textAlign:"center",lineHeight:1}}>✕</button>
     </div>
   );
 }
 
-function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,onBillBlur,onBillDelete,onCatDelete,onCatRename,dragBill,setDragOver,dragOver,onDrop}) {
+function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,onBillBlur,onBillDelete,onBillMove,onCatDelete,onCatRename,dragBill,setDragOver,dragOver,onDrop}) {
   const [renaming,setRenaming]=useState(false);
   const [rv,setRv]=useState(cat.name);
   const cb=bills.filter(b=>billCats[b.id]===cat.id);
@@ -707,7 +707,7 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
         <span style={{textAlign:"right",fontSize:13,color:"#fff",fontWeight:800}}>{fmt(total)}</span>
         {!isGlynOnly&&<><span></span><span></span></>}
         <div style={{display:"flex",alignItems:"center",justifyContent:"center"}}>
-          <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 5px"}}>✕</button>
+          <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:13,fontWeight:700,cursor:"pointer",padding:"7px 6px",lineHeight:1}}>✕</button>
         </div>
       </div>
       {cb.length===0&&<div style={{padding:"10px",textAlign:"center",fontSize:11,color:"#2a3050",fontStyle:"italic"}}>Drop bills here</div>}
@@ -715,6 +715,7 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
         <BillRow key={b.id} bill={b} idx={i} isGlynOnly={isGlynOnly}
           editing={editingBill===b.id} onEditStart={()=>setEditingBill(b.id)}
           onEditBlur={v=>onBillBlur(b.id,v)} onDelete={()=>onBillDelete(b.id)}
+          onMove={()=>onBillMove(b.id)}
           onDragStart={()=>{dragBill.current=b.id;}}/>
       ))}
     </div>
@@ -918,7 +919,7 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function SyncIndicator() {
+function SyncIndicator({ onClick }) {
   const [pending, setPending] = useState(0);
   const [online, setOnline] = useState(navigator.onLine);
   const [dbErr, setDbErr] = useState(lastDbError);
@@ -945,9 +946,9 @@ function SyncIndicator() {
   const title = dbErr ? "Sync error -- see Diagnostics" : !online ? "Offline" : pending > 0 ? `Saving ${pending}...` : "Synced";
 
   return (
-    <div title={title} style={{display:"flex",alignItems:"center",gap:4}}>
+    <div onClick={onClick} title={title} style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer",padding:"6px",margin:"-6px"}}>
       <span style={{
-        width:8,height:8,borderRadius:"50%",background:color,
+        width:10,height:10,borderRadius:"50%",background:color,
         boxShadow:`0 0 6px ${color}`,
         transition:"background 0.3s",
         opacity: pending > 0 ? 0.7 : 1
@@ -1099,6 +1100,14 @@ export default function App() {
   const [chartRange,setChartRange]=useState("All");
   const [netTrendOpen,setNetTrendOpen]=useState(false);
   const [dbError,setDbError]=useState(lastDbError);
+  const [showMore,setShowMore]=useState(false);            // bottom "More" sheet (secondary tabs)
+  const [moveBill,setMoveBill]=useState(null);             // {id,isGlyn} -> move-to-category sheet
+  const [toast,setToast]=useState(null);                   // {msg,undo} -> undo toast
+  const toastTimer=useRef(null);
+  const [pullY,setPullY]=useState(0);                      // pull-to-refresh visual distance
+  const [refreshing,setRefreshing]=useState(false);
+  const pullStart=useRef(null);
+  const pullDist=useRef(0);
   const [uploading,setUploading]=useState(false);
   const [pending,setPending]=useState(null);
   const [importMsg,setImportMsg]=useState(null);
@@ -2146,22 +2155,27 @@ export default function App() {
 
   const hSB=(id,v)=>{const n=parseFloat(v);updSB(sharedBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditSh(null);};
   const hGB=(id,v)=>{const n=parseFloat(v);updGB(glynBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditGl(null);};
-  const delSh=id=>{updSB(sharedBills.filter(b=>b.id!==id));const bc={...billCats};delete bc[id];updBC(bc);};
-  const delGl=id=>{updGB(glynBills.filter(b=>b.id!==id));const bc={...glynBillCats};delete bc[id];updGBC(bc);};
+  const delSh=id=>{const bill=sharedBills.find(b=>b.id===id);const prevBills=sharedBills;const prevCats=billCats;updSB(sharedBills.filter(b=>b.id!==id));const bc={...billCats};delete bc[id];updBC(bc);showUndoToast((bill?bill.name:"Bill")+" deleted",()=>{updSB(prevBills);updBC(prevCats);});};
+  const delGl=id=>{const bill=glynBills.find(b=>b.id===id);const prevBills=glynBills;const prevCats=glynBillCats;updGB(glynBills.filter(b=>b.id!==id));const bc={...glynBillCats};delete bc[id];updGBC(bc);showUndoToast((bill?bill.name:"Bill")+" deleted",()=>{updGB(prevBills);updGBC(prevCats);});};
   const addShBill=()=>{if(!newSh.name.trim())return;updSB([...sharedBills,{id:Date.now(),name:newSh.name.trim(),total:parseFloat(newSh.total)||0,isCarGlyn:newSh.isCarGlyn}]);setNewSh({name:"",total:"",isCarGlyn:false});setAddSh(false);};
   const addGlBill=()=>{if(!newGl.name.trim())return;updGB([...glynBills,{id:Date.now(),name:newGl.name.trim(),total:parseFloat(newGl.total)||0}]);setNewGl({name:"",total:""});setAddGl(false);};
   const addCategory=(isGlyn)=>{if(!newCat.trim())return;const c={id:Date.now(),name:newCat.trim()};isGlyn?updGC([...glynCats,c]):updC([...cats,c]);setNewCat("");setAddingCat(null);};
   const delCat=(id,isGlyn)=>{
+    const cat=(isGlyn?glynCats:cats).find(c=>c.id===id);
     if(isGlyn){
+      const prevCats=glynCats;const prevBC=glynBillCats;
       const nc=glynCats.filter(c=>c.id!==id);
       const bc={...glynBillCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});
       setGlynCats(nc);setGlynBillCats(bc);
       if(user) db.saveAppSettings(user.id,{cats_data:{cats,billCats,glynCats:nc,glynBillCats:bc}});
+      showUndoToast((cat?cat.name:"Category")+" deleted",()=>{setGlynCats(prevCats);setGlynBillCats(prevBC);if(user)db.saveAppSettings(user.id,{cats_data:{cats,billCats,glynCats:prevCats,glynBillCats:prevBC}});});
     } else {
+      const prevCats=cats;const prevBC=billCats;
       const nc=cats.filter(c=>c.id!==id);
       const bc={...billCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});
       setCats(nc);setBillCats(bc);
       if(user) db.saveAppSettings(user.id,{cats_data:{cats:nc,billCats:bc,glynCats,glynBillCats}});
+      showUndoToast((cat?cat.name:"Category")+" deleted",()=>{setCats(prevCats);setBillCats(prevBC);if(user)db.saveAppSettings(user.id,{cats_data:{cats:prevCats,billCats:prevBC,glynCats,glynBillCats}});});
     }
   };
   const renCat=(id,name,isGlyn)=>{isGlyn?updGC(glynCats.map(c=>c.id===id?{...c,name}:c)):updC(cats.map(c=>c.id===id?{...c,name}:c));};
@@ -2170,6 +2184,16 @@ export default function App() {
     if(isGlyn){const bc={...glynBillCats};catId===null?delete bc[dragBill.current]:(bc[dragBill.current]=catId);updGBC(bc);}
     else{const bc={...billCats};catId===null?delete bc[dragBill.current]:(bc[dragBill.current]=catId);updBC(bc);}
     dragBill.current=null;setDragOver(null);
+  };
+
+  const showUndoToast=(msg,undo)=>{
+    if(toastTimer.current)clearTimeout(toastTimer.current);
+    setToast({msg,undo});
+    toastTimer.current=setTimeout(()=>setToast(null),5000);
+  };
+  const assignCat=(billId,catId,isGlyn)=>{
+    if(isGlyn){const bc={...glynBillCats};catId==null?delete bc[billId]:(bc[billId]=catId);updGBC(bc);}
+    else{const bc={...billCats};catId==null?delete bc[billId]:(bc[billId]=catId);updBC(bc);}
   };
 
   const exportData=()=>{
@@ -2438,7 +2462,11 @@ const calcTimesheetTotals = days => {
 
   return (
     <ErrorBoundary>
-    <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
+    <div
+      onTouchStart={e=>{ if(window.scrollY<=0&&!showMore&&!moveBill){pullStart.current=e.touches[0].clientY;pullDist.current=0;} else {pullStart.current=null;} }}
+      onTouchMove={e=>{ if(pullStart.current==null||refreshing)return; const dy=e.touches[0].clientY-pullStart.current; if(dy>0&&window.scrollY<=0){const d=Math.min(dy*0.5,90);pullDist.current=d;setPullY(d);} else if(dy<=0&&pullDist.current!==0){pullDist.current=0;setPullY(0);} }}
+      onTouchEnd={()=>{ if(pullStart.current==null)return; const d=pullDist.current; pullStart.current=null; pullDist.current=0; if(d>70&&!refreshing){setRefreshing(true);setPullY(0);haptic("medium");Promise.resolve(refreshAll&&refreshAll()).finally(()=>setTimeout(()=>setRefreshing(false),600));} else {setPullY(0);} }}
+      style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:"calc(96px + env(safe-area-inset-bottom))"}}>
       {/* Auto-import toast */}
       {tsAutoMsg && (
         <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:999,background:tsAutoMsg.ok?"#0a1a10":"#1a0a10",border:"1px solid "+(tsAutoMsg.ok?"#00c88c":"#ff4a6a"),borderRadius:10,padding:"10px 18px",fontSize:13,fontWeight:600,color:tsAutoMsg.ok?"#00c88c":"#ff6b8a",boxShadow:"0 4px 20px #000a",whiteSpace:"nowrap"}}>
@@ -2446,13 +2474,13 @@ const calcTimesheetTotals = days => {
         </div>
       )}
 
-      <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"14px 14px 0",position:"sticky",top:0,zIndex:100}}>
+      <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"14px 14px",position:"sticky",top:0,zIndex:100}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
           <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}>
             <span style={{color:"#4a9eff"}}>V</span>AULTED
           </h1>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <SyncIndicator/>
+            <SyncIndicator onClick={()=>{haptic();setShowMore(false);setTab("Diag");}}/>
             <button onClick={()=>{haptic("medium");handleSignOut();}} title="Sign out"
               style={{background:"none",border:"none",color:"#3a4460",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
           </div>
@@ -2461,24 +2489,6 @@ const calcTimesheetTotals = days => {
             <div style={{fontSize:11,color:"#3a4460"}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> - {nextPayday.date}</div>
           </div>
         </div>
-        <div style={{display:"flex",gap:2,marginBottom:2}}>
-          {PRIMARY_TABS.map(t=>(
-            <button key={t} onClick={()=>{haptic();setTab(t);}} style={{
-              flex:1,background:tab===t?"#4a9eff":"transparent",
-              color:tab===t?"#fff":"#5a6480",border:"none",
-              borderRadius:"6px 6px 0 0",padding:"8px 4px",fontSize:12,fontWeight:600,cursor:"pointer"
-            }}>{t}</button>
-          ))}
-        </div>
-        <div style={{display:"flex",gap:2,borderTop:"1px solid #1e2535",paddingTop:2}}>
-          {SECONDARY_TABS.map(t=>(
-            <button key={t} onClick={()=>{haptic();setTab(t);}} style={{
-              flex:1,background:tab===t?"#2a3a5a":"transparent",
-              color:tab===t?"#a0c0ff":"#3a4460",border:"none",
-              padding:"6px 4px",fontSize:11,fontWeight:600,cursor:"pointer"
-            }}>{t}</button>
-          ))}
-        </div>
       </div>
 
       <div style={{padding:"14px 12px"}}>
@@ -2486,7 +2496,7 @@ const calcTimesheetTotals = days => {
         {tab==="Dashboard"&&(
           <div>
             {discrepancies.filter(d=>d.status==="discrepancy"&&!dismissedDiscs.includes(d.month)).length>0&&(
-              <div onClick={()=>{haptic();setTab("Timesheet");}} style={{background:"#1a0a0a",border:"1px solid #ff4a6a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+              <div onClick={()=>{haptic();const first=discrepancies.find(d=>d.status==="discrepancy"&&!dismissedDiscs.includes(d.month));if(first)setExpandedMonth(first.month);setTab("Timesheet");}} style={{background:"#1a0a0a",border:"1px solid #ff4a6a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>⚠️</span>
                 <div style={{flex:1}}>
                   <div style={{fontSize:13,fontWeight:700,color:"#ff6b8a"}}>Pay discrepancy detected</div>
@@ -2784,13 +2794,14 @@ const calcTimesheetTotals = days => {
                   <CatSection key={cat.id} cat={cat} bills={sharedBills} billCats={billCats} isGlynOnly={false}
                     editingBill={editSh} setEditingBill={setEditSh} onBillBlur={hSB} onBillDelete={delSh}
                     onCatDelete={id=>delCat(id,false)} onCatRename={(id,n)=>renCat(id,n,false)}
+                    onBillMove={id=>setMoveBill({id,isGlyn:false})}
                     dragBill={dragBill} setDragOver={setDragOver} dragOver={dragOver} onDrop={id=>drop(id,false)}/>
                 ))}
                 {(()=>{const u=sharedBills.filter(b=>!billCats[b.id]);if(!u.length)return null;return(
                   <div onDragOver={e=>{e.preventDefault();setDragOver("ush");}} onDragLeave={()=>setDragOver(null)} onDrop={()=>drop(null,false)}
                     style={{border:"1px solid "+(dragOver==="ush"?"#4a9eff":"#1e2535"),borderTop:"none"}}>
                     <div style={{padding:"8px 10px",background:dragOver==="ush"?"#0d1525":"#0f1520"}}><span style={{fontSize:10,fontWeight:700,color:"#3a4460",textTransform:"uppercase",letterSpacing:1}}>Uncategorised</span></div>
-                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={false} editing={editSh===b.id} onEditStart={()=>setEditSh(b.id)} onEditBlur={v=>hSB(b.id,v)} onDelete={()=>delSh(b.id)} onDragStart={()=>{dragBill.current=b.id;}}/>)}
+                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={false} editing={editSh===b.id} onEditStart={()=>setEditSh(b.id)} onEditBlur={v=>hSB(b.id,v)} onDelete={()=>delSh(b.id)} onMove={()=>setMoveBill({id:b.id,isGlyn:false})} onDragStart={()=>{dragBill.current=b.id;}}/>)}
                   </div>
                 );})()}
                 {addSh&&(
@@ -2820,7 +2831,7 @@ const calcTimesheetTotals = days => {
                   <button onClick={()=>setAddSh(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
                   <button onClick={()=>{if(!window.confirm("Reset all shared bills to defaults? This cannot be undone."))return;updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
                 </div>
-                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap Total to edit - Drag to categorise - Double-tap category to rename</p>
+                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap total to edit · tap a bill name to move it · double-tap a category to rename</p>
               </div>
             )}
 
@@ -2844,13 +2855,14 @@ const calcTimesheetTotals = days => {
                   <CatSection key={cat.id} cat={cat} bills={glynBills} billCats={glynBillCats} isGlynOnly={true}
                     editingBill={editGl} setEditingBill={setEditGl} onBillBlur={hGB} onBillDelete={delGl}
                     onCatDelete={id=>delCat(id,true)} onCatRename={(id,n)=>renCat(id,n,true)}
+                    onBillMove={id=>setMoveBill({id,isGlyn:true})}
                     dragBill={dragBill} setDragOver={setDragOver} dragOver={dragOver} onDrop={id=>drop(id,true)}/>
                 ))}
                 {(()=>{const u=glynBills.filter(b=>!glynBillCats[b.id]);if(!u.length)return null;return(
                   <div onDragOver={e=>{e.preventDefault();setDragOver("ugl");}} onDragLeave={()=>setDragOver(null)} onDrop={()=>drop(null,true)}
                     style={{border:"1px solid "+(dragOver==="ugl"?"#4a9eff":"#ff8c4a"),borderTop:"none"}}>
                     <div style={{padding:"8px 10px",background:dragOver==="ugl"?"#0d1525":"#0f1520"}}><span style={{fontSize:10,fontWeight:700,color:"#ff8c4a",textTransform:"uppercase",letterSpacing:1}}>Uncategorised</span></div>
-                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={true} editing={editGl===b.id} onEditStart={()=>setEditGl(b.id)} onEditBlur={v=>hGB(b.id,v)} onDelete={()=>delGl(b.id)} onDragStart={()=>{dragBill.current=b.id;}}/>)}
+                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={true} editing={editGl===b.id} onEditStart={()=>setEditGl(b.id)} onEditBlur={v=>hGB(b.id,v)} onDelete={()=>delGl(b.id)} onMove={()=>setMoveBill({id:b.id,isGlyn:true})} onDragStart={()=>{dragBill.current=b.id;}}/>)}
                   </div>
                 );})()}
                 {addGl&&(
@@ -2874,7 +2886,7 @@ const calcTimesheetTotals = days => {
                   <button onClick={()=>setAddGl(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
                   <button onClick={()=>{if(!window.confirm("Reset all personal bills to defaults? This cannot be undone."))return;updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
                 </div>
-                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit - Drag to categorise - Double-tap category to rename</p>
+                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit · tap a bill name to move it · double-tap a category to rename</p>
               </div>
             )}
           </div>
@@ -4135,6 +4147,80 @@ const calcTimesheetTotals = days => {
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
         <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>{`VAULTED v${APP_VERSION}`}</span>
       </div>
+
+      {/* Pull-to-refresh indicator */}
+      {(pullY>0||refreshing)&&(
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:105,display:"flex",justifyContent:"center",alignItems:"flex-end",height:refreshing?40:Math.max(0,Math.min(pullY,80)),background:"#0d0f14",color:"#5a6480",fontSize:12,fontWeight:600,paddingBottom:6,pointerEvents:"none",transition:refreshing?"height 0.2s":"none"}}>
+          {refreshing?"Refreshing…":pullY>70?"Release to refresh":"Pull to refresh"}
+        </div>
+      )}
+
+      {/* Undo toast */}
+      {toast&&(
+        <div style={{position:"fixed",left:12,right:12,bottom:"calc(80px + env(safe-area-inset-bottom))",zIndex:220,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:10,padding:"12px 14px",boxShadow:"0 4px 20px #000a"}}>
+          <span style={{fontSize:13,color:"#e8eaf0"}}>{toast.msg}</span>
+          <button onClick={()=>{haptic();if(toast.undo)toast.undo();if(toastTimer.current)clearTimeout(toastTimer.current);setToast(null);}} style={{background:"none",border:"none",color:"#4a9eff",fontSize:13,fontWeight:700,cursor:"pointer",padding:"4px 8px"}}>Undo</button>
+        </div>
+      )}
+
+      {/* Bottom navigation */}
+      <div style={{position:"fixed",left:0,right:0,bottom:0,zIndex:200,display:"flex",background:"#0d1117",borderTop:"1px solid #1e2535",paddingBottom:"env(safe-area-inset-bottom)"}}>
+        {PRIMARY_TABS.map(t=>(
+          <button key={t} onClick={()=>{haptic();setShowMore(false);setTab(t);window.scrollTo(0,0);}} style={{
+            flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
+            color:tab===t?"#4a9eff":"#5a6480",fontSize:11,fontWeight:700,
+            borderTop:"2px solid "+(tab===t?"#4a9eff":"transparent")
+          }}>{t}</button>
+        ))}
+        <button onClick={()=>{haptic();setShowMore(s=>!s);}} style={{
+          flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
+          color:(showMore||SECONDARY_TABS.includes(tab))?"#a0c0ff":"#5a6480",fontSize:11,fontWeight:700,
+          borderTop:"2px solid "+((showMore||SECONDARY_TABS.includes(tab))?"#a0c0ff":"transparent")
+        }}>More ⋯</button>
+      </div>
+
+      {/* "More" sheet -- secondary tabs */}
+      {showMore&&(
+        <div onClick={()=>setShowMore(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
+          <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))"}}>
+            <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 10px"}}/>
+            <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 6px"}}>More</div>
+            {SECONDARY_TABS.map(t=>(
+              <button key={t} onClick={()=>{haptic();setTab(t);setShowMore(false);window.scrollTo(0,0);}} style={{
+                display:"block",width:"100%",textAlign:"left",background:tab===t?"#1a2535":"transparent",
+                border:"none",borderRadius:8,color:tab===t?"#a0c0ff":"#c8cee0",fontSize:15,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginBottom:2
+              }}>{t}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Move-to-category sheet */}
+      {moveBill&&(()=>{
+        const isG=moveBill.isGlyn;
+        const list=isG?glynCats:cats;
+        const curCat=(isG?glynBillCats:billCats)[moveBill.id];
+        const bill=(isG?glynBills:sharedBills).find(b=>b.id===moveBill.id);
+        return(
+          <div onClick={()=>setMoveBill(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
+            <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"72vh",overflowY:"auto"}}>
+              <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 10px"}}/>
+              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 10px"}}>Move {bill?`"${bill.name}"`:"bill"} to…</div>
+              {list.map(c=>(
+                <button key={c.id} onClick={()=>{haptic();assignCat(moveBill.id,c.id,isG);setMoveBill(null);}} style={{
+                  display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",textAlign:"left",background:curCat===c.id?"#1a2535":"transparent",
+                  border:"none",borderRadius:8,color:curCat===c.id?"#a0c0ff":"#c8cee0",fontSize:15,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginBottom:2
+                }}><span>{c.name}</span>{curCat===c.id&&<span style={{color:"#4a9eff"}}>✓</span>}</button>
+              ))}
+              {list.length===0&&<div style={{fontSize:12,color:"#5a6480",padding:"8px 14px"}}>No categories yet — add one first.</div>}
+              <button onClick={()=>{haptic();assignCat(moveBill.id,null,isG);setMoveBill(null);}} style={{
+                display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",textAlign:"left",background:!curCat?"#1a2535":"transparent",
+                border:"none",borderRadius:8,color:"#8892b0",fontSize:14,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginTop:4
+              }}><span>Uncategorised</span>{!curCat&&<span style={{color:"#8892b0"}}>✓</span>}</button>
+            </div>
+          </div>
+        );
+      })()}
 
     </div>
     </ErrorBoundary>
