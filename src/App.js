@@ -483,7 +483,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.21";
+const APP_VERSION = "1.13.22";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1277,6 +1277,13 @@ export default function App() {
         if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
         if (appSettings.notes) setNotes(appSettings.notes);
         if (appSettings.dismissed_discrepancies) setDismissedDiscs(appSettings.dismissed_discrepancies);
+        if (appSettings.cats_data) {
+          const cd = appSettings.cats_data;
+          if (cd.cats) setCats(cd.cats);
+          if (cd.billCats) setBillCats(cd.billCats);
+          if (cd.glynCats) setGlynCats(cd.glynCats);
+          if (cd.glynBillCats) setGlynBillCats(cd.glynBillCats);
+        }
       }
       if (accData && accData.data) {
         setAccumulated(accData.data);
