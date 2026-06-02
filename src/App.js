@@ -540,7 +540,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.25";
+const APP_VERSION = "1.13.26";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1059,6 +1059,7 @@ function DiagProbe({ prompt, user }) {
 
 export default function App() {
   const [tab,setTab]=useState("Dashboard");
+  const [isOwner,setIsOwner]=useState(true);   // false = partner (Hollie): restricted view
   const [user,setUser]=useState(null);
   const [authLoading,setAuthLoading]=useState(true);
   const [dataLoading,setDataLoading]=useState(false);
@@ -1161,6 +1162,14 @@ export default function App() {
     return () => { subscription.unsubscribe(); clearInterval(interval); };
   }, []);
 
+  // Partner (Hollie) restricted view: keep her on allowed tabs only
+  React.useEffect(() => {
+    if (!isOwner) {
+      if (!["Budget","Diag"].includes(tab)) setTab("Budget");
+      if (budTab !== "shared") setBudTab("shared");
+    }
+  }, [isOwner, tab, budTab]);
+
   // Load all data from Supabase when user logs in
   React.useEffect(() => {
     if (!user) return;
@@ -1179,20 +1188,30 @@ export default function App() {
           db.getAppSettings(user.id),
         ]);
 
+        // Determine this user's role (owner = Glyn; partner = Hollie)
+        let owner = true;
+        try {
+          const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
+          owner = (prof?.role ?? "owner") === "owner";
+        } catch (e) { owner = true; }
+        setIsOwner(owner);
+
         // Payslips -- merge with INITIAL_HISTORY for months not yet in DB
         if (payslips.length > 0) {
           setHistory(payslips.sort((a,b)=>{
             const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
             return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
           }));
-        } else {
-          // First login -- seed DB with INITIAL_HISTORY
+        } else if (owner) {
+          // First login (owner) -- seed DB with INITIAL_HISTORY
           const sorted = [...INITIAL_HISTORY].sort((a,b)=>{
             const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
             return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
           });
           setHistory(sorted);
           for (const p of sorted) await trackSave(() => db.upsertPayslip(user.id, p));
+        } else {
+          setHistory([]); // partner starts with their own (empty) payslip history
         }
 
         // Bills -- merge with defaults if DB empty
@@ -1203,8 +1222,10 @@ export default function App() {
         }
         if (gBills.length > 0) {
           setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
-        } else {
+        } else if (owner) {
           for (const b of INITIAL_GLYN_BILLS) await trackSave(() => db.upsertGlynBill(b));
+        } else {
+          setGlynBills([]); // partner has no personal bills (and can't see the owner's)
         }
 
         if (lLogs.length > 0) setLeaveLogs(lLogs);
@@ -2474,6 +2495,9 @@ const calcTimesheetTotals = days => {
   }
 
 
+  const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget"];
+  const secondaryTabs = isOwner ? SECONDARY_TABS : ["Diag"];
+
   return (
     <ErrorBoundary>
     <div
@@ -2723,7 +2747,7 @@ const calcTimesheetTotals = days => {
 
         {tab==="Budget"&&(
           <div>
-            {(()=>{
+            {isOwner && (()=>{
               const savingsRate = cr.net > 0 ? Math.round((cr.net - totalOut) / cr.net * 100) : 0;
               const srColor = savingsRate >= 20 ? "#00c88c" : savingsRate >= 10 ? "#ffb84a" : "#ff4a6a";
               return (
@@ -2766,6 +2790,7 @@ const calcTimesheetTotals = days => {
               </div>
             )}
 
+            {isOwner ? (
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
               {[
                 {label:"Shared (my half)",value:fmt(shGlyn),  accent:"#4a9eff"},
@@ -2778,7 +2803,14 @@ const calcTimesheetTotals = days => {
                 </div>
               ))}
             </div>
+            ) : (
+            <div style={{...card,textAlign:"center",padding:"14px 6px",marginBottom:14}}>
+              <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Your share of shared bills</div>
+              <div style={{fontSize:20,fontWeight:800,color:"#c84aff"}}>{fmt(shHollie)}</div>
+            </div>
+            )}
 
+            {isOwner && (
             <div style={{display:"flex",gap:4,marginBottom:12}}>
               {[["shared","Shared Bills"],["glyn","My Bills"]].map(([v,l])=>(
                 <button key={v} onClick={()=>setBudTab(v)} style={{
@@ -2787,6 +2819,7 @@ const calcTimesheetTotals = days => {
                 }}>{l}</button>
               ))}
             </div>
+            )}
 
             {budTab==="shared"&&(
               <div>
@@ -2843,13 +2876,13 @@ const calcTimesheetTotals = days => {
                 </div>
                 <div style={{display:"flex",gap:8,marginTop:10}}>
                   <button onClick={()=>setAddSh(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
-                  <button onClick={()=>{if(!window.confirm("Reset all shared bills to defaults? This cannot be undone."))return;updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
+                  {isOwner && <button onClick={()=>{if(!window.confirm("Reset all shared bills to defaults? This cannot be undone."))return;updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>}
                 </div>
                 <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap total to edit · tap a bill name to move it · double-tap a category to rename</p>
               </div>
             )}
 
-            {budTab==="glyn"&&(
+            {isOwner&&budTab==="glyn"&&(
               <div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                   <span style={{fontSize:10,color:"#3a4460",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Categories</span>
@@ -4179,7 +4212,7 @@ const calcTimesheetTotals = days => {
 
       {/* Bottom navigation */}
       <div style={{position:"fixed",left:0,right:0,bottom:0,zIndex:200,display:"flex",background:"#0d1117",borderTop:"1px solid #1e2535",paddingBottom:"env(safe-area-inset-bottom)"}}>
-        {PRIMARY_TABS.map(t=>(
+        {primaryTabs.map(t=>(
           <button key={t} onClick={()=>{haptic();setShowMore(false);setTab(t);window.scrollTo(0,0);}} style={{
             flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
             color:tab===t?"#4a9eff":"#5a6480",fontSize:11,fontWeight:700,
@@ -4188,8 +4221,8 @@ const calcTimesheetTotals = days => {
         ))}
         <button onClick={()=>{haptic();setShowMore(s=>!s);}} style={{
           flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
-          color:(showMore||SECONDARY_TABS.includes(tab))?"#a0c0ff":"#5a6480",fontSize:11,fontWeight:700,
-          borderTop:"2px solid "+((showMore||SECONDARY_TABS.includes(tab))?"#a0c0ff":"transparent")
+          color:(showMore||secondaryTabs.includes(tab))?"#a0c0ff":"#5a6480",fontSize:11,fontWeight:700,
+          borderTop:"2px solid "+((showMore||secondaryTabs.includes(tab))?"#a0c0ff":"transparent")
         }}>More ⋯</button>
       </div>
 
@@ -4199,7 +4232,7 @@ const calcTimesheetTotals = days => {
           <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))"}}>
             <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 10px"}}/>
             <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 6px"}}>More</div>
-            {SECONDARY_TABS.map(t=>(
+            {secondaryTabs.map(t=>(
               <button key={t} onClick={()=>{haptic();setTab(t);setShowMore(false);window.scrollTo(0,0);}} style={{
                 display:"block",width:"100%",textAlign:"left",background:tab===t?"#1a2535":"transparent",
                 border:"none",borderRadius:8,color:tab===t?"#a0c0ff":"#c8cee0",fontSize:15,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginBottom:2
