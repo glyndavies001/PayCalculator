@@ -395,6 +395,7 @@ const db = {
     return data || null;
   },
   async saveAppSettings(userId, settings) {
+    lastAppSettingsWrite = Date.now();
     const { error } = await supabase.from("app_settings").upsert({ user_id: userId, ...settings, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
     reportDbError("saveAppSettings", error);
   },
@@ -459,6 +460,7 @@ function notifySyncChange() {
 // -- Supabase error surfacing -------------------------------------------------
 // db methods report failures here so they can show on-screen (no devtools on mobile).
 let lastDbError = null;
+let lastAppSettingsWrite = 0;  // suppress our own app_settings realtime echoes (avoid clobbering live edits)
 const dbErrorListeners = new Set();
 function reportDbError(where, error) {
   if (!error) return;
@@ -549,7 +551,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.27";
+const APP_VERSION = "1.13.28";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1348,6 +1350,32 @@ export default function App() {
             setC("otHrs", t.otHrs);
             setC("weekendOtHrs", t.weekendOtHrs);
             setC("holidayHrs", t.holidayHrs);
+          }
+        });
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "shared_settings" }, () =>
+        db.getSharedSettings().then(ss => { if (ss) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); } })
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "leave_settings", filter: "user_id=eq."+user.id }, () =>
+        db.getLeaveSettings(user.id).then(ls => { if (ls) setLeaveSettings(ls); })
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "monthly_timesheets", filter: "user_id=eq."+user.id }, () =>
+        db.getMonthlyTs(user.id).then(setMonthlyTs)
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "discrepancies", filter: "user_id=eq."+user.id }, () =>
+        db.getDiscrepancies(user.id).then(setDiscrepancies)
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "app_settings", filter: "user_id=eq."+user.id }, () => {
+        if (Date.now() - lastAppSettingsWrite < 4000) return; // ignore our own recent writes (don't clobber live edits)
+        db.getAppSettings(user.id).then(as => {
+          if (!as) return;
+          if (as.calc_inputs) setCi(applyPeriodRollover(as.calc_inputs));
+          if (as.tier_override !== undefined && as.tier_override !== null) setTierOverride(as.tier_override);
+          if (as.notes) setNotes(as.notes);
+          if (as.dismissed_discrepancies) setDismissedDiscs(as.dismissed_discrepancies);
+          if (as.cats_data) {
+            if (as.cats_data.glynCats) setGlynCats(as.cats_data.glynCats);
+            if (as.cats_data.glynBillCats) setGlynBillCats(as.cats_data.glynBillCats);
           }
         });
       })
