@@ -327,6 +327,12 @@ const db = {
     const { error } = await supabase.from("glyn_bills").delete().eq("user_id", userId).eq("bill_id", billId);
     reportDbError("deleteGlynBill", error);
   },
+  async getAllPersonalBills() {
+    // RLS: owner sees all personal bills, partner sees only their own. Used for owner backups.
+    const { data, error } = await supabase.from("glyn_bills").select("*").order("bill_id");
+    reportDbError("getAllPersonalBills", error);
+    return data || [];
+  },
   async getSharedSettings() {
     const { data, error } = await supabase.from("shared_settings").select("*").eq("id", 1).maybeSingle();
     if (error && error.code !== "PGRST116") reportDbError("getSharedSettings", error);
@@ -551,7 +557,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.28";
+const APP_VERSION = "1.13.30";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1383,20 +1389,47 @@ export default function App() {
     return () => supabase.removeChannel(channel);
   }, [user]);
 
+  const fetchPartnerBills = async () => {
+    if (!isOwner || !user) return undefined;
+    try {
+      const all = await db.getAllPersonalBills();
+      return all.filter(b => b.user_id !== user.id).map(b => ({ user_id: b.user_id, id: b.bill_id, name: b.name, total: parseFloat(b.total) }));
+    } catch (e) { return undefined; }
+  };
+  const buildBackupData = async () => {
+    const base = {
+      history, sharedBills, glynBills,
+      cats, billCats, glynCats, glynBillCats,
+      calcInputs: ci, notes,
+      leaveLogs, leaveSettings,
+      monthlyTs, discrepancies, scenarios,
+      accumulated, tierOverride,
+      exportedAt: new Date().toISOString(),
+      version: APP_VERSION,
+    };
+    const partner = await fetchPartnerBills();
+    if (partner && partner.length) base.partnerPersonalBills = partner;
+    return base;
+  };
+  const restorePartnerBills = async (partnerBills) => {
+    if (!isOwner || !user || !Array.isArray(partnerBills)) return;
+    try {
+      const current = (await db.getAllPersonalBills()).filter(b => b.user_id !== user.id);
+      const keep = new Set(partnerBills.map(b => b.user_id + ":" + b.id));
+      for (const b of partnerBills) {
+        if (b.user_id && b.user_id !== user.id) await db.upsertGlynBill(b.user_id, { id: b.id, name: b.name, total: b.total });
+      }
+      for (const b of current) {
+        if (!keep.has(b.user_id + ":" + b.bill_id)) await db.deleteGlynBill(b.user_id, b.bill_id);
+      }
+    } catch (e) { console.error("Partner bills restore failed:", e); }
+  };
+
   const handleSignOut = async () => {
     // Take a final backup before signing out
     if (user) {
       try {
-        const backupData = {
-          history, sharedBills, glynBills,
-          cats, billCats, glynCats, glynBillCats,
-          calcInputs: ci, notes,
-          leaveLogs, leaveSettings,
-          monthlyTs, discrepancies, scenarios,
-          accumulated, tierOverride,
-          exportedAt: new Date().toISOString(),
-          version: APP_VERSION
-        };
+        const backupData = await buildBackupData();
         await db.createBackup(user.id, backupData, "signout").catch(()=>{});
       } catch(e) {}
     }
@@ -2063,16 +2096,7 @@ export default function App() {
         if (!shouldBackup || cancelled) return;
         await new Promise(r => setTimeout(r, 5000));
         if (cancelled) return;
-        const backupData = {
-          history, sharedBills, glynBills,
-          cats, billCats, glynCats, glynBillCats,
-          calcInputs: ci, notes,
-          leaveLogs, leaveSettings,
-          monthlyTs, discrepancies, scenarios,
-          accumulated, tierOverride,
-          exportedAt: new Date().toISOString(),
-          version: APP_VERSION
-        };
+        const backupData = await buildBackupData();
         await db.createBackup(user.id, backupData, "auto");
       } catch(e) { console.error("Auto-backup failed:", e); }
     };
@@ -2301,8 +2325,9 @@ export default function App() {
     else{const bc={...billCats};catId==null?delete bc[billId]:(bc[billId]=catId);updBC(bc);}
   };
 
-  const exportData=()=>{
-    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,exportedAt:new Date().toISOString()};
+  const exportData=async()=>{
+    const partnerPersonalBills=await fetchPartnerBills();
+    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,partnerPersonalBills,exportedAt:new Date().toISOString()};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
     const url=URL.createObjectURL(blob);
     const a=document.createElement("a");
@@ -2319,6 +2344,7 @@ export default function App() {
         if(d.history){updH(d.history);}
         if(d.sharedBills){updSB(d.sharedBills);}
         if(d.glynBills){updGB(d.glynBills);}
+        if(d.partnerPersonalBills){restorePartnerBills(d.partnerPersonalBills);}
         restoreCats(d);
         if(d.calcInputs){setCi(d.calcInputs);if(user) db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
         if(d.notes){updNotes(d.notes);}
@@ -3714,8 +3740,9 @@ const calcTimesheetTotals = days => {
                 style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#4a9eff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
                 🔄 Refresh data
               </button>
-              <button onClick={()=>{
-                const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,exportedAt:new Date().toISOString()};
+              <button onClick={async()=>{
+                const partnerPersonalBills=await fetchPartnerBills();
+                const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,partnerPersonalBills,exportedAt:new Date().toISOString()};
                 const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
                 const url=URL.createObjectURL(blob);
                 const a=document.createElement("a");
@@ -3848,16 +3875,7 @@ const calcTimesheetTotals = days => {
                     if (!user) return;
                     setBackupLoading(true);
                     try {
-                      const backupData = {
-                        history, sharedBills, glynBills,
-                        cats, billCats, glynCats, glynBillCats,
-                        calcInputs: ci, notes,
-                        leaveLogs, leaveSettings,
-                        monthlyTs, discrepancies, scenarios,
-                        accumulated, tierOverride,
-                        exportedAt: new Date().toISOString(),
-                        version: APP_VERSION
-                      };
+                      const backupData = await buildBackupData();
                       await db.createBackup(user.id, backupData, "manual");
                       setBackupList(await db.getBackups(user.id));
                       setImportMsg("✓ Backup saved to cloud");
@@ -3885,6 +3903,7 @@ const calcTimesheetTotals = days => {
                             if(d.history){updH(d.history);}
                             if(d.sharedBills){updSB(d.sharedBills);}
                             if(d.glynBills){updGB(d.glynBills);}
+                            if(d.partnerPersonalBills){await restorePartnerBills(d.partnerPersonalBills);}
                             restoreCats(d);
                             if(d.calcInputs){setCi(d.calcInputs);if(user)db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
                             if(d.notes){updNotes(d.notes);}
