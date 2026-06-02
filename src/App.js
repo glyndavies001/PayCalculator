@@ -314,18 +314,27 @@ const db = {
     const { error } = await supabase.from("shared_bills").delete().eq("bill_id", billId);
     reportDbError("deleteSharedBill", error);
   },
-  async getGlynBills() {
-    const { data, error } = await supabase.from("glyn_bills").select("*").order("bill_id");
+  async getGlynBills(userId) {
+    const { data, error } = await supabase.from("glyn_bills").select("*").eq("user_id", userId).order("bill_id");
     reportDbError("getGlynBills", error);
     return data || [];
   },
-  async upsertGlynBill(b) {
-    const { error } = await supabase.from("glyn_bills").upsert({ bill_id: b.id, name: b.name, total: b.total }, { onConflict: "bill_id" });
+  async upsertGlynBill(userId, b) {
+    const { error } = await supabase.from("glyn_bills").upsert({ user_id: userId, bill_id: b.id, name: b.name, total: b.total }, { onConflict: "user_id,bill_id" });
     reportDbError("upsertGlynBill", error);
   },
-  async deleteGlynBill(billId) {
-    const { error } = await supabase.from("glyn_bills").delete().eq("bill_id", billId);
+  async deleteGlynBill(userId, billId) {
+    const { error } = await supabase.from("glyn_bills").delete().eq("user_id", userId).eq("bill_id", billId);
     reportDbError("deleteGlynBill", error);
+  },
+  async getSharedSettings() {
+    const { data, error } = await supabase.from("shared_settings").select("*").eq("id", 1).maybeSingle();
+    if (error && error.code !== "PGRST116") reportDbError("getSharedSettings", error);
+    return data;
+  },
+  async saveSharedSettings(cats, billCats) {
+    const { error } = await supabase.from("shared_settings").upsert({ id: 1, cats, bill_cats: billCats, updated_at: new Date().toISOString() }, { onConflict: "id" });
+    reportDbError("saveSharedSettings", error);
   },
   async getLeaveLogs(userId) {
     const { data, error } = await supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false });
@@ -540,7 +549,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.26";
+const APP_VERSION = "1.13.27";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1166,9 +1175,8 @@ export default function App() {
   React.useEffect(() => {
     if (!isOwner) {
       if (!["Budget","Diag"].includes(tab)) setTab("Budget");
-      if (budTab !== "shared") setBudTab("shared");
     }
-  }, [isOwner, tab, budTab]);
+  }, [isOwner, tab]);
 
   // Load all data from Supabase when user logs in
   React.useEffect(() => {
@@ -1179,7 +1187,7 @@ export default function App() {
         const [payslips, sBills, gBills, lLogs, lSettings, mTs, discs, scens, appSettings] = await Promise.all([
           db.getPayslips(user.id),
           db.getSharedBills(),
-          db.getGlynBills(),
+          db.getGlynBills(user.id),
           db.getLeaveLogs(user.id),
           db.getLeaveSettings(user.id),
           db.getMonthlyTs(user.id),
@@ -1223,7 +1231,7 @@ export default function App() {
         if (gBills.length > 0) {
           setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
         } else if (owner) {
-          for (const b of INITIAL_GLYN_BILLS) await trackSave(() => db.upsertGlynBill(b));
+          for (const b of INITIAL_GLYN_BILLS) await trackSave(() => db.upsertGlynBill(user.id, b));
         } else {
           setGlynBills([]); // partner has no personal bills (and can't see the owner's)
         }
@@ -1251,6 +1259,20 @@ export default function App() {
             if (cd.glynBillCats) setGlynBillCats(cd.glynBillCats);
           }
         }
+
+        // Shared bill categories (shared across both users)
+        try {
+          const ss = await db.getSharedSettings();
+          if (ss && (ss.cats || ss.bill_cats)) {
+            setCats(ss.cats || []);
+            setBillCats(ss.bill_cats || {});
+          } else if (owner) {
+            const cd = appSettings?.cats_data || {};
+            if ((cd.cats && cd.cats.length) || (cd.billCats && Object.keys(cd.billCats).length)) {
+              await db.saveSharedSettings(cd.cats || [], cd.billCats || {});
+            }
+          }
+        } catch (e) {}
 
         // Load accumulator from DB - migrate from localStorage if DB is empty
         const accData = await db.getAccumulator(user.id);
@@ -1311,8 +1333,8 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_bills" }, () =>
         db.getSharedBills().then(b => setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), isCarGlyn: r.is_car_glyn }))))
       )
-      .on("postgres_changes", { event: "*", schema: "public", table: "glyn_bills" }, () =>
-        db.getGlynBills().then(b => setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))
+      .on("postgres_changes", { event: "*", schema: "public", table: "glyn_bills", filter: "user_id=eq."+user.id }, () =>
+        db.getGlynBills(user.id).then(b => setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_logs" }, () =>
         db.getLeaveLogs(user.id).then(setLeaveLogs)
@@ -1360,7 +1382,7 @@ export default function App() {
     setDataLoading(true);
     try {
       const [payslips, sBills, gBills, lLogs, lSettings, mTs, discs, scens, appSettings, accData] = await Promise.all([
-        db.getPayslips(user.id), db.getSharedBills(), db.getGlynBills(),
+        db.getPayslips(user.id), db.getSharedBills(), db.getGlynBills(user.id),
         db.getLeaveLogs(user.id), db.getLeaveSettings(user.id), db.getMonthlyTs(user.id),
         db.getDiscrepancies(user.id), db.getScenarios(user.id), db.getAppSettings(user.id),
         db.getAccumulator(user.id),
@@ -1391,6 +1413,21 @@ export default function App() {
           if (cd.glynBillCats) setGlynBillCats(cd.glynBillCats);
         }
       }
+
+      // Shared bill categories (shared across both users)
+      try {
+        const ss = await db.getSharedSettings();
+        if (ss && (ss.cats || ss.bill_cats)) {
+          setCats(ss.cats || []);
+          setBillCats(ss.bill_cats || {});
+        } else if (isOwner) {
+          const cd = appSettings?.cats_data || {};
+          if ((cd.cats && cd.cats.length) || (cd.billCats && Object.keys(cd.billCats).length)) {
+            await db.saveSharedSettings(cd.cats || [], cd.billCats || {});
+          }
+        }
+      } catch (e) {}
+
       if (accData && accData.data) {
         setAccumulated(accData.data);
         setTsLastUpload(accData.lastUpload);
@@ -2067,19 +2104,22 @@ export default function App() {
   const updGB=async (b)=>{
     setGlynBills(b);
     if (user) {
-      for (const bill of b) trackSave(db.upsertGlynBill(bill));
+      for (const bill of b) trackSave(db.upsertGlynBill(user.id, bill));
       const currentIds = new Set(glynBills.map(x => x.id));
       const newIds = new Set(b.map(x => x.id));
-      for (const id of currentIds) if (!newIds.has(id)) trackSave(db.deleteGlynBill(id));
+      for (const id of currentIds) if (!newIds.has(id)) trackSave(db.deleteGlynBill(user.id, id));
     }
   };
   // Categories - store in app_settings (shared per user account)
+  const saveSharedCats=(nextCats,nextBillCats)=>{ if (user) trackSave(db.saveSharedSettings(nextCats, nextBillCats)); };
   const updC=c=>{
     setCats(c);
+    saveSharedCats(c, billCats);
     if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats: c, billCats, glynCats, glynBillCats } }));
   };
   const updBC=bc=>{
     setBillCats(bc);
+    saveSharedCats(cats, bc);
     if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats: bc, glynCats, glynBillCats } }));
   };
   const updGC=c=>{
@@ -2100,6 +2140,7 @@ export default function App() {
       glynBillCats: d.glynBillCats !== undefined ? d.glynBillCats : glynBillCats,
     };
     setCats(cd.cats); setBillCats(cd.billCats); setGlynCats(cd.glynCats); setGlynBillCats(cd.glynBillCats);
+    saveSharedCats(cd.cats, cd.billCats);
     if (user) db.saveAppSettings(user.id, { cats_data: cd });
   };
   const setC=useCallback((k,v)=>{
@@ -2209,8 +2250,9 @@ export default function App() {
       const nc=cats.filter(c=>c.id!==id);
       const bc={...billCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});
       setCats(nc);setBillCats(bc);
+      saveSharedCats(nc, bc);
       if(user) db.saveAppSettings(user.id,{cats_data:{cats:nc,billCats:bc,glynCats,glynBillCats}});
-      showUndoToast((cat?cat.name:"Category")+" deleted",()=>{setCats(prevCats);setBillCats(prevBC);if(user)db.saveAppSettings(user.id,{cats_data:{cats:prevCats,billCats:prevBC,glynCats,glynBillCats}});});
+      showUndoToast((cat?cat.name:"Category")+" deleted",()=>{setCats(prevCats);setBillCats(prevBC);saveSharedCats(prevCats, prevBC);if(user)db.saveAppSettings(user.id,{cats_data:{cats:prevCats,billCats:prevBC,glynCats,glynBillCats}});});
     }
   };
   const renCat=(id,name,isGlyn)=>{isGlyn?updGC(glynCats.map(c=>c.id===id?{...c,name}:c)):updC(cats.map(c=>c.id===id?{...c,name}:c));};
@@ -2804,13 +2846,19 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
             ) : (
-            <div style={{...card,textAlign:"center",padding:"14px 6px",marginBottom:14}}>
-              <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Your share of shared bills</div>
-              <div style={{fontSize:20,fontWeight:800,color:"#c84aff"}}>{fmt(shHollie)}</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+              {[
+                {label:"Your share of shared bills",value:fmt(shHollie),accent:"#c84aff"},
+                {label:"Your personal bills",       value:fmt(glOnly), accent:"#ff8c4a"},
+              ].map(k=>(
+                <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
+                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>{k.label}</div>
+                  <div style={{fontSize:16,fontWeight:800,color:k.accent}}>{k.value}</div>
+                </div>
+              ))}
             </div>
             )}
 
-            {isOwner && (
             <div style={{display:"flex",gap:4,marginBottom:12}}>
               {[["shared","Shared Bills"],["glyn","My Bills"]].map(([v,l])=>(
                 <button key={v} onClick={()=>setBudTab(v)} style={{
@@ -2819,7 +2867,6 @@ const calcTimesheetTotals = days => {
                 }}>{l}</button>
               ))}
             </div>
-            )}
 
             {budTab==="shared"&&(
               <div>
@@ -2882,7 +2929,7 @@ const calcTimesheetTotals = days => {
               </div>
             )}
 
-            {isOwner&&budTab==="glyn"&&(
+            {budTab==="glyn"&&(
               <div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                   <span style={{fontSize:10,color:"#3a4460",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Categories</span>
@@ -2931,7 +2978,7 @@ const calcTimesheetTotals = days => {
                 </div>
                 <div style={{display:"flex",gap:8,marginTop:10}}>
                   <button onClick={()=>setAddGl(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
-                  <button onClick={()=>{if(!window.confirm("Reset all personal bills to defaults? This cannot be undone."))return;updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>
+                  {isOwner && <button onClick={()=>{if(!window.confirm("Reset all personal bills to defaults? This cannot be undone."))return;updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>}
                 </div>
                 <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit · tap a bill name to move it · double-tap a category to rename</p>
               </div>
