@@ -342,6 +342,19 @@ const db = {
     const { error } = await supabase.from("shared_settings").upsert({ id: 1, cats, bill_cats: billCats, updated_at: new Date().toISOString() }, { onConflict: "id" });
     reportDbError("saveSharedSettings", error);
   },
+  async getSettlements() {
+    const { data, error } = await supabase.from("settlements").select("*").order("created_at", { ascending: false });
+    reportDbError("getSettlements", error);
+    return data || [];
+  },
+  async upsertSettlement(s) {
+    const { error } = await supabase.from("settlements").upsert({ id: s.id, kind: s.kind, payer: s.payer, amount: s.amount, note: s.note, entry_date: s.entry_date, created_by: s.created_by }, { onConflict: "id" });
+    reportDbError("upsertSettlement", error);
+  },
+  async deleteSettlement(id) {
+    const { error } = await supabase.from("settlements").delete().eq("id", id);
+    reportDbError("deleteSettlement", error);
+  },
   async getLeaveLogs(userId) {
     const { data, error } = await supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false });
     reportDbError("getLeaveLogs", error);
@@ -557,9 +570,9 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.30";
+const APP_VERSION = "1.13.32";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
-const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Diag"];
+const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Settle Up","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
 const SL_START_YEAR = 2019;
 const SL_WRITEOFF_YEAR = 2049;
@@ -1134,6 +1147,9 @@ export default function App() {
   const [dbError,setDbError]=useState(lastDbError);
   const [showMore,setShowMore]=useState(false);            // bottom "More" sheet (secondary tabs)
   const [moveBill,setMoveBill]=useState(null);             // {id,isGlyn} -> move-to-category sheet
+  const [settlements,setSettlements]=useState([]);         // shared "settle up" ledger
+  const [settleOpen,setSettleOpen]=useState(false);        // add-entry sheet
+  const [settleForm,setSettleForm]=useState({kind:"charge",mine:true,amount:"",note:"",date:""});
   const [toast,setToast]=useState(null);                   // {msg,undo} -> undo toast
   const toastTimer=useRef(null);
   const [pullY,setPullY]=useState(0);                      // pull-to-refresh visual distance
@@ -1182,9 +1198,37 @@ export default function App() {
   // Partner (Hollie) restricted view: keep her on allowed tabs only
   React.useEffect(() => {
     if (!isOwner) {
-      if (!["Budget","Diag"].includes(tab)) setTab("Budget");
+      if (!["Budget","Settle Up","Diag"].includes(tab)) setTab("Budget");
     }
   }, [isOwner, tab]);
+
+  // Auto-scroll the page while dragging a bill near the top/bottom edge
+  React.useEffect(() => {
+    let raf = null, y = 0, running = false;
+    const tick = () => {
+      if (dragBill.current == null) { running = false; raf = null; return; }
+      const h = window.innerHeight, edge = 90;
+      if (y < edge) window.scrollBy(0, -Math.ceil((edge - y) / 5));
+      else if (y > h - edge) window.scrollBy(0, Math.ceil((y - (h - edge)) / 5));
+      raf = requestAnimationFrame(tick);
+    };
+    const onDragOver = (e) => {
+      if (dragBill.current == null) return;
+      e.preventDefault();
+      y = e.clientY;
+      if (!running) { running = true; raf = requestAnimationFrame(tick); }
+    };
+    const stop = () => { running = false; if (raf) cancelAnimationFrame(raf); raf = null; };
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragend", stop);
+    document.addEventListener("drop", stop);
+    return () => {
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragend", stop);
+      document.removeEventListener("drop", stop);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
 
   // Load all data from Supabase when user logs in
   React.useEffect(() => {
@@ -1282,6 +1326,8 @@ export default function App() {
           }
         } catch (e) {}
 
+        try { setSettlements(await db.getSettlements()); } catch (e) {}
+
         // Load accumulator from DB - migrate from localStorage if DB is empty
         const accData = await db.getAccumulator(user.id);
         const localAcc = load(SK.timesheets, null);
@@ -1361,6 +1407,9 @@ export default function App() {
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_settings" }, () =>
         db.getSharedSettings().then(ss => { if (ss) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); } })
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "settlements" }, () =>
+        db.getSettlements().then(setSettlements)
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_settings", filter: "user_id=eq."+user.id }, () =>
         db.getLeaveSettings(user.id).then(ls => { if (ls) setLeaveSettings(ls); })
@@ -1488,6 +1537,8 @@ export default function App() {
           }
         }
       } catch (e) {}
+
+      try { setSettlements(await db.getSettlements()); } catch (e) {}
 
       if (accData && accData.data) {
         setAccumulated(accData.data);
@@ -2324,6 +2375,31 @@ export default function App() {
     if(isGlyn){const bc={...glynBillCats};catId==null?delete bc[billId]:(bc[billId]=catId);updGBC(bc);}
     else{const bc={...billCats};catId==null?delete bc[billId]:(bc[billId]=catId);updBC(bc);}
   };
+  const renameBill=(billId,name,isGlyn)=>{
+    if(isGlyn) updGB(glynBills.map(b=>b.id===billId?{...b,name}:b));
+    else updSB(sharedBills.map(b=>b.id===billId?{...b,name}:b));
+  };
+  const settleSignedOf=(s)=>s.payer==="glyn"?Number(s.amount):-Number(s.amount);
+  const addSettlement=()=>{
+    const amt=parseFloat(settleForm.amount);
+    if(isNaN(amt)||amt<=0)return;
+    const me=isOwner?"glyn":"hollie";
+    const them=isOwner?"hollie":"glyn";
+    const payer=settleForm.mine?me:them;
+    const entry={id:Date.now(),kind:settleForm.kind,payer,amount:amt,note:settleForm.note.trim(),entry_date:settleForm.date||new Date().toISOString().slice(0,10),created_by:user?user.id:null};
+    setSettlements([entry,...settlements]);
+    if(user)trackSave(db.upsertSettlement(entry));
+    haptic();
+    setSettleOpen(false);
+    setSettleForm({kind:"charge",mine:true,amount:"",note:"",date:""});
+  };
+  const delSettlement=(id)=>{
+    const entry=settlements.find(s=>s.id===id);
+    const prev=settlements;
+    setSettlements(settlements.filter(s=>s.id!==id));
+    if(user)trackSave(db.deleteSettlement(id));
+    showUndoToast("Entry deleted",()=>{setSettlements(prev);if(user&&entry)trackSave(db.upsertSettlement(entry));});
+  };
 
   const exportData=async()=>{
     const partnerPersonalBills=await fetchPartnerBills();
@@ -2591,7 +2667,7 @@ const calcTimesheetTotals = days => {
   }
 
 
-  const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget"];
+  const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Settle Up"];
   const secondaryTabs = isOwner ? SECONDARY_TABS : ["Diag"];
 
   return (
@@ -2979,7 +3055,7 @@ const calcTimesheetTotals = days => {
                   <button onClick={()=>setAddSh(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
                   {isOwner && <button onClick={()=>{if(!window.confirm("Reset all shared bills to defaults? This cannot be undone."))return;updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>}
                 </div>
-                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap total to edit · tap a bill name to move it · double-tap a category to rename</p>
+                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap total to edit · tap a bill to rename or move it · double-tap a category to rename</p>
               </div>
             )}
 
@@ -3034,7 +3110,7 @@ const calcTimesheetTotals = days => {
                   <button onClick={()=>setAddGl(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
                   {isOwner && <button onClick={()=>{if(!window.confirm("Reset all personal bills to defaults? This cannot be undone."))return;updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>}
                 </div>
-                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit · tap a bill name to move it · double-tap a category to rename</p>
+                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit · tap a bill to rename or move it · double-tap a category to rename</p>
               </div>
             )}
           </div>
@@ -4218,6 +4294,60 @@ const calcTimesheetTotals = days => {
           </div>
         )}
 
+        {tab==="Settle Up"&&(()=>{
+          const me=isOwner?"glyn":"hollie";
+          const themName=isOwner?"Hollie":"Glyn";
+          const net=settlements.reduce((a,s)=>a+settleSignedOf(s),0);
+          const owedToMe=me==="glyn"?net:-net;            // >0 they owe me, <0 I owe them
+          const r=Math.round(owedToMe*100)/100;
+          return (
+          <div>
+            <div style={{...card,marginBottom:12,textAlign:"center",padding:"22px 12px"}}>
+              {Math.abs(r)<0.005?(
+                <>
+                  <div style={{fontSize:30,marginBottom:6}}>🤝</div>
+                  <div style={{fontSize:18,fontWeight:800,color:"#4ad07a"}}>All settled up</div>
+                  <div style={{fontSize:12,color:"#5a6480",marginTop:4}}>Nobody owes anybody</div>
+                </>
+              ):(
+                <>
+                  <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
+                    {r>0?`${themName} owes you`:`You owe ${themName}`}
+                  </div>
+                  <div style={{fontSize:38,fontWeight:800,color:r>0?"#4ad07a":"#ff6b8a",lineHeight:1}}>{fmt(r)}</div>
+                </>
+              )}
+            </div>
+
+            <button onClick={()=>{haptic();setSettleForm({kind:"charge",mine:true,amount:"",note:"",date:new Date().toISOString().slice(0,10)});setSettleOpen(true);}}
+              style={{width:"100%",background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"15px",cursor:"pointer",marginBottom:14}}>
+              ＋ Add entry
+            </button>
+
+            <div style={hdr}>History</div>
+            {settlements.length===0&&<div style={{...card,fontSize:13,color:"#5a6480",textAlign:"center",padding:"20px 12px"}}>No entries yet. Tap “Add entry” to log a cost someone covered, or a repayment.</div>}
+            {settlements.map(s=>{
+              const signed=settleSignedOf(s);
+              const effectOnMe=me==="glyn"?signed:-signed;   // + increases what I'm owed
+              const desc=s.kind==="repayment"
+                ? (s.payer===me?`You paid ${themName} back`:`${themName} paid you back`)
+                : (s.payer===me?`You covered${s.note?` ${s.note}`:" a cost"}`:`${themName} covered${s.note?` ${s.note}`:" a cost"}`);
+              const dstr=s.entry_date?new Date(s.entry_date+"T00:00:00").toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}):"";
+              return (
+                <div key={s.id} style={{...card,marginBottom:8,display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:14,fontWeight:600,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{desc}</div>
+                    <div style={{fontSize:11,color:"#5a6480",marginTop:2}}>{s.kind==="repayment"?"Repayment":"Cost covered"}{dstr?` · ${dstr}`:""}</div>
+                  </div>
+                  <div style={{fontSize:15,fontWeight:800,color:effectOnMe>=0?"#4ad07a":"#ff6b8a",whiteSpace:"nowrap"}}>{effectOnMe>=0?"+":"−"}{fmt(s.amount)}</div>
+                  <button onClick={()=>{haptic();delSettlement(s.id);}} style={{background:"transparent",border:"none",color:"#5a6480",fontSize:18,cursor:"pointer",padding:"0 2px",lineHeight:1}}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+          );
+        })()}
+
         {tab==="Diag"&&(
           <div>
             <div style={{...card,marginBottom:12}}>
@@ -4346,7 +4476,11 @@ const calcTimesheetTotals = days => {
           <div onClick={()=>setMoveBill(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"72vh",overflowY:"auto"}}>
               <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 10px"}}/>
-              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 10px"}}>Move {bill?`"${bill.name}"`:"bill"} to…</div>
+              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 8px"}}>Edit bill</div>
+              <input key={moveBill.id} defaultValue={bill?bill.name:""} placeholder="Bill name"
+                onBlur={e=>{const v=e.target.value.trim();if(v&&bill&&v!==bill.name)renameBill(moveBill.id,v,isG);}}
+                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
+              <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Move to category</div>
               {list.map(c=>(
                 <button key={c.id} onClick={()=>{haptic();assignCat(moveBill.id,c.id,isG);setMoveBill(null);}} style={{
                   display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",textAlign:"left",background:curCat===c.id?"#1a2535":"transparent",
@@ -4358,6 +4492,58 @@ const calcTimesheetTotals = days => {
                 display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",textAlign:"left",background:!curCat?"#1a2535":"transparent",
                 border:"none",borderRadius:8,color:"#8892b0",fontSize:14,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginTop:4
               }}><span>Uncategorised</span>{!curCat&&<span style={{color:"#8892b0"}}>✓</span>}</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {settleOpen&&(()=>{
+        const themName=isOwner?"Hollie":"Glyn";
+        const isCharge=settleForm.kind==="charge";
+        const set=(patch)=>setSettleForm(f=>({...f,...patch}));
+        const valid=parseFloat(settleForm.amount)>0;
+        const seg=(active)=>({flex:1,background:active?"#1a3a5a":"transparent",border:active?"1px solid #2a5a8a":"1px solid #2a3050",borderRadius:8,color:active?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"});
+        return (
+          <div onClick={()=>setSettleOpen(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
+            <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 14px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"88vh",overflowY:"auto"}}>
+              <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 12px"}}/>
+              <div style={{fontSize:14,color:"#e8eaf0",fontWeight:800,marginBottom:12}}>Add entry</div>
+
+              <div style={{display:"flex",gap:8,marginBottom:14}}>
+                <button onClick={()=>set({kind:"charge"})} style={seg(isCharge)}>Covered a cost</button>
+                <button onClick={()=>set({kind:"repayment"})} style={seg(!isCharge)}>Repayment</button>
+              </div>
+
+              <div style={{...hdr,marginBottom:6}}>{isCharge?"Who paid?":"Who paid who back?"}</div>
+              <div style={{display:"flex",gap:8,marginBottom:14}}>
+                <button onClick={()=>set({mine:true})} style={seg(settleForm.mine)}>{isCharge?"I covered it":`I paid ${themName}`}</button>
+                <button onClick={()=>set({mine:false})} style={seg(!settleForm.mine)}>{isCharge?`${themName} covered it`:`${themName} paid me`}</button>
+              </div>
+
+              <div style={{...hdr,marginBottom:6}}>{isCharge?(settleForm.mine?`${themName}'s share`:"My share"):"Amount"}</div>
+              <div style={{display:"flex",gap:8,marginBottom:isCharge?6:14}}>
+                <input value={settleForm.amount} onChange={e=>set({amount:e.target.value.replace(/[^0-9.]/g,"")})} inputMode="decimal" placeholder="0.00"
+                  style={{flex:1,boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:17,fontWeight:700,padding:"12px 14px"}}/>
+                <button onClick={()=>{const v=parseFloat(settleForm.amount);if(!isNaN(v))set({amount:(Math.round(v*50)/100).toString()});}}
+                  style={{background:"#1a2535",border:"1px solid #2a3050",borderRadius:8,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"0 18px",cursor:"pointer"}}>½</button>
+              </div>
+              {isCharge&&<div style={{fontSize:11,color:"#5a6480",marginBottom:14}}>Enter the other person’s share. Tap ½ to halve a total.</div>}
+
+              {isCharge&&(<>
+                <div style={{...hdr,marginBottom:6}}>What for? (optional)</div>
+                <input value={settleForm.note} onChange={e=>set({note:e.target.value})} placeholder="e.g. Council tax"
+                  style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,padding:"12px 14px",marginBottom:14}}/>
+              </>)}
+
+              <div style={{...hdr,marginBottom:6}}>Date</div>
+              <input type="date" value={settleForm.date} onChange={e=>set({date:e.target.value})}
+                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,padding:"12px 14px",marginBottom:16}}/>
+
+              <button onClick={addSettlement} disabled={!valid}
+                style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":"#3a4360",fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginBottom:6}}>
+                Save
+              </button>
+              <button onClick={()=>setSettleOpen(false)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"8px",cursor:"pointer"}}>Cancel</button>
             </div>
           </div>
         );
