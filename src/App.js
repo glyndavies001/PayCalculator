@@ -368,6 +368,19 @@ const db = {
     const { error } = await supabase.from("gifts").delete().eq("id", id);
     reportDbError("deleteGift", error);
   },
+  async getScheduledBills() {
+    const { data, error } = await supabase.from("scheduled_bills").select("*").order("created_at", { ascending: true });
+    reportDbError("getScheduledBills", error);
+    return data || [];
+  },
+  async upsertScheduledBill(b) {
+    const { error } = await supabase.from("scheduled_bills").upsert({ id: b.id, name: b.name, total: b.total, is_car_glyn: b.is_car_glyn, scope: b.scope, owner: b.owner, freq: b.freq, months: b.months, year: b.year }, { onConflict: "id" });
+    reportDbError("upsertScheduledBill", error);
+  },
+  async deleteScheduledBill(id) {
+    const { error } = await supabase.from("scheduled_bills").delete().eq("id", id);
+    reportDbError("deleteScheduledBill", error);
+  },
   async getLeaveLogs(userId) {
     const { data, error } = await supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false });
     reportDbError("getLeaveLogs", error);
@@ -583,7 +596,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.34";
+const APP_VERSION = "1.13.35";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1167,6 +1180,9 @@ export default function App() {
   const [giftSort,setGiftSort]=useState("bday");           // "bday" | "name"
   const [giftOpen,setGiftOpen]=useState(false);            // add/edit sheet
   const [giftForm,setGiftForm]=useState({id:null,name:"",dob:"",notes:"",cost:""});
+  const [scheduledBills,setScheduledBills]=useState([]);   // bills active only in certain months
+  const [schedOpen,setSchedOpen]=useState(false);          // manage sheet
+  const [schedForm,setSchedForm]=useState(null);           // null=list view, object=add/edit form
   const [toast,setToast]=useState(null);                   // {msg,undo} -> undo toast
   const toastTimer=useRef(null);
   const [pullY,setPullY]=useState(0);                      // pull-to-refresh visual distance
@@ -1347,6 +1363,8 @@ export default function App() {
 
         try { setGifts(await db.getGifts()); } catch (e) {}
 
+        try { setScheduledBills(await db.getScheduledBills()); } catch (e) {}
+
         // Load accumulator from DB - migrate from localStorage if DB is empty
         const accData = await db.getAccumulator(user.id);
         const localAcc = load(SK.timesheets, null);
@@ -1433,6 +1451,9 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "gifts" }, () =>
         db.getGifts().then(setGifts)
       )
+      .on("postgres_changes", { event: "*", schema: "public", table: "scheduled_bills" }, () =>
+        db.getScheduledBills().then(setScheduledBills)
+      )
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_settings", filter: "user_id=eq."+user.id }, () =>
         db.getLeaveSettings(user.id).then(ls => { if (ls) setLeaveSettings(ls); })
       )
@@ -1475,7 +1496,7 @@ export default function App() {
       leaveLogs, leaveSettings,
       monthlyTs, discrepancies, scenarios,
       accumulated, tierOverride,
-      settlements, gifts,
+      settlements, gifts, scheduledBills,
       exportedAt: new Date().toISOString(),
       version: APP_VERSION,
     };
@@ -1515,6 +1536,16 @@ export default function App() {
       for (const g of current) if (!keep.has(g.id)) await db.deleteGift(g.id);
       setGifts(await db.getGifts());
     } catch (e) { console.error("Gifts restore failed:", e); }
+  };
+  const restoreScheduledBills = async (arr) => {
+    if (!user || !Array.isArray(arr)) return;
+    try {
+      const current = await db.getScheduledBills();
+      const keep = new Set(arr.map(b => b.id));
+      for (const b of arr) await db.upsertScheduledBill(b);
+      for (const b of current) if (!keep.has(b.id)) await db.deleteScheduledBill(b.id);
+      setScheduledBills(await db.getScheduledBills());
+    } catch (e) { console.error("Scheduled bills restore failed:", e); }
   };
 
   const handleSignOut = async () => {
@@ -1584,6 +1615,8 @@ export default function App() {
       try { setSettlements(await db.getSettlements()); } catch (e) {}
 
       try { setGifts(await db.getGifts()); } catch (e) {}
+
+      try { setScheduledBills(await db.getScheduledBills()); } catch (e) {}
 
       if (accData && accData.data) {
         setAccumulated(accData.data);
@@ -2203,9 +2236,20 @@ export default function App() {
 
   const latest=useMemo(()=>sortH(history).slice(-1)[0],[history]);
   const prevMonth=useMemo(()=>sortH(history).slice(-2)[0],[history]);
-  const shGlyn=sharedBills.reduce((s,b)=>s+billShares(b).glyn,0);
-  const shHollie=sharedBills.reduce((s,b)=>s+billShares(b).hollie,0);
-  const glOnly=glynBills.reduce((s,b)=>s+b.total,0);
+  const schedNowMonth=new Date().getMonth()+1, schedNowYear=new Date().getFullYear();
+  const schedActive=(sb)=>{
+    const ms=Array.isArray(sb.months)?sb.months:[];
+    if(sb.freq==="once") return sb.year===schedNowYear && ms.includes(schedNowMonth);
+    return ms.includes(schedNowMonth);
+  };
+  const schedShares=(sb)=>billShares({total:Number(sb.total)||0,isCarGlyn:sb.is_car_glyn});
+  const myId=user?user.id:null;
+  const activeSchedShared=scheduledBills.filter(b=>b.scope==="shared"&&schedActive(b));
+  const activeSchedPersonal=scheduledBills.filter(b=>b.scope==="personal"&&b.owner===myId&&schedActive(b));
+  const schedShTotal=activeSchedShared.reduce((s,b)=>s+(Number(b.total)||0),0);
+  const shGlyn=sharedBills.reduce((s,b)=>s+billShares(b).glyn,0)+activeSchedShared.reduce((s,b)=>s+schedShares(b).glyn,0);
+  const shHollie=sharedBills.reduce((s,b)=>s+billShares(b).hollie,0)+activeSchedShared.reduce((s,b)=>s+schedShares(b).hollie,0);
+  const glOnly=glynBills.reduce((s,b)=>s+b.total,0)+activeSchedPersonal.reduce((s,b)=>s+(Number(b.total)||0),0);
   const totalOut=shGlyn+glOnly;
 
   // Effective tier: must be computed before cr
@@ -2493,9 +2537,46 @@ export default function App() {
     showUndoToast("Person removed",()=>{setGifts(prev);if(user&&g)trackSave(db.upsertGift(g));});
   };
 
+  const MONTH_ABBR=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const lastDayLabel=(m)=>{const d=new Date(schedNowYear,m,0).getDate();return `${d} ${MONTH_ABBR[m-1]}`;};
+  const schedWhenLabel=(sb)=>{
+    const ms=(Array.isArray(sb.months)?sb.months:[]).slice().sort((a,b)=>a-b);
+    const names=ms.map(m=>MONTH_ABBR[m-1]).join(", ");
+    return sb.freq==="once"?`One-off · ${names} ${sb.year||""}`:`Every year · ${names||"—"}`;
+  };
+  const saveSchedBill=()=>{
+    if(!schedForm)return;
+    const name=(schedForm.name||"").trim();
+    if(!name||!schedForm.months.length)return;
+    const existing=schedForm.id?scheduledBills.find(b=>b.id===schedForm.id):null;
+    const row={
+      id:schedForm.id||Date.now(),
+      name,
+      total:parseFloat(schedForm.total)||0,
+      is_car_glyn:schedForm.scope==="shared"?!!schedForm.isCarGlyn:false,
+      scope:schedForm.scope,
+      owner:existing?existing.owner:myId,
+      freq:schedForm.freq,
+      months:schedForm.freq==="once"?[schedForm.months[0]]:schedForm.months.slice().sort((a,b)=>a-b),
+      year:schedForm.freq==="once"?(schedForm.year||schedNowYear):null,
+    };
+    setScheduledBills(schedForm.id?scheduledBills.map(b=>b.id===row.id?row:b):[...scheduledBills,row]);
+    if(user)trackSave(db.upsertScheduledBill(row));
+    haptic();
+    setSchedForm(null);
+  };
+  const delSchedBill=(id)=>{
+    const b=scheduledBills.find(x=>x.id===id);
+    const prev=scheduledBills;
+    setScheduledBills(scheduledBills.filter(x=>x.id!==id));
+    if(user)trackSave(db.deleteScheduledBill(id));
+    setSchedForm(null);
+    showUndoToast("Scheduled bill removed",()=>{setScheduledBills(prev);if(user&&b)trackSave(db.upsertScheduledBill(b));});
+  };
+
   const exportData=async()=>{
     const partnerPersonalBills=await fetchPartnerBills();
-    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,partnerPersonalBills,settlements,gifts,exportedAt:new Date().toISOString()};
+    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,partnerPersonalBills,settlements,gifts,scheduledBills,exportedAt:new Date().toISOString()};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
     const url=URL.createObjectURL(blob);
     const a=document.createElement("a");
@@ -2515,6 +2596,7 @@ export default function App() {
         if(d.partnerPersonalBills){restorePartnerBills(d.partnerPersonalBills);}
         if(d.settlements){restoreSettlements(d.settlements);}
         if(d.gifts){restoreGifts(d.gifts);}
+        if(d.scheduledBills){restoreScheduledBills(d.scheduledBills);}
         restoreCats(d);
         if(d.calcInputs){setCi(d.calcInputs);if(user) db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
         if(d.notes){updNotes(d.notes);}
@@ -3092,6 +3174,16 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
 
+            {(()=>{
+              const activeCount=(budTab==="shared"?activeSchedShared:activeSchedPersonal).length;
+              return (
+                <button onClick={()=>{haptic();setSchedForm(null);setSchedOpen(true);}}
+                  style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:"#161b28",border:"1px dashed #2a3a55",borderRadius:8,color:"#8ec5ff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer",marginBottom:12}}>
+                  📅 Scheduled bills{activeCount?` · ${activeCount} due this month`:""}
+                </button>
+              );
+            })()}
+
             {budTab==="shared"&&(
               <div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -3138,9 +3230,27 @@ const calcTimesheetTotals = days => {
                     </div>
                   </div>
                 )}
+                {activeSchedShared.length>0&&(
+                  <div style={{border:"1px solid #2a3a55",borderTop:"none"}}>
+                    <div style={{padding:"8px 10px",background:"#0e1726"}}><span style={{fontSize:10,fontWeight:700,color:"#8ec5ff",textTransform:"uppercase",letterSpacing:1}}>📅 Due this month</span></div>
+                    {activeSchedShared.map(b=>{
+                      const sh=schedShares(b);
+                      return (
+                        <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",isCarGlyn:!!b.is_car_glyn,scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});setSchedOpen(true);}}
+                          style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",alignItems:"center",padding:"10px",fontSize:12,borderTop:"1px solid #141824",background:"#0c1320",cursor:"pointer"}}>
+                          <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(schedNowMonth)}</span></span>
+                          <span style={{textAlign:"right",color:"#8892b0"}}>{fmt(b.total)}</span>
+                          <span style={{textAlign:"right",color:"#4a9eff"}}>{fmt(sh.glyn)}</span>
+                          <span style={{textAlign:"right",color:"#c84aff"}}>{fmt(sh.hollie)}</span>
+                          <span style={{textAlign:"center",color:"#3a4460",fontSize:13}}>›</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"10px 10px",fontSize:11,fontWeight:700,background:"#141824",border:"1px solid #1e2535",borderTop:"1px solid #2a3050"}}>
                   <span style={{color:"#5a6480"}}>TOTAL</span>
-                  <span style={{textAlign:"right",color:"#5a6480"}}>{fmt(sharedBills.reduce((s,b)=>s+b.total,0))}</span>
+                  <span style={{textAlign:"right",color:"#5a6480"}}>{fmt(sharedBills.reduce((s,b)=>s+b.total,0)+schedShTotal)}</span>
                   <span style={{textAlign:"right",color:"#4a9eff"}}>{fmt(shGlyn)}</span>
                   <span style={{textAlign:"right",color:"#c84aff"}}>{fmt(shHollie)}</span>
                   <span></span>
@@ -3193,6 +3303,19 @@ const calcTimesheetTotals = days => {
                       <button onClick={addGlBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"8px",cursor:"pointer"}}>Add Bill</button>
                       <button onClick={()=>setAddGl(false)} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"8px 12px",cursor:"pointer"}}>Cancel</button>
                     </div>
+                  </div>
+                )}
+                {activeSchedPersonal.length>0&&(
+                  <div style={{border:"1px solid #2a3a55",borderTop:"none"}}>
+                    <div style={{padding:"8px 10px",background:"#0e1726"}}><span style={{fontSize:10,fontWeight:700,color:"#8ec5ff",textTransform:"uppercase",letterSpacing:1}}>📅 Due this month</span></div>
+                    {activeSchedPersonal.map(b=>(
+                      <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",isCarGlyn:!!b.is_car_glyn,scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});setSchedOpen(true);}}
+                        style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",alignItems:"center",padding:"10px",fontSize:12,borderTop:"1px solid #141824",background:"#0c1320",cursor:"pointer"}}>
+                        <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(schedNowMonth)}</span></span>
+                        <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(b.total)}</span>
+                        <span style={{textAlign:"center",color:"#3a4460",fontSize:13}}>›</span>
+                      </div>
+                    ))}
                   </div>
                 )}
                 <div style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",padding:"10px 10px",fontSize:11,fontWeight:700,background:"#141824",border:"1px solid #ff8c4a",borderTop:"1px solid #2a3050"}}>
@@ -3912,7 +4035,7 @@ const calcTimesheetTotals = days => {
               </button>
               <button onClick={async()=>{
                 const partnerPersonalBills=await fetchPartnerBills();
-                const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,partnerPersonalBills,settlements,gifts,exportedAt:new Date().toISOString()};
+                const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,partnerPersonalBills,settlements,gifts,scheduledBills,exportedAt:new Date().toISOString()};
                 const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
                 const url=URL.createObjectURL(blob);
                 const a=document.createElement("a");
@@ -4076,6 +4199,7 @@ const calcTimesheetTotals = days => {
                             if(d.partnerPersonalBills){await restorePartnerBills(d.partnerPersonalBills);}
                             if(d.settlements){await restoreSettlements(d.settlements);}
                             if(d.gifts){await restoreGifts(d.gifts);}
+                            if(d.scheduledBills){await restoreScheduledBills(d.scheduledBills);}
                             restoreCats(d);
                             if(d.calcInputs){setCi(d.calcInputs);if(user)db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
                             if(d.notes){updNotes(d.notes);}
@@ -4659,6 +4783,111 @@ const calcTimesheetTotals = days => {
                 display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",textAlign:"left",background:!curCat?"#1a2535":"transparent",
                 border:"none",borderRadius:8,color:"#8892b0",fontSize:14,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginTop:4
               }}><span>Uncategorised</span>{!curCat&&<span style={{color:"#8892b0"}}>✓</span>}</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {schedOpen&&(()=>{
+        const sheet={position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 14px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"90vh",overflowY:"auto"};
+        const grab=<div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 12px"}}/>;
+        const mine=scheduledBills.filter(b=>b.scope==="shared"||b.owner===myId);
+        const isPast=(b)=>b.freq==="once"&&!schedActive(b)&&(((b.year||0)<schedNowYear)||((b.year||0)===schedNowYear&&Math.max(0,...(Array.isArray(b.months)?b.months:[0]))<schedNowMonth));
+        const tag=(b)=>b.scope==="shared"?"Shared":"Personal";
+        if(schedForm){
+          const f=schedForm;
+          const setF=(patch)=>setSchedForm(p=>({...p,...patch}));
+          const editing=!!f.id;
+          const valid=(f.name||"").trim().length>0 && f.months.length>0 && (f.freq!=="once"||!!f.year);
+          const seg=(active)=>({flex:1,background:active?"#1a3a5a":"transparent",border:active?"1px solid #2a5a8a":"1px solid #2a3050",borderRadius:8,color:active?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"});
+          return (
+            <div onClick={()=>setSchedOpen(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
+              <div onClick={e=>e.stopPropagation()} style={sheet}>
+                {grab}
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+                  <button onClick={()=>setSchedForm(null)} style={{background:"transparent",border:"none",color:"#8ec5ff",fontSize:13,fontWeight:700,cursor:"pointer",padding:0}}>‹ Back</button>
+                  <div style={{fontSize:14,color:"#e8eaf0",fontWeight:800,flex:1,textAlign:"center",marginRight:40}}>{editing?"Edit scheduled bill":"New scheduled bill"}</div>
+                </div>
+
+                <div style={{...hdr,marginBottom:6}}>Name</div>
+                <input value={f.name} onChange={e=>setF({name:e.target.value})} placeholder="e.g. Car tax"
+                  style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
+
+                <div style={{...hdr,marginBottom:6}}>Amount (£)</div>
+                <input value={f.total} onChange={e=>setF({total:e.target.value.replace(/[^0-9.]/g,"")})} inputMode="decimal" placeholder="0.00"
+                  style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
+
+                <div style={{...hdr,marginBottom:6}}>Show under</div>
+                <div style={{display:"flex",gap:8,marginBottom:f.scope==="shared"?10:14}}>
+                  <button onClick={()=>setF({scope:"shared"})} style={seg(f.scope==="shared")}>Shared bills</button>
+                  <button onClick={()=>setF({scope:"personal"})} style={seg(f.scope==="personal")}>My bills</button>
+                </div>
+                {f.scope==="shared"&&(
+                  <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"#8892b0",marginBottom:14,cursor:"pointer"}}>
+                    <input type="checkbox" checked={!!f.isCarGlyn} onChange={e=>setF({isCarGlyn:e.target.checked})}/>
+                    Car split ({themName} pays £{HOLLIE_CAR}, rest is yours)
+                  </label>
+                )}
+
+                <div style={{...hdr,marginBottom:6}}>When</div>
+                <div style={{display:"flex",gap:8,marginBottom:12}}>
+                  <button onClick={()=>setF({freq:"annual"})} style={seg(f.freq==="annual")}>Every year</button>
+                  <button onClick={()=>setF({freq:"once",months:f.months.slice(0,1)})} style={seg(f.freq==="once")}>One-off</button>
+                </div>
+
+                <div style={{fontSize:11,color:"#5a6480",marginBottom:8}}>{f.freq==="once"?"Pick the month it's due":"Pick the month(s) it's due each year"}</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:14}}>
+                  {MONTH_ABBR.map((mn,i)=>{const m=i+1;const on=f.months.includes(m);return (
+                    <button key={m} onClick={()=>{ if(f.freq==="once")setF({months:[m]}); else setF({months:on?f.months.filter(x=>x!==m):[...f.months,m]}); }}
+                      style={{width:"calc(25% - 6px)",background:on?"#1a3a5a":"#0d1117",border:"1px solid "+(on?"#2a5a8a":"#2a3050"),borderRadius:8,color:on?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"10px 0",cursor:"pointer"}}>{mn}</button>
+                  );})}
+                </div>
+
+                {f.freq==="once"&&(<>
+                  <div style={{...hdr,marginBottom:6}}>Year</div>
+                  <input value={f.year||""} onChange={e=>setF({year:parseInt(e.target.value.replace(/[^0-9]/g,""))||""})} inputMode="numeric" placeholder={String(schedNowYear)}
+                    style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:16}}/>
+                </>)}
+
+                <button onClick={saveSchedBill} disabled={!valid}
+                  style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":"#3a4360",fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginTop:f.freq==="once"?0:2,marginBottom:editing?8:6}}>
+                  {editing?"Save changes":"Add scheduled bill"}
+                </button>
+                {editing&&<button onClick={()=>delSchedBill(f.id)} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:10,color:"#ff6b8a",fontSize:13,fontWeight:600,padding:"12px",cursor:"pointer",marginBottom:6}}>Remove</button>}
+                <button onClick={()=>setSchedForm(null)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"8px",cursor:"pointer"}}>Cancel</button>
+              </div>
+            </div>
+          );
+        }
+        const row=(b)=>(
+          <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",isCarGlyn:!!b.is_car_glyn,scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});}}
+            style={{...card,marginBottom:8,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:14,fontWeight:600,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.name} <span style={{fontSize:10,color:"#5a6480",fontWeight:700}}>· {tag(b)}</span></div>
+              <div style={{fontSize:11,color:"#5a6480",marginTop:2}}>{schedWhenLabel(b)}</div>
+            </div>
+            <div style={{fontSize:14,fontWeight:700,color:"#c8cee0",whiteSpace:"nowrap"}}>{fmt(b.total)}</div>
+            <span style={{color:"#3a4460",fontSize:14}}>›</span>
+          </div>
+        );
+        const active=mine.filter(b=>schedActive(b));
+        const past=mine.filter(b=>isPast(b));
+        const upcoming=mine.filter(b=>!schedActive(b)&&!isPast(b));
+        return (
+          <div onClick={()=>setSchedOpen(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
+            <div onClick={e=>e.stopPropagation()} style={sheet}>
+              {grab}
+              <div style={{fontSize:14,color:"#e8eaf0",fontWeight:800,marginBottom:4}}>Scheduled bills</div>
+              <div style={{fontSize:11,color:"#5a6480",marginBottom:12}}>Bills that appear in Budget only during the month(s) they're due.</div>
+              <button onClick={()=>setSchedForm({id:null,name:"",total:"",isCarGlyn:false,scope:budTab==="glyn"?"personal":"shared",freq:"annual",months:[],year:schedNowYear})}
+                style={{width:"100%",background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"13px",cursor:"pointer",marginBottom:14}}>
+                ＋ Add scheduled bill
+              </button>
+              {mine.length===0&&<div style={{...card,fontSize:13,color:"#5a6480",textAlign:"center",padding:"18px 12px"}}>None yet. Add one above — e.g. car tax every June, or a one-off for this month.</div>}
+              {active.length>0&&<><div style={{...hdr,color:"#8ec5ff",marginBottom:6}}>📅 Due this month</div>{active.map(row)}</>}
+              {upcoming.length>0&&<><div style={{...hdr,marginTop:6,marginBottom:6}}>Upcoming</div>{upcoming.map(row)}</>}
+              {past.length>0&&<><div style={{...hdr,marginTop:6,marginBottom:6}}>Past one-offs</div>{past.map(row)}</>}
+              <button onClick={()=>setSchedOpen(false)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"12px 8px 4px",cursor:"pointer"}}>Close</button>
             </div>
           </div>
         );
