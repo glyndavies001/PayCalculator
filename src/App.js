@@ -355,6 +355,19 @@ const db = {
     const { error } = await supabase.from("settlements").delete().eq("id", id);
     reportDbError("deleteSettlement", error);
   },
+  async getGifts() {
+    const { data, error } = await supabase.from("gifts").select("*").order("created_at", { ascending: true });
+    reportDbError("getGifts", error);
+    return data || [];
+  },
+  async upsertGift(g) {
+    const { error } = await supabase.from("gifts").upsert({ id: g.id, name: g.name, dob: g.dob, birthday_year: g.birthday_year, christmas_year: g.christmas_year, notes: g.notes, cost: g.cost }, { onConflict: "id" });
+    reportDbError("upsertGift", error);
+  },
+  async deleteGift(id) {
+    const { error } = await supabase.from("gifts").delete().eq("id", id);
+    reportDbError("deleteGift", error);
+  },
   async getLeaveLogs(userId) {
     const { data, error } = await supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false });
     reportDbError("getLeaveLogs", error);
@@ -570,9 +583,9 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.32";
+const APP_VERSION = "1.13.34";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
-const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Settle Up","Diag"];
+const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
 const SL_START_YEAR = 2019;
 const SL_WRITEOFF_YEAR = 2049;
@@ -1150,6 +1163,10 @@ export default function App() {
   const [settlements,setSettlements]=useState([]);         // shared "settle up" ledger
   const [settleOpen,setSettleOpen]=useState(false);        // add-entry sheet
   const [settleForm,setSettleForm]=useState({kind:"charge",mine:true,amount:"",note:"",date:""});
+  const [gifts,setGifts]=useState([]);                     // shared gift tracker
+  const [giftSort,setGiftSort]=useState("bday");           // "bday" | "name"
+  const [giftOpen,setGiftOpen]=useState(false);            // add/edit sheet
+  const [giftForm,setGiftForm]=useState({id:null,name:"",dob:"",notes:"",cost:""});
   const [toast,setToast]=useState(null);                   // {msg,undo} -> undo toast
   const toastTimer=useRef(null);
   const [pullY,setPullY]=useState(0);                      // pull-to-refresh visual distance
@@ -1198,7 +1215,7 @@ export default function App() {
   // Partner (Hollie) restricted view: keep her on allowed tabs only
   React.useEffect(() => {
     if (!isOwner) {
-      if (!["Budget","Settle Up","Diag"].includes(tab)) setTab("Budget");
+      if (!["Budget","Settle Up","Gifts","Diag"].includes(tab)) setTab("Budget");
     }
   }, [isOwner, tab]);
 
@@ -1328,6 +1345,8 @@ export default function App() {
 
         try { setSettlements(await db.getSettlements()); } catch (e) {}
 
+        try { setGifts(await db.getGifts()); } catch (e) {}
+
         // Load accumulator from DB - migrate from localStorage if DB is empty
         const accData = await db.getAccumulator(user.id);
         const localAcc = load(SK.timesheets, null);
@@ -1411,6 +1430,9 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "settlements" }, () =>
         db.getSettlements().then(setSettlements)
       )
+      .on("postgres_changes", { event: "*", schema: "public", table: "gifts" }, () =>
+        db.getGifts().then(setGifts)
+      )
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_settings", filter: "user_id=eq."+user.id }, () =>
         db.getLeaveSettings(user.id).then(ls => { if (ls) setLeaveSettings(ls); })
       )
@@ -1453,6 +1475,7 @@ export default function App() {
       leaveLogs, leaveSettings,
       monthlyTs, discrepancies, scenarios,
       accumulated, tierOverride,
+      settlements, gifts,
       exportedAt: new Date().toISOString(),
       version: APP_VERSION,
     };
@@ -1472,6 +1495,26 @@ export default function App() {
         if (!keep.has(b.user_id + ":" + b.bill_id)) await db.deleteGlynBill(b.user_id, b.bill_id);
       }
     } catch (e) { console.error("Partner bills restore failed:", e); }
+  };
+  const restoreSettlements = async (arr) => {
+    if (!user || !Array.isArray(arr)) return;
+    try {
+      const current = await db.getSettlements();
+      const keep = new Set(arr.map(s => s.id));
+      for (const s of arr) await db.upsertSettlement(s);
+      for (const s of current) if (!keep.has(s.id)) await db.deleteSettlement(s.id);
+      setSettlements(await db.getSettlements());
+    } catch (e) { console.error("Settlements restore failed:", e); }
+  };
+  const restoreGifts = async (arr) => {
+    if (!user || !Array.isArray(arr)) return;
+    try {
+      const current = await db.getGifts();
+      const keep = new Set(arr.map(g => g.id));
+      for (const g of arr) await db.upsertGift(g);
+      for (const g of current) if (!keep.has(g.id)) await db.deleteGift(g.id);
+      setGifts(await db.getGifts());
+    } catch (e) { console.error("Gifts restore failed:", e); }
   };
 
   const handleSignOut = async () => {
@@ -1539,6 +1582,8 @@ export default function App() {
       } catch (e) {}
 
       try { setSettlements(await db.getSettlements()); } catch (e) {}
+
+      try { setGifts(await db.getGifts()); } catch (e) {}
 
       if (accData && accData.data) {
         setAccumulated(accData.data);
@@ -2401,9 +2446,56 @@ export default function App() {
     showUndoToast("Entry deleted",()=>{setSettlements(prev);if(user&&entry)trackSave(db.upsertSettlement(entry));});
   };
 
+  const giftYear=new Date().getFullYear();
+  const nextBirthday=(dob)=>{
+    if(!dob)return null;
+    const d=new Date(dob+"T00:00:00");
+    if(isNaN(d.getTime()))return null;
+    const today=new Date();today.setHours(0,0,0,0);
+    let next=new Date(today.getFullYear(),d.getMonth(),d.getDate());
+    if(next<today)next=new Date(today.getFullYear()+1,d.getMonth(),d.getDate());
+    const days=Math.round((next-today)/86400000);
+    return {days,next,turning:next.getFullYear()-d.getFullYear()};
+  };
+  const saveGift=()=>{
+    const name=giftForm.name.trim();
+    if(!name)return;
+    const existing=giftForm.id?gifts.find(g=>g.id===giftForm.id):null;
+    const g={
+      id:giftForm.id||Date.now(),
+      name,
+      dob:giftForm.dob||null,
+      notes:giftForm.notes.trim(),
+      cost:parseFloat(giftForm.cost)||0,
+      birthday_year:existing?existing.birthday_year:null,
+      christmas_year:existing?existing.christmas_year:null,
+    };
+    setGifts(giftForm.id?gifts.map(x=>x.id===g.id?g:x):[...gifts,g]);
+    if(user)trackSave(db.upsertGift(g));
+    haptic();
+    setGiftOpen(false);
+    setGiftForm({id:null,name:"",dob:"",notes:"",cost:""});
+  };
+  const toggleGift=(id,field)=>{   // field: "birthday_year" | "christmas_year"
+    const g=gifts.find(x=>x.id===id);if(!g)return;
+    const done=g[field]===giftYear;
+    const ng={...g,[field]:done?null:giftYear};
+    setGifts(gifts.map(x=>x.id===id?ng:x));
+    if(user)trackSave(db.upsertGift(ng));
+    haptic();
+  };
+  const delGift=(id)=>{
+    const g=gifts.find(x=>x.id===id);
+    const prev=gifts;
+    setGifts(gifts.filter(x=>x.id!==id));
+    if(user)trackSave(db.deleteGift(id));
+    setGiftOpen(false);
+    showUndoToast("Person removed",()=>{setGifts(prev);if(user&&g)trackSave(db.upsertGift(g));});
+  };
+
   const exportData=async()=>{
     const partnerPersonalBills=await fetchPartnerBills();
-    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,partnerPersonalBills,exportedAt:new Date().toISOString()};
+    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,partnerPersonalBills,settlements,gifts,exportedAt:new Date().toISOString()};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
     const url=URL.createObjectURL(blob);
     const a=document.createElement("a");
@@ -2421,6 +2513,8 @@ export default function App() {
         if(d.sharedBills){updSB(d.sharedBills);}
         if(d.glynBills){updGB(d.glynBills);}
         if(d.partnerPersonalBills){restorePartnerBills(d.partnerPersonalBills);}
+        if(d.settlements){restoreSettlements(d.settlements);}
+        if(d.gifts){restoreGifts(d.gifts);}
         restoreCats(d);
         if(d.calcInputs){setCi(d.calcInputs);if(user) db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
         if(d.notes){updNotes(d.notes);}
@@ -2667,7 +2761,7 @@ const calcTimesheetTotals = days => {
   }
 
 
-  const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Settle Up"];
+  const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Settle Up","Gifts"];
   const secondaryTabs = isOwner ? SECONDARY_TABS : ["Diag"];
 
   return (
@@ -3818,7 +3912,7 @@ const calcTimesheetTotals = days => {
               </button>
               <button onClick={async()=>{
                 const partnerPersonalBills=await fetchPartnerBills();
-                const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,partnerPersonalBills,exportedAt:new Date().toISOString()};
+                const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,partnerPersonalBills,settlements,gifts,exportedAt:new Date().toISOString()};
                 const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
                 const url=URL.createObjectURL(blob);
                 const a=document.createElement("a");
@@ -3980,6 +4074,8 @@ const calcTimesheetTotals = days => {
                             if(d.sharedBills){updSB(d.sharedBills);}
                             if(d.glynBills){updGB(d.glynBills);}
                             if(d.partnerPersonalBills){await restorePartnerBills(d.partnerPersonalBills);}
+                            if(d.settlements){await restoreSettlements(d.settlements);}
+                            if(d.gifts){await restoreGifts(d.gifts);}
                             restoreCats(d);
                             if(d.calcInputs){setCi(d.calcInputs);if(user)db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
                             if(d.notes){updNotes(d.notes);}
@@ -4294,6 +4390,77 @@ const calcTimesheetTotals = days => {
           </div>
         )}
 
+        {tab==="Gifts"&&(()=>{
+          const totalCost=gifts.reduce((a,g)=>a+(Number(g.cost)||0),0);
+          const bDone=gifts.filter(g=>g.birthday_year===giftYear).length;
+          const cDone=gifts.filter(g=>g.christmas_year===giftYear).length;
+          const sorted=[...gifts].sort((a,b)=>{
+            if(giftSort==="name")return (a.name||"").localeCompare(b.name||"");
+            const na=nextBirthday(a.dob),nb=nextBirthday(b.dob);
+            if(na&&nb)return na.days-nb.days;
+            if(na)return -1; if(nb)return 1;
+            return (a.name||"").localeCompare(b.name||"");
+          });
+          const chip=(on,emoji,label,onClick)=>(
+            <button onClick={e=>{e.stopPropagation();onClick();}} style={{
+              flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+              background:on?"#13301f":"#0d1117",border:"1px solid "+(on?"#2f7d4f":"#2a3050"),borderRadius:8,
+              color:on?"#4ad07a":"#8892b0",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"
+            }}>{emoji} {label} {on?"✓":""}</button>
+          );
+          return (
+          <div>
+            <div style={{...card,marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-around",textAlign:"center",padding:"14px 8px"}}>
+              <div><div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Total</div><div style={{fontSize:18,fontWeight:800,color:"#e8eaf0",marginTop:2}}>{fmt(totalCost)}</div></div>
+              <div><div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🎂 Sorted</div><div style={{fontSize:18,fontWeight:800,color:"#c8cee0",marginTop:2}}>{bDone}/{gifts.length}</div></div>
+              <div><div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🎄 Sorted</div><div style={{fontSize:18,fontWeight:800,color:"#c8cee0",marginTop:2}}>{cDone}/{gifts.length}</div></div>
+            </div>
+
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              <button onClick={()=>{haptic();setGiftForm({id:null,name:"",dob:"",notes:"",cost:""});setGiftOpen(true);}}
+                style={{flex:1,background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"13px",cursor:"pointer"}}>
+                ＋ Add person
+              </button>
+              <button onClick={()=>{haptic();setGiftSort(giftSort==="bday"?"name":"bday");}}
+                style={{background:"#161b28",border:"1px solid #2a3050",borderRadius:10,color:"#8892b0",fontSize:12,fontWeight:700,padding:"0 14px",cursor:"pointer"}}>
+                {giftSort==="bday"?"🎂 Birthday":"A–Z"}
+              </button>
+            </div>
+
+            {gifts.length===0&&<div style={{...card,fontSize:13,color:"#5a6480",textAlign:"center",padding:"20px 12px"}}>No one added yet. Tap “Add person” to start your gift list.</div>}
+
+            {sorted.map(g=>{
+              const bd=nextBirthday(g.dob);
+              const bDoneG=g.birthday_year===giftYear, cDoneG=g.christmas_year===giftYear;
+              const dobStr=g.dob?new Date(g.dob+"T00:00:00").toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}):"";
+              const badge=bd?(bd.days===0?"🎂 today!":bd.days===1?"🎂 tomorrow":`🎂 in ${bd.days}d`):"";
+              return (
+                <div key={g.id} onClick={()=>{haptic();setGiftForm({id:g.id,name:g.name,dob:g.dob||"",notes:g.notes||"",cost:g.cost!=null?String(g.cost):""});setGiftOpen(true);}}
+                  style={{...card,marginBottom:8,cursor:"pointer"}}>
+                  <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:10}}>
+                    <div style={{minWidth:0,flex:1}}>
+                      <div style={{fontSize:16,fontWeight:700,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.name}</div>
+                      {dobStr&&<div style={{fontSize:12,color:"#5a6480",marginTop:2}}>{dobStr}{bd?` · turning ${bd.turning}`:""}</div>}
+                    </div>
+                    {badge&&<div style={{fontSize:11,fontWeight:700,color:bd&&bd.days<=14?"#ffb84a":"#5a6480",whiteSpace:"nowrap",paddingTop:2}}>{badge}</div>}
+                  </div>
+                  <div style={{display:"flex",gap:8,marginBottom:(g.notes||Number(g.cost))?10:0}}>
+                    {chip(bDoneG,"🎂","Birthday",()=>toggleGift(g.id,"birthday_year"))}
+                    {chip(cDoneG,"🎄","Christmas",()=>toggleGift(g.id,"christmas_year"))}
+                  </div>
+                  {(g.notes||Number(g.cost)>0)&&(
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+                      <div style={{fontSize:13,color:"#8892b0",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{g.notes||""}</div>
+                      {Number(g.cost)>0&&<div style={{fontSize:14,fontWeight:700,color:"#c8cee0",whiteSpace:"nowrap"}}>{fmt(g.cost)}</div>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          );
+        })()}
+
         {tab==="Settle Up"&&(()=>{
           const me=isOwner?"glyn":"hollie";
           const themName=isOwner?"Hollie":"Glyn";
@@ -4492,6 +4659,43 @@ const calcTimesheetTotals = days => {
                 display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",textAlign:"left",background:!curCat?"#1a2535":"transparent",
                 border:"none",borderRadius:8,color:"#8892b0",fontSize:14,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginTop:4
               }}><span>Uncategorised</span>{!curCat&&<span style={{color:"#8892b0"}}>✓</span>}</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {giftOpen&&(()=>{
+        const editing=!!giftForm.id;
+        const set=(patch)=>setGiftForm(f=>({...f,...patch}));
+        const valid=giftForm.name.trim().length>0;
+        return (
+          <div onClick={()=>setGiftOpen(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
+            <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 14px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"90vh",overflowY:"auto"}}>
+              <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 12px"}}/>
+              <div style={{fontSize:14,color:"#e8eaf0",fontWeight:800,marginBottom:12}}>{editing?"Edit person":"Add person"}</div>
+
+              <div style={{...hdr,marginBottom:6}}>Name</div>
+              <input value={giftForm.name} onChange={e=>set({name:e.target.value})} placeholder="e.g. Mum"
+                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
+
+              <div style={{...hdr,marginBottom:6}}>Date of birth</div>
+              <input type="date" value={giftForm.dob} onChange={e=>set({dob:e.target.value})}
+                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,padding:"12px 14px",marginBottom:14}}/>
+
+              <div style={{...hdr,marginBottom:6}}>Notes</div>
+              <textarea value={giftForm.notes} onChange={e=>set({notes:e.target.value})} placeholder="Gift ideas, sizes, etc." rows={2}
+                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,padding:"12px 14px",marginBottom:14,resize:"vertical",fontFamily:"inherit"}}/>
+
+              <div style={{...hdr,marginBottom:6}}>Cost (£)</div>
+              <input value={giftForm.cost} onChange={e=>set({cost:e.target.value.replace(/[^0-9.]/g,"")})} inputMode="decimal" placeholder="0.00"
+                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:16}}/>
+
+              <button onClick={saveGift} disabled={!valid}
+                style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":"#3a4360",fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginBottom:editing?8:6}}>
+                {editing?"Save changes":"Add person"}
+              </button>
+              {editing&&<button onClick={()=>delGift(giftForm.id)} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:10,color:"#ff6b8a",fontSize:13,fontWeight:600,padding:"12px",cursor:"pointer",marginBottom:6}}>Remove person</button>}
+              <button onClick={()=>setGiftOpen(false)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"8px",cursor:"pointer"}}>Cancel</button>
             </div>
           </div>
         );
