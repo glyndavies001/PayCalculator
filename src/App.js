@@ -185,6 +185,36 @@ function calcPay({ stdHrs, otHrs, weekendOtHrs, holidayHrs, bonus, perfAllowance
     annualGross: gross*12, annualNet: net*12, annualTax: tax*12, annualNI: ni*12 };
 }
 
+// Hollie's pay: £14.71/h, 40h/week, OT at 1.5x, no bonus. Paid last working day of the
+// calendar month. Bank holidays count as normal working days; holiday hours are treated
+// as worked. Pension (NEST) and student loan (Plan 2) use the same rates/thresholds as Glyn.
+const HOLLIE_RATE = 14.71;
+function hollieMonthHours(d) {
+  const now = d || new Date();
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  let wd = 0;
+  for (let x = new Date(now.getFullYear(), now.getMonth(), 1); x <= end; x.setDate(x.getDate() + 1)) {
+    const dow = x.getDay();
+    if (dow !== 0 && dow !== 6) wd++;
+  }
+  return wd * 8;
+}
+function calcHolliePay(otHrs) {
+  const baseHours = hollieMonthHours();
+  const stdPay = baseHours * HOLLIE_RATE;
+  const otPay = (Number(otHrs) || 0) * (HOLLIE_RATE * 1.5);
+  const gross = stdPay + otPay;
+  const tax = Math.max(0, gross - PAY.taxFreeMonthly) * 0.20;
+  const niLower = Math.max(0, Math.min(gross, PAY.niUpperThreshold) - PAY.niPrimaryThreshold);
+  const niUpper = Math.max(0, gross - PAY.niUpperThreshold);
+  const ni = niLower * 0.08 + niUpper * 0.02;
+  const nest = Math.max(0, gross - 520) * PAY.nestRate;
+  const sl = Math.max(0, gross - PAY.slThreshold) * 0.09;
+  const deductions = tax + ni + nest + sl;
+  const net = gross - deductions;
+  return { baseHours, stdPay, otPay, gross, tax, ni, nest, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
+}
+
 const INITIAL_HISTORY = [
   { month: "Apr 2022", date: "29/04/2022", gross: 1669.82, net: 1432.82, tax: 124.8,  ni: 112.2,  nest: 0,     sl: 0,  bonus: 0,   ot: 60.38  },
   { month: "May 2022", date: "30/05/2022", gross: 1719.62, net: 1418.23, tax: 134.6,  ni: 118.8,  nest: 47.99, sl: 0,  bonus: 0,   ot: 43.12  },
@@ -596,7 +626,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.36";
+const APP_VERSION = "1.13.37";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1231,7 +1261,7 @@ export default function App() {
   // Partner (Hollie) restricted view: keep her on allowed tabs only
   React.useEffect(() => {
     if (!isOwner) {
-      if (!["Budget","Settle Up","Gifts","Diag"].includes(tab)) setTab("Budget");
+      if (!["Budget","Pay Calc","Settle Up","Gifts","Diag"].includes(tab)) setTab("Budget");
     }
   }, [isOwner, tab]);
 
@@ -2267,6 +2297,21 @@ export default function App() {
   const cr=useMemo(()=>calcPay({...ci, _allowanceOverride: effectiveAllowance}),[ci, effectiveAllowance]);
   const surplus=cr.net-totalOut;
 
+  // Hollie's pay calc (partner view). Her OT is stored inside calc_inputs (survives the
+  // 29->28 rollover) and resets each CALENDAR month via a month stamp.
+  const hollieCalKey=`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}`;
+  const hollieOtHrs=(ci.hollieOtMonth===hollieCalKey)?(Number(ci.hollieOtHrs)||0):0;
+  const setHollieOt=(hrs)=>{
+    setCi(p=>{
+      const n={...p,hollieOtHrs:hrs,hollieOtMonth:hollieCalKey};
+      if(user)trackSave(db.saveAppSettings(user.id,{calc_inputs:n}));
+      return n;
+    });
+  };
+  const hollieCalc=calcHolliePay(hollieOtHrs);
+  const hollieOut=shHollie+glOnly;
+  const hollieSurplus=hollieCalc.net-hollieOut;
+
   const chartData=useMemo(()=>{
     const s=sortH(history);
     const m={"3M":3,"6M":6,"12M":12,"2Y":24}[chartRange];
@@ -2843,7 +2888,7 @@ const calcTimesheetTotals = days => {
   }
 
 
-  const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Settle Up","Gifts"];
+  const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Pay Calc","Settle Up","Gifts"];
   const secondaryTabs = isOwner ? SECONDARY_TABS : ["Diag"];
 
   return (
@@ -3333,7 +3378,70 @@ const calcTimesheetTotals = days => {
           </div>
         )}
 
-        {tab==="Pay Calc"&&(
+        {tab==="Pay Calc"&&!isOwner&&(
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{...card,background:"linear-gradient(135deg,#1a0a25,#0d1117)",border:"1px solid #c84aff"}}>
+              <div style={{textAlign:"center",marginBottom:14}}>
+                <div style={{fontSize:11,color:"#c84aff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
+                <div style={{fontSize:38,fontWeight:700,color:"#c84aff"}}>{fmt(hollieCalc.net)}</div>
+                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after bills: <span style={{color:hollieSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmt(hollieSurplus)}</span></div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                {[["Annual Gross",fmt(hollieCalc.annualGross)],["Annual Net",fmt(hollieCalc.annualNet)]].map(([l,v])=>(
+                  <div key={l} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
+                    <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                    <div style={{fontSize:14,fontWeight:700,color:"#c8cee0"}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={card}>
+              <SectionLabel>Overtime this month</SectionLabel>
+              <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <span>Overtime hours <span style={{color:"#3a4460"}}>@ £{(HOLLIE_RATE*1.5).toFixed(2)}/h</span></span><span style={{color:"#c84aff",fontWeight:700}}>{hollieOtHrs}h</span>
+              </label>
+              <input type="number" inputMode="decimal" value={hollieOtHrs} onChange={e=>setHollieOt(parseFloat(e.target.value)||0)} style={numI}/>
+              <div style={{fontSize:10,color:"#3a4460",marginTop:6}}>Paid at 1.5× your £{HOLLIE_RATE}/h rate. Resets at the start of each month.</div>
+            </div>
+
+            <div style={card}>
+              <SectionLabel>This month</SectionLabel>
+              {[
+                [`Base pay (${hollieCalc.baseHours}h × £${HOLLIE_RATE})`, fmt(hollieCalc.stdPay), "#c8cee0", false],
+                ["Overtime", fmt(hollieCalc.otPay), "#c84aff", false],
+                ["Gross", fmt(hollieCalc.gross), "#e8eaf0", true],
+                ["Tax", "−"+fmt(hollieCalc.tax), "#ff6b8a", false],
+                ["NI", "−"+fmt(hollieCalc.ni), "#ff8c4a", false],
+                ["Pension (NEST)", "−"+fmt(hollieCalc.nest), "#00c88c", false],
+                ["Student loan (Plan 2)", "−"+fmt(hollieCalc.sl), "#ffb84a", false],
+                ["Net pay", fmt(hollieCalc.net), "#c84aff", true],
+              ].map(([l,v,c,bold],i)=>(
+                <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderTop:i?"1px solid #161b28":"none",fontSize:13}}>
+                  <span style={{color:"#8892b0"}}>{l}</span><span style={{color:c,fontWeight:bold?800:600}}>{v}</span>
+                </div>
+              ))}
+            </div>
+
+            <div style={card}>
+              <SectionLabel>Surplus</SectionLabel>
+              {[
+                ["Net pay", fmt(hollieCalc.net), "#c8cee0", false],
+                ["Your share of shared bills", "−"+fmt(shHollie), "#ff6b8a", false],
+                ["Your personal bills", "−"+fmt(glOnly), "#ff8c4a", false],
+                ["Left over", fmt(hollieSurplus), hollieSurplus>=0?"#00c88c":"#ff4a6a", true],
+              ].map(([l,v,c,bold],i)=>(
+                <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderTop:i?"1px solid #161b28":"none",fontSize:13}}>
+                  <span style={{color:"#8892b0"}}>{l}</span><span style={{color:c,fontWeight:bold?800:600}}>{v}</span>
+                </div>
+              ))}
+            </div>
+
+            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on £{HOLLIE_RATE}/h, 40h/week (bank holidays counted), tax &amp; NI at standard rates, NEST pension and Plan 2 student loan.</p>
+          </div>
+        )}
+
+        {tab==="Pay Calc"&&isOwner&&(
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
             <div style={{...card,background:"linear-gradient(135deg,#0a1525,#0d1117)",border:"1px solid #4a9eff"}}>
               <div style={{textAlign:"center",marginBottom:14}}>
