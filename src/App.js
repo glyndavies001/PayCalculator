@@ -596,7 +596,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.35";
+const APP_VERSION = "1.13.36";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -4789,6 +4789,7 @@ const calcTimesheetTotals = days => {
       })()}
 
       {schedOpen&&(()=>{
+        const themName=isOwner?"Hollie":"Glyn";
         const sheet={position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 14px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"90vh",overflowY:"auto"};
         const grab=<div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 12px"}}/>;
         const mine=scheduledBills.filter(b=>b.scope==="shared"||b.owner===myId);
