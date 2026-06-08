@@ -626,9 +626,9 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.37";
+const APP_VERSION = "1.13.38";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
-const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Upload","Settle Up","Gifts","Diag"];
+const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
 const SL_START_YEAR = 2019;
 const SL_WRITEOFF_YEAR = 2049;
@@ -2182,6 +2182,7 @@ export default function App() {
   const [tsUploading,setTsUploading]=useState(false);
   const [tsProgress,setTsProgress]=useState(null);
   const [showManualTs,setShowManualTs]=useState(false);
+  const [showPayslipUpload,setShowPayslipUpload]=useState(false);
   const [showQueueDiag,setShowQueueDiag]=useState(false);
   const [showBackups,setShowBackups]=useState(false);
   const [backupList,setBackupList]=useState([]);
@@ -2965,7 +2966,7 @@ const calcTimesheetTotals = days => {
               </div>
             )}
             {showTsReminder&&(
-              <div onClick={()=>setTab("Upload")} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+              <div onClick={()=>{setShowPayslipUpload(true);setTab("Diag");}} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>⚠️</span>
                 <div>
                   <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
@@ -3730,7 +3731,7 @@ const calcTimesheetTotals = days => {
                       <div style={{fontSize:36,marginBottom:8}}>💼</div>
                       <div style={{fontSize:14,color:"#8892b0",fontWeight:600,marginBottom:6}}>No payslips yet</div>
                       <div style={{fontSize:12,color:"#3a4460",marginBottom:14}}>Upload your first payslip PDF to start tracking</div>
-                      <button onClick={()=>{haptic();setTab("Upload");}} style={{background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:12,fontWeight:700,padding:"10px 18px",cursor:"pointer"}}>Go to Upload</button>
+                      <button onClick={()=>{haptic();setShowPayslipUpload(true);setTab("Diag");}} style={{background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:12,fontWeight:700,padding:"10px 18px",cursor:"pointer"}}>Go to Upload</button>
                     </div>
                   ) : (
                     <div style={{padding:"32px",textAlign:"center",color:"#3a4460",fontSize:13}}>No payslips match "{payslipSearch}"</div>
@@ -4038,318 +4039,6 @@ const calcTimesheetTotals = days => {
           );
         })()}
 
-        {tab==="Upload"&&(
-          <div>
-          <div style={{...card,textAlign:"center",marginBottom:14}}>
-            <div style={{fontSize:32,marginBottom:10}}>📄</div>
-            <h2 style={{margin:"0 0 6px",fontSize:16,color:"#e8eaf0"}}>Upload Payslips</h2>
-            <p style={{fontSize:12,color:"#5a6480",marginBottom:24}}>Select one or more payslip PDFs. They'll be read and added to your history automatically.</p>
-            <label htmlFor="payslip-upload-input" style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer",position:"relative"}}>
-              <input id="payslip-upload-input" type="file" accept=".pdf,application/pdf" multiple onChange={handleUpload} disabled={uploading}
-                style={{position:"absolute",left:0,top:0,width:"100%",height:"100%",opacity:0,cursor:uploading?"not-allowed":"pointer"}}/>
-              {uploading
-                ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing..."}</div></div>
-                :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
-              }
-            </label>
-            {multiResults.length>0&&(
-              <div style={{marginTop:16,textAlign:"left"}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
-                  ✓ {multiResults.filter(r=>r.ok).length} of {multiResults.length} added
-                </div>
-                {multiResults.map((r,i)=>(
-                  <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:12}}>
-                    {r.ok
-                      ?<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}</span><span style={{color:"#8892b0"}}>Gross {fmt(r.parsed.gross)} - Net {fmt(r.parsed.net)}</span></div>
-                      :<div style={{color:"#ff6b8a"}}>⚠ {r.name} -- {r.err}</div>
-                    }
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div style={{...card,marginBottom:14,padding:0}}>
-            <div onClick={()=>{haptic();setShowManualTs(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-              <div>
-                <div style={{fontSize:9,color:"#ffb84a",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Weekly Timesheet (Manual)</div>
-                <p style={{fontSize:11,color:"#5a6480",margin:0}}>Backup option -- auto-import handles this automatically</p>
-              </div>
-              <span style={{color:"#3a4460",fontSize:14}}>{showManualTs?"A":"V"}</span>
-            </div>
-            {showManualTs && (<div style={{padding:"0 14px 14px"}}>
-            <label style={{display:"block",background:"#0d1117",border:"2px dashed "+(showTsReminder?"#ffb84a":"#2a3050"),borderRadius:10,padding:"20px 16px",cursor:tsUploading?"not-allowed":"pointer",marginBottom:12}}>
-              <input type="file" accept="image/*,application/pdf" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
-              {tsUploading
-                ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#ffb84a",fontSize:13}}>{tsProgress||"Processing..."}</div></div>
-                :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
-              }
-            </label>
-            {tsPending&&(()=>{
-              // Calculate what the totals will be after merge+dedup
-              const STD = 8.25;
-              const enrichedNew = tsPending.days.map(d => {
-                const hrs = parseHM(d.hours);
-                const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
-                return { ...d, hrs, otHrs: isWeekend ? 0 : Math.max(0, Math.round((hrs-STD)*100)/100), wkOtHrs: isWeekend ? hrs : 0 };
-              });
-              const seen = new Set();
-              const merged = [...(accumulated.days||[]), ...enrichedNew]
-                .sort((a,b)=>{const[ad,am]=(a.date||"").split("/").map(Number);const[bd,bm]=(b.date||"").split("/").map(Number);return am!==bm?am-bm:ad-bd;})
-                .filter(d=>{const k=d.date+"_"+d.day;if(seen.has(k))return false;seen.add(k);return true;});
-              const projOT = Math.round(merged.reduce((s,d)=>s+(d.otHrs||0),0)*100)/100;
-              const projWknd = Math.round(merged.reduce((s,d)=>s+(d.wkOtHrs||0),0)*100)/100;
-              return(
-                <div style={{background:"#0d1a10",border:"1px solid #1a4030",borderRadius:10,padding:14,marginBottom:12}}>
-                  <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted -- {tsPending.days.length} days</div>
-                  <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
-                    {tsPending.days.map((d,i)=>(
-                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 50px 1fr",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:11}}>
-                        <span style={{color:"#5a8070"}}>{d.date}</span>
-                        <span style={{color:"#8892b0"}}>{d.day}</span>
-                        <span style={{color:"#e8eaf0",textAlign:"right",fontWeight:600}}>{d.hours}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Month total after applying</div>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
-                    {[["Weekday OT",projOT,"#4affd4"],["Weekend OT",projWknd,"#ffb84a"]].map(([l,v,c])=>(
-                      <div key={l} style={{background:"#0a1a10",borderRadius:6,padding:"8px",textAlign:"center"}}>
-                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
-                        <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{display:"flex",gap:8}}>
-                    <button onClick={confirmTimesheet} style={{flex:1,background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Apply to Pay Calc</button>
-                    <button onClick={()=>setTsPending(null)} style={{background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px 14px",cursor:"pointer"}}>Discard</button>
-                  </div>
-                </div>
-              );
-            })()}
-          </div>)}
-          </div>
-
-          <div style={{...card,marginBottom:14}}>
-            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Account</div>
-            <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535",marginBottom:10}}>
-              <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>Signed in as</div>
-              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:600,wordBreak:"break-all"}}>{user?.email || "--"}</div>
-            </div>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              <button onClick={()=>{haptic("medium");refreshAll();}}
-                style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#4a9eff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
-                🔄 Refresh data
-              </button>
-              <button onClick={async()=>{
-                const partnerPersonalBills=await fetchPartnerBills();
-                const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,partnerPersonalBills,settlements,gifts,scheduledBills,exportedAt:new Date().toISOString()};
-                const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
-                const url=URL.createObjectURL(blob);
-                const a=document.createElement("a");
-                a.href=url;a.download=`vaulted-backup-${new Date().toISOString().slice(0,10)}.json`;
-                a.click();URL.revokeObjectURL(url);
-              }}
-                style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
-                📥 Export backup
-              </button>
-              <button onClick={async ()=>{
-                if(!window.confirm("Sign out? You'\''ll need to log in again to access your data.")) return;
-                haptic("heavy");await handleSignOut();
-              }}
-                style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
-                🚪 Sign out
-              </button>
-            </div>
-          </div>
-
-          <div style={{...card,marginBottom:14}}>
-            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Auto Timesheet Import</div>
-            <div style={{fontSize:12,color:"#8892b0",marginBottom:10,lineHeight:1.6}}>
-              Paste your <span style={{color:"#4affd4",fontWeight:600}}>TIMESHEET_SECRET</span> from Vercel to enable automatic timesheet import from Gmail.
-            </div>
-            <input
-              type="password"
-              placeholder="Paste secret here..."
-              value={tsSecret}
-              onChange={e=>{setTsSecret(e.target.value);save(SK.tsSecret,e.target.value);}}
-              style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px",fontFamily:"inherit",marginBottom:8}}
-            />
-            {tsSecret ? (
-              <div style={{fontSize:11,color:"#00c88c"}}>✅ Secret saved -- polling every 60s</div>
-            ) : (
-              <div style={{fontSize:11,color:"#3a4460"}}>No secret set -- auto-import disabled</div>
-            )}
-            {tsLastEmail && <div style={{fontSize:10,color:"#3a4460",marginTop:4}}>Last email ID: {tsLastEmail.slice(0,12)}...</div>}
-
-            {/* Queue diagnostics - collapsed by default */}
-            {tsSecret && (
-              <div style={{marginTop:12,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,overflow:"hidden"}}>
-                <div onClick={()=>{haptic();setShowQueueDiag(v=>!v);}} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Queue Diagnostics</div>
-                  <span style={{color:"#3a4460",fontSize:11}}>{showQueueDiag?"A":"V"}</span>
-                </div>
-                {showQueueDiag && (<div style={{padding:"0 10px 10px"}}>
-                <div style={{display:"flex",gap:6}}>
-                  <button onClick={async ()=>{
-                    haptic("medium");
-                    try {
-                      const r = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
-                      const d = await r.json();
-                      const cnt = d.remaining || (d.status==="pending"?1:0);
-                      setImportMsg(`Queue: ${cnt} item${cnt!==1?"s":""} waiting`);
-                      setTimeout(()=>setImportMsg(""),4000);
-                    } catch(e) { setImportMsg("⚠️ Check failed"); }
-                  }} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:6,color:"#4a9eff",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Check Queue</button>
-                  <button onClick={async ()=>{
-                    haptic("medium");
-                    if(!window.confirm("Clear ALL queued timesheets? This deletes them from the server queue.")) return;
-                    let cleared = 0;
-                    for (let i = 0; i < 50; i++) {
-                      const r = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
-                      const d = await r.json();
-                      cleared++;
-                      if ((d.remaining || 0) === 0) break;
-                    }
-                    setImportMsg(`✓ Cleared ${cleared} item${cleared!==1?"s":""}`);
-                    setTimeout(()=>setImportMsg(""),4000);
-                  }} style={{flex:1,background:"#2a1a1a",border:"1px solid #ff6b8a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Clear Queue</button>
-                </div>
-                <button onClick={()=>{
-                  haptic("medium");
-                  localStorage.removeItem(SK.tsLastEmail);
-                  setTsLastEmail("");
-                  setImportMsg("✓ Last email cleared -- will re-poll");
-                  setTimeout(()=>setImportMsg(""),4000);
-                }} style={{marginTop:6,width:"100%",background:"#1a1500",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Reset Last Email ID</button>
-                </div>)}
-              </div>
-            )}
-          </div>
-
-          <div style={{...card,marginBottom:14}}>
-            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Notifications</div>
-            {notifPerm === "granted" ? (
-              <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#0a1a10",borderRadius:8,border:"1px solid #1a4030"}}>
-                <span style={{fontSize:18}}>🔔</span>
-                <div>
-                  <div style={{fontSize:13,fontWeight:600,color:"#00c88c"}}>Notifications enabled</div>
-                  <div style={{fontSize:11,color:"#3a6040",marginTop:2}}>You'll be notified the day before payday and on timesheet Mondays</div>
-                </div>
-              </div>
-            ) : notifPerm === "denied" ? (
-              <div style={{padding:"10px 12px",background:"#1a1a0a",borderRadius:8,border:"1px solid #3a3a10"}}>
-                <div style={{fontSize:13,fontWeight:600,color:"#ffb84a",marginBottom:4}}>Notifications blocked</div>
-                <div style={{fontSize:11,color:"#5a5030",lineHeight:1.6}}>You've blocked notifications for this site. To enable, go to your browser's site settings and allow notifications for this page, then tap below.</div>
-                <button onClick={requestAndSaveNotifPerm} style={{marginTop:10,background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:8,color:"#ffb84a",fontSize:12,fontWeight:700,padding:"8px 14px",cursor:"pointer"}}>Check again</button>
-              </div>
-            ) : (
-              <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535"}}>
-                <div style={{fontSize:13,color:"#8892b0",marginBottom:10}}>Enable browser notifications for payday reminders and weekly timesheet alerts.</div>
-                <button onClick={requestAndSaveNotifPerm} style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"}}>🔔 Enable Notifications</button>
-              </div>
-            )}
-          </div>
-
-          <div style={{...card}}>
-            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Backup & Restore</div>
-            <p style={{fontSize:12,color:"#5a6480",marginBottom:10,lineHeight:1.6}}>Your data is auto-backed up daily to the cloud. You can also export a JSON file for offline storage.</p>
-
-            {/* Cloud backups section */}
-            <div style={{background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,marginBottom:10,overflow:"hidden"}}>
-              <div onClick={async ()=>{
-                haptic();
-                if(!showBackups && user) {
-                  setBackupLoading(true);
-                  try { setBackupList(await db.getBackups(user.id)); } catch(e) {}
-                  setBackupLoading(false);
-                }
-                setShowBackups(v=>!v);
-              }} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>☁️ Cloud Backups</div>
-                <span style={{color:"#3a4460",fontSize:11}}>{showBackups?"A":"V"}</span>
-              </div>
-              {showBackups && (
-                <div style={{padding:"0 10px 10px"}}>
-                  <button onClick={async ()=>{
-                    haptic("medium");
-                    if (!user) return;
-                    setBackupLoading(true);
-                    try {
-                      const backupData = await buildBackupData();
-                      await db.createBackup(user.id, backupData, "manual");
-                      setBackupList(await db.getBackups(user.id));
-                      setImportMsg("✓ Backup saved to cloud");
-                    } catch(e) { setImportMsg("⚠ Backup failed"); }
-                    setBackupLoading(false);
-                    setTimeout(()=>setImportMsg(""),3000);
-                  }} style={{width:"100%",background:"#0a1a10",border:"1px solid #00c88c",borderRadius:6,color:"#00c88c",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer",marginBottom:8}}>
-                    + Backup Now
-                  </button>
-                  {backupLoading && <div style={{fontSize:11,color:"#5a6480",textAlign:"center",padding:8}}>Loading...</div>}
-                  {!backupLoading && backupList.length === 0 && <div style={{fontSize:11,color:"#3a4460",textAlign:"center",padding:8}}>No cloud backups yet</div>}
-                  {!backupLoading && backupList.map(b => (
-                    <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"#141824",borderRadius:6,marginBottom:4,fontSize:11}}>
-                      <div>
-                        <div style={{color:"#e8eaf0",fontWeight:600}}>{new Date(b.created_at).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}</div>
-                        <div style={{color:"#3a4460",fontSize:10}}>{(b.size_bytes/1024).toFixed(1)}KB - {b.trigger}</div>
-                      </div>
-                      <div style={{display:"flex",gap:4}}>
-                        <button onClick={async ()=>{
-                          haptic("medium");
-                          if(!window.confirm("Restore this backup? Your current data will be replaced.")) return;
-                          try {
-                            const full = await db.getBackup(b.id);
-                            const d = full.data;
-                            if(d.history){updH(d.history);}
-                            if(d.sharedBills){updSB(d.sharedBills);}
-                            if(d.glynBills){updGB(d.glynBills);}
-                            if(d.partnerPersonalBills){await restorePartnerBills(d.partnerPersonalBills);}
-                            if(d.settlements){await restoreSettlements(d.settlements);}
-                            if(d.gifts){await restoreGifts(d.gifts);}
-                            if(d.scheduledBills){await restoreScheduledBills(d.scheduledBills);}
-                            restoreCats(d);
-                            if(d.calcInputs){setCi(d.calcInputs);if(user)db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
-                            if(d.notes){updNotes(d.notes);}
-                            if(d.leaveLogs){setLeaveLogs(d.leaveLogs);}
-                            if(d.leaveSettings){setLeaveSettings(d.leaveSettings);}
-                            if(d.scenarios){setScenarios(d.scenarios);}
-                            if(d.tierOverride!==undefined){setTierOverride(d.tierOverride);}
-                            setImportMsg("✓ Backup restored");
-                          } catch(e) { setImportMsg("⚠ Restore failed"); }
-                          setTimeout(()=>setImportMsg(""),3000);
-                        }} style={{background:"#1a2535",border:"1px solid #4a9eff",borderRadius:4,color:"#4a9eff",fontSize:10,fontWeight:700,padding:"5px 8px",cursor:"pointer"}}>Restore</button>
-                        <button onClick={async ()=>{
-                          if(!window.confirm("Delete this backup?")) return;
-                          haptic("medium");
-                          try {
-                            await db.deleteBackup(b.id);
-                            setBackupList(await db.getBackups(user.id));
-                          } catch(e) {}
-                        }} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <p style={{fontSize:11,color:"#5a6480",marginBottom:10,lineHeight:1.5}}>Or export a local JSON file (useful before major changes):</p>
-            <div style={{display:"flex",gap:8,marginBottom:12}}>
-              <button onClick={exportData} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer"}}>⬇ Export Backup</button>
-              <label style={{flex:1,background:"#1a2535",border:"1px solid #00c88c",borderRadius:8,color:"#00c88c",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer",textAlign:"center"}}>
-                ⬆ Import Backup
-                <input type="file" accept=".json" onChange={importData} style={{display:"none"}}/>
-              </label>
-            </div>
-            {importMsg&&(
-              <div style={{padding:"10px 12px",borderRadius:8,background:importMsg.startsWith("✓")?"#0a1a10":"#2a0f15",border:"1px solid "+(importMsg.startsWith("✓")?"#1a4030":"#5a1a2a"),color:importMsg.startsWith("✓")?"#00c88c":"#ff6b8a",fontSize:12,textAlign:"center"}}>
-                {importMsg}
-              </div>
-            )}
-          </div>
-          </div>
-        )}
 
         {tab==="Timesheet"&&(
           <div>
@@ -4806,9 +4495,318 @@ const calcTimesheetTotals = days => {
               </div>
             </div>
 
-            <button onClick={()=>{haptic();setTab("Timesheet");}} style={{width:"100%",background:"#1a2535",border:"1px solid #2a3a5a",borderRadius:8,color:"#a0c0ff",fontSize:12,fontWeight:600,padding:"12px",cursor:"pointer"}}>
-              Timesheet queue controls →
-            </button>
+          <div style={{...card,marginBottom:14,padding:0}}>
+            <div onClick={()=>{haptic();setShowPayslipUpload(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>📄 Upload Payslips</div>
+              <span style={{color:"#3a4460",fontSize:14}}>{showPayslipUpload?"⌃":"⌄"}</span>
+            </div>
+            {showPayslipUpload && (<div style={{padding:"0 14px 14px",textAlign:"center"}}>
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:16}}>Select one or more payslip PDFs. They'll be read and added to your history automatically.</p>
+            <label htmlFor="payslip-upload-input" style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer",position:"relative"}}>
+              <input id="payslip-upload-input" type="file" accept=".pdf,application/pdf" multiple onChange={handleUpload} disabled={uploading}
+                style={{position:"absolute",left:0,top:0,width:"100%",height:"100%",opacity:0,cursor:uploading?"not-allowed":"pointer"}}/>
+              {uploading
+                ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing..."}</div></div>
+                :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
+              }
+            </label>
+            {multiResults.length>0&&(
+              <div style={{marginTop:16,textAlign:"left"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
+                  ✓ {multiResults.filter(r=>r.ok).length} of {multiResults.length} added
+                </div>
+                {multiResults.map((r,i)=>(
+                  <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:12}}>
+                    {r.ok
+                      ?<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}</span><span style={{color:"#8892b0"}}>Gross {fmt(r.parsed.gross)} - Net {fmt(r.parsed.net)}</span></div>
+                      :<div style={{color:"#ff6b8a"}}>⚠ {r.name} -- {r.err}</div>
+                    }
+                  </div>
+                ))}
+              </div>
+            )}
+            </div>)}
+          </div>
+
+          <div style={{...card,marginBottom:14,padding:0}}>
+            <div onClick={()=>{haptic();setShowManualTs(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div>
+                <div style={{fontSize:9,color:"#ffb84a",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Weekly Timesheet (Manual)</div>
+                <p style={{fontSize:11,color:"#5a6480",margin:0}}>Backup option -- auto-import handles this automatically</p>
+              </div>
+              <span style={{color:"#3a4460",fontSize:14}}>{showManualTs?"A":"V"}</span>
+            </div>
+            {showManualTs && (<div style={{padding:"0 14px 14px"}}>
+            <label style={{display:"block",background:"#0d1117",border:"2px dashed "+(showTsReminder?"#ffb84a":"#2a3050"),borderRadius:10,padding:"20px 16px",cursor:tsUploading?"not-allowed":"pointer",marginBottom:12}}>
+              <input type="file" accept="image/*,application/pdf" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
+              {tsUploading
+                ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#ffb84a",fontSize:13}}>{tsProgress||"Processing..."}</div></div>
+                :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
+              }
+            </label>
+            {tsPending&&(()=>{
+              // Calculate what the totals will be after merge+dedup
+              const STD = 8.25;
+              const enrichedNew = tsPending.days.map(d => {
+                const hrs = parseHM(d.hours);
+                const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
+                return { ...d, hrs, otHrs: isWeekend ? 0 : Math.max(0, Math.round((hrs-STD)*100)/100), wkOtHrs: isWeekend ? hrs : 0 };
+              });
+              const seen = new Set();
+              const merged = [...(accumulated.days||[]), ...enrichedNew]
+                .sort((a,b)=>{const[ad,am]=(a.date||"").split("/").map(Number);const[bd,bm]=(b.date||"").split("/").map(Number);return am!==bm?am-bm:ad-bd;})
+                .filter(d=>{const k=d.date+"_"+d.day;if(seen.has(k))return false;seen.add(k);return true;});
+              const projOT = Math.round(merged.reduce((s,d)=>s+(d.otHrs||0),0)*100)/100;
+              const projWknd = Math.round(merged.reduce((s,d)=>s+(d.wkOtHrs||0),0)*100)/100;
+              return(
+                <div style={{background:"#0d1a10",border:"1px solid #1a4030",borderRadius:10,padding:14,marginBottom:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted -- {tsPending.days.length} days</div>
+                  <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
+                    {tsPending.days.map((d,i)=>(
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 50px 1fr",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:11}}>
+                        <span style={{color:"#5a8070"}}>{d.date}</span>
+                        <span style={{color:"#8892b0"}}>{d.day}</span>
+                        <span style={{color:"#e8eaf0",textAlign:"right",fontWeight:600}}>{d.hours}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Month total after applying</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+                    {[["Weekday OT",projOT,"#4affd4"],["Weekend OT",projWknd,"#ffb84a"]].map(([l,v,c])=>(
+                      <div key={l} style={{background:"#0a1a10",borderRadius:6,padding:"8px",textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                        <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={confirmTimesheet} style={{flex:1,background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Apply to Pay Calc</button>
+                    <button onClick={()=>setTsPending(null)} style={{background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px 14px",cursor:"pointer"}}>Discard</button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>)}
+          </div>
+
+          <div style={{...card,marginBottom:14}}>
+            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Account</div>
+            <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535",marginBottom:10}}>
+              <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>Signed in as</div>
+              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:600,wordBreak:"break-all"}}>{user?.email || "--"}</div>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button onClick={()=>{haptic("medium");refreshAll();}}
+                style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#4a9eff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
+                🔄 Refresh data
+              </button>
+              <button onClick={async()=>{
+                const partnerPersonalBills=await fetchPartnerBills();
+                const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,partnerPersonalBills,settlements,gifts,scheduledBills,exportedAt:new Date().toISOString()};
+                const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+                const url=URL.createObjectURL(blob);
+                const a=document.createElement("a");
+                a.href=url;a.download=`vaulted-backup-${new Date().toISOString().slice(0,10)}.json`;
+                a.click();URL.revokeObjectURL(url);
+              }}
+                style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
+                📥 Export backup
+              </button>
+              <button onClick={async ()=>{
+                if(!window.confirm("Sign out? You'\''ll need to log in again to access your data.")) return;
+                haptic("heavy");await handleSignOut();
+              }}
+                style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>
+                🚪 Sign out
+              </button>
+            </div>
+          </div>
+
+          <div style={{...card,marginBottom:14}}>
+            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Auto Timesheet Import</div>
+            <div style={{fontSize:12,color:"#8892b0",marginBottom:10,lineHeight:1.6}}>
+              Paste your <span style={{color:"#4affd4",fontWeight:600}}>TIMESHEET_SECRET</span> from Vercel to enable automatic timesheet import from Gmail.
+            </div>
+            <input
+              type="password"
+              placeholder="Paste secret here..."
+              value={tsSecret}
+              onChange={e=>{setTsSecret(e.target.value);save(SK.tsSecret,e.target.value);}}
+              style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px",fontFamily:"inherit",marginBottom:8}}
+            />
+            {tsSecret ? (
+              <div style={{fontSize:11,color:"#00c88c"}}>✅ Secret saved -- polling every 60s</div>
+            ) : (
+              <div style={{fontSize:11,color:"#3a4460"}}>No secret set -- auto-import disabled</div>
+            )}
+            {tsLastEmail && <div style={{fontSize:10,color:"#3a4460",marginTop:4}}>Last email ID: {tsLastEmail.slice(0,12)}...</div>}
+
+            {/* Queue diagnostics - collapsed by default */}
+            {tsSecret && (
+              <div style={{marginTop:12,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,overflow:"hidden"}}>
+                <div onClick={()=>{haptic();setShowQueueDiag(v=>!v);}} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Queue Diagnostics</div>
+                  <span style={{color:"#3a4460",fontSize:11}}>{showQueueDiag?"A":"V"}</span>
+                </div>
+                {showQueueDiag && (<div style={{padding:"0 10px 10px"}}>
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={async ()=>{
+                    haptic("medium");
+                    try {
+                      const r = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
+                      const d = await r.json();
+                      const cnt = d.remaining || (d.status==="pending"?1:0);
+                      setImportMsg(`Queue: ${cnt} item${cnt!==1?"s":""} waiting`);
+                      setTimeout(()=>setImportMsg(""),4000);
+                    } catch(e) { setImportMsg("⚠️ Check failed"); }
+                  }} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:6,color:"#4a9eff",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Check Queue</button>
+                  <button onClick={async ()=>{
+                    haptic("medium");
+                    if(!window.confirm("Clear ALL queued timesheets? This deletes them from the server queue.")) return;
+                    let cleared = 0;
+                    for (let i = 0; i < 50; i++) {
+                      const r = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
+                      const d = await r.json();
+                      cleared++;
+                      if ((d.remaining || 0) === 0) break;
+                    }
+                    setImportMsg(`✓ Cleared ${cleared} item${cleared!==1?"s":""}`);
+                    setTimeout(()=>setImportMsg(""),4000);
+                  }} style={{flex:1,background:"#2a1a1a",border:"1px solid #ff6b8a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Clear Queue</button>
+                </div>
+                <button onClick={()=>{
+                  haptic("medium");
+                  localStorage.removeItem(SK.tsLastEmail);
+                  setTsLastEmail("");
+                  setImportMsg("✓ Last email cleared -- will re-poll");
+                  setTimeout(()=>setImportMsg(""),4000);
+                }} style={{marginTop:6,width:"100%",background:"#1a1500",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Reset Last Email ID</button>
+                </div>)}
+              </div>
+            )}
+          </div>
+
+          <div style={{...card,marginBottom:14}}>
+            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Notifications</div>
+            {notifPerm === "granted" ? (
+              <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#0a1a10",borderRadius:8,border:"1px solid #1a4030"}}>
+                <span style={{fontSize:18}}>🔔</span>
+                <div>
+                  <div style={{fontSize:13,fontWeight:600,color:"#00c88c"}}>Notifications enabled</div>
+                  <div style={{fontSize:11,color:"#3a6040",marginTop:2}}>You'll be notified the day before payday and on timesheet Mondays</div>
+                </div>
+              </div>
+            ) : notifPerm === "denied" ? (
+              <div style={{padding:"10px 12px",background:"#1a1a0a",borderRadius:8,border:"1px solid #3a3a10"}}>
+                <div style={{fontSize:13,fontWeight:600,color:"#ffb84a",marginBottom:4}}>Notifications blocked</div>
+                <div style={{fontSize:11,color:"#5a5030",lineHeight:1.6}}>You've blocked notifications for this site. To enable, go to your browser's site settings and allow notifications for this page, then tap below.</div>
+                <button onClick={requestAndSaveNotifPerm} style={{marginTop:10,background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:8,color:"#ffb84a",fontSize:12,fontWeight:700,padding:"8px 14px",cursor:"pointer"}}>Check again</button>
+              </div>
+            ) : (
+              <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535"}}>
+                <div style={{fontSize:13,color:"#8892b0",marginBottom:10}}>Enable browser notifications for payday reminders and weekly timesheet alerts.</div>
+                <button onClick={requestAndSaveNotifPerm} style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"}}>🔔 Enable Notifications</button>
+              </div>
+            )}
+          </div>
+
+          <div style={{...card}}>
+            <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Backup & Restore</div>
+            <p style={{fontSize:12,color:"#5a6480",marginBottom:10,lineHeight:1.6}}>Your data is auto-backed up daily to the cloud. You can also export a JSON file for offline storage.</p>
+
+            {/* Cloud backups section */}
+            <div style={{background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,marginBottom:10,overflow:"hidden"}}>
+              <div onClick={async ()=>{
+                haptic();
+                if(!showBackups && user) {
+                  setBackupLoading(true);
+                  try { setBackupList(await db.getBackups(user.id)); } catch(e) {}
+                  setBackupLoading(false);
+                }
+                setShowBackups(v=>!v);
+              }} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>☁️ Cloud Backups</div>
+                <span style={{color:"#3a4460",fontSize:11}}>{showBackups?"A":"V"}</span>
+              </div>
+              {showBackups && (
+                <div style={{padding:"0 10px 10px"}}>
+                  <button onClick={async ()=>{
+                    haptic("medium");
+                    if (!user) return;
+                    setBackupLoading(true);
+                    try {
+                      const backupData = await buildBackupData();
+                      await db.createBackup(user.id, backupData, "manual");
+                      setBackupList(await db.getBackups(user.id));
+                      setImportMsg("✓ Backup saved to cloud");
+                    } catch(e) { setImportMsg("⚠ Backup failed"); }
+                    setBackupLoading(false);
+                    setTimeout(()=>setImportMsg(""),3000);
+                  }} style={{width:"100%",background:"#0a1a10",border:"1px solid #00c88c",borderRadius:6,color:"#00c88c",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer",marginBottom:8}}>
+                    + Backup Now
+                  </button>
+                  {backupLoading && <div style={{fontSize:11,color:"#5a6480",textAlign:"center",padding:8}}>Loading...</div>}
+                  {!backupLoading && backupList.length === 0 && <div style={{fontSize:11,color:"#3a4460",textAlign:"center",padding:8}}>No cloud backups yet</div>}
+                  {!backupLoading && backupList.map(b => (
+                    <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"#141824",borderRadius:6,marginBottom:4,fontSize:11}}>
+                      <div>
+                        <div style={{color:"#e8eaf0",fontWeight:600}}>{new Date(b.created_at).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}</div>
+                        <div style={{color:"#3a4460",fontSize:10}}>{(b.size_bytes/1024).toFixed(1)}KB - {b.trigger}</div>
+                      </div>
+                      <div style={{display:"flex",gap:4}}>
+                        <button onClick={async ()=>{
+                          haptic("medium");
+                          if(!window.confirm("Restore this backup? Your current data will be replaced.")) return;
+                          try {
+                            const full = await db.getBackup(b.id);
+                            const d = full.data;
+                            if(d.history){updH(d.history);}
+                            if(d.sharedBills){updSB(d.sharedBills);}
+                            if(d.glynBills){updGB(d.glynBills);}
+                            if(d.partnerPersonalBills){await restorePartnerBills(d.partnerPersonalBills);}
+                            if(d.settlements){await restoreSettlements(d.settlements);}
+                            if(d.gifts){await restoreGifts(d.gifts);}
+                            if(d.scheduledBills){await restoreScheduledBills(d.scheduledBills);}
+                            restoreCats(d);
+                            if(d.calcInputs){setCi(d.calcInputs);if(user)db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
+                            if(d.notes){updNotes(d.notes);}
+                            if(d.leaveLogs){setLeaveLogs(d.leaveLogs);}
+                            if(d.leaveSettings){setLeaveSettings(d.leaveSettings);}
+                            if(d.scenarios){setScenarios(d.scenarios);}
+                            if(d.tierOverride!==undefined){setTierOverride(d.tierOverride);}
+                            setImportMsg("✓ Backup restored");
+                          } catch(e) { setImportMsg("⚠ Restore failed"); }
+                          setTimeout(()=>setImportMsg(""),3000);
+                        }} style={{background:"#1a2535",border:"1px solid #4a9eff",borderRadius:4,color:"#4a9eff",fontSize:10,fontWeight:700,padding:"5px 8px",cursor:"pointer"}}>Restore</button>
+                        <button onClick={async ()=>{
+                          if(!window.confirm("Delete this backup?")) return;
+                          haptic("medium");
+                          try {
+                            await db.deleteBackup(b.id);
+                            setBackupList(await db.getBackups(user.id));
+                          } catch(e) {}
+                        }} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <p style={{fontSize:11,color:"#5a6480",marginBottom:10,lineHeight:1.5}}>Or export a local JSON file (useful before major changes):</p>
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              <button onClick={exportData} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer"}}>⬇ Export Backup</button>
+              <label style={{flex:1,background:"#1a2535",border:"1px solid #00c88c",borderRadius:8,color:"#00c88c",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer",textAlign:"center"}}>
+                ⬆ Import Backup
+                <input type="file" accept=".json" onChange={importData} style={{display:"none"}}/>
+              </label>
+            </div>
+            {importMsg&&(
+              <div style={{padding:"10px 12px",borderRadius:8,background:importMsg.startsWith("✓")?"#0a1a10":"#2a0f15",border:"1px solid "+(importMsg.startsWith("✓")?"#1a4030":"#5a1a2a"),color:importMsg.startsWith("✓")?"#00c88c":"#ff6b8a",fontSize:12,textAlign:"center"}}>
+                {importMsg}
+              </div>
+            )}
+          </div>
           </div>
         )}
 
