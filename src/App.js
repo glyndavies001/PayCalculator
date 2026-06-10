@@ -626,7 +626,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.38";
+const APP_VERSION = "1.13.39";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -2298,18 +2298,33 @@ export default function App() {
   const cr=useMemo(()=>calcPay({...ci, _allowanceOverride: effectiveAllowance}),[ci, effectiveAllowance]);
   const surplus=cr.net-totalOut;
 
-  // Hollie's pay calc (partner view). Her OT is stored inside calc_inputs (survives the
-  // 29->28 rollover) and resets each CALENDAR month via a month stamp.
-  const hollieCalKey=`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}`;
-  const hollieOtHrs=(ci.hollieOtMonth===hollieCalKey)?(Number(ci.hollieOtHrs)||0):0;
+  // Hollie's pay calc (partner view). OT is paid a month in ARREARS: hours are logged
+  // against the month they're worked (stored as a per-month map in calc_inputs, so nothing
+  // is lost and it shifts forward on its own) and pay out in the FOLLOWING month.
+  const hollieMonthKey=(d)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  const hollieCalKey=hollieMonthKey(new Date());
+  const holliePrevDate=new Date(new Date().getFullYear(),new Date().getMonth()-1,1);
+  const holliePrevKey=hollieMonthKey(holliePrevDate);
+  const holliePrevName=holliePrevDate.toLocaleDateString("en-GB",{month:"long"});
+  // Migrate the old single-value OT into the map on first read.
+  const hollieOtMap=(ci.hollieOt && typeof ci.hollieOt==="object")
+    ? ci.hollieOt
+    : (ci.hollieOtHrs!=null && ci.hollieOtMonth ? {[ci.hollieOtMonth]:Number(ci.hollieOtHrs)||0} : {});
+  const hollieOtAccruing=Number(hollieOtMap[hollieCalKey])||0;   // logged now -> paid next month
+  const hollieOtForPay=Number(hollieOtMap[holliePrevKey])||0;    // worked last month -> paid this month
   const setHollieOt=(hrs)=>{
     setCi(p=>{
-      const n={...p,hollieOtHrs:hrs,hollieOtMonth:hollieCalKey};
+      const base=(p.hollieOt && typeof p.hollieOt==="object") ? p.hollieOt : {};
+      const next={...base,[hollieCalKey]:hrs};
+      const keys=Object.keys(next).sort();
+      while(keys.length>6){ delete next[keys.shift()]; }   // keep it tidy
+      const n={...p,hollieOt:next};
+      delete n.hollieOtHrs; delete n.hollieOtMonth;
       if(user)trackSave(db.saveAppSettings(user.id,{calc_inputs:n}));
       return n;
     });
   };
-  const hollieCalc=calcHolliePay(hollieOtHrs);
+  const hollieCalc=calcHolliePay(hollieOtForPay);
   const hollieOut=shHollie+glOnly;
   const hollieSurplus=hollieCalc.net-hollieOut;
 
@@ -3398,19 +3413,19 @@ const calcTimesheetTotals = days => {
             </div>
 
             <div style={card}>
-              <SectionLabel>Overtime this month</SectionLabel>
+              <SectionLabel>Overtime worked this month</SectionLabel>
               <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}>
-                <span>Overtime hours <span style={{color:"#3a4460"}}>@ £{(HOLLIE_RATE*1.5).toFixed(2)}/h</span></span><span style={{color:"#c84aff",fontWeight:700}}>{hollieOtHrs}h</span>
+                <span>Hours worked <span style={{color:"#3a4460"}}>@ £{(HOLLIE_RATE*1.5).toFixed(2)}/h</span></span><span style={{color:"#c84aff",fontWeight:700}}>{hollieOtAccruing}h</span>
               </label>
-              <input type="number" inputMode="decimal" value={hollieOtHrs} onChange={e=>setHollieOt(parseFloat(e.target.value)||0)} style={numI}/>
-              <div style={{fontSize:10,color:"#3a4460",marginTop:6}}>Paid at 1.5× your £{HOLLIE_RATE}/h rate. Resets at the start of each month.</div>
+              <input type="number" inputMode="decimal" value={hollieOtAccruing} onChange={e=>setHollieOt(parseFloat(e.target.value)||0)} style={numI}/>
+              <div style={{fontSize:10,color:"#3a4460",marginTop:6}}>Paid a month in arrears — these {hollieOtAccruing||0}h ({fmt(hollieOtAccruing*HOLLIE_RATE*1.5)}) land in <b style={{color:"#5a6480"}}>next month's</b> pay, not this one.</div>
             </div>
 
             <div style={card}>
               <SectionLabel>This month</SectionLabel>
               {[
                 [`Base pay (${hollieCalc.baseHours}h × £${HOLLIE_RATE})`, fmt(hollieCalc.stdPay), "#c8cee0", false],
-                ["Overtime", fmt(hollieCalc.otPay), "#c84aff", false],
+                [`Overtime (worked ${holliePrevName})`, fmt(hollieCalc.otPay), "#c84aff", false],
                 ["Gross", fmt(hollieCalc.gross), "#e8eaf0", true],
                 ["Tax", "−"+fmt(hollieCalc.tax), "#ff6b8a", false],
                 ["NI", "−"+fmt(hollieCalc.ni), "#ff8c4a", false],
