@@ -186,23 +186,27 @@ function calcPay({ stdHrs, otHrs, weekendOtHrs, holidayHrs, bonus, perfAllowance
 }
 
 // Hollie's pay: flat £2,390.38 gross/month regardless of working days, plus overtime at
-// 1.5× £14.71 on top (paid a month in arrears). No bonus. Pension (NEST) and student loan
-// (Plan 2) use the same rates/thresholds as Glyn.
+// 1.5× £14.71 on top (paid a month in arrears). No bonus. Her NOW Pension is SALARY
+// SACRIFICE: it comes off gross BEFORE tax, NI and the student loan. On the flat base it's
+// £89.08; overtime is pensionable so it adds 5% of OT pay. Student loan (Plan 2) therefore
+// only bites when OT lifts her taxable pay back over the threshold.
 const HOLLIE_RATE = 14.71;
 const HOLLIE_FLAT_GROSS = 2390.38;
+const HOLLIE_BASE_PENSION = 89.08;   // NOW Pension on the flat base
 function calcHolliePay(otHrs) {
   const stdPay = HOLLIE_FLAT_GROSS;
   const otPay = (Number(otHrs) || 0) * (HOLLIE_RATE * 1.5);
   const gross = stdPay + otPay;
-  const tax = Math.max(0, gross - PAY.taxFreeMonthly) * 0.20;
-  const niLower = Math.max(0, Math.min(gross, PAY.niUpperThreshold) - PAY.niPrimaryThreshold);
-  const niUpper = Math.max(0, gross - PAY.niUpperThreshold);
+  const pension = HOLLIE_BASE_PENSION + otPay * 0.05;   // salary sacrifice; OT pensionable at 5%
+  const taxable = gross - pension;                       // pension off the top, before tax/NI/SL
+  const tax = Math.max(0, taxable - PAY.taxFreeMonthly) * 0.20;
+  const niLower = Math.max(0, Math.min(taxable, PAY.niUpperThreshold) - PAY.niPrimaryThreshold);
+  const niUpper = Math.max(0, taxable - PAY.niUpperThreshold);
   const ni = niLower * 0.08 + niUpper * 0.02;
-  const nest = Math.max(0, gross - 520) * PAY.nestRate;
-  const sl = Math.max(0, gross - PAY.slThreshold) * 0.09;
-  const deductions = tax + ni + nest + sl;
+  const sl = Math.max(0, taxable - PAY.slThreshold) * 0.09;
+  const deductions = pension + tax + ni + sl;
   const net = gross - deductions;
-  return { stdPay, otPay, gross, tax, ni, nest, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
+  return { stdPay, otPay, gross, pension, taxable, tax, ni, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
 }
 
 const INITIAL_HISTORY = [
@@ -616,7 +620,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.40";
+const APP_VERSION = "1.13.41";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -3417,9 +3421,10 @@ const calcTimesheetTotals = days => {
                 [`Base pay (flat monthly)`, fmt(hollieCalc.stdPay), "#c8cee0", false],
                 [`Overtime (worked ${holliePrevName})`, fmt(hollieCalc.otPay), "#c84aff", false],
                 ["Gross", fmt(hollieCalc.gross), "#e8eaf0", true],
+                ["NOW Pension (salary sacrifice)", "−"+fmt(hollieCalc.pension), "#00c88c", false],
+                ["Taxable pay", fmt(hollieCalc.taxable), "#5a6480", false],
                 ["Tax", "−"+fmt(hollieCalc.tax), "#ff6b8a", false],
                 ["NI", "−"+fmt(hollieCalc.ni), "#ff8c4a", false],
-                ["Pension (NEST)", "−"+fmt(hollieCalc.nest), "#00c88c", false],
                 ["Student loan (Plan 2)", "−"+fmt(hollieCalc.sl), "#ffb84a", false],
                 ["Net pay", fmt(hollieCalc.net), "#c84aff", true],
               ].map(([l,v,c,bold],i)=>(
@@ -3443,7 +3448,7 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
 
-            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on a flat {fmt(HOLLIE_FLAT_GROSS)}/month gross plus overtime at £{(HOLLIE_RATE*1.5).toFixed(2)}/h, with tax, NI, NEST pension and Plan 2 student loan deducted.</p>
+            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on a flat {fmt(HOLLIE_FLAT_GROSS)}/month gross plus overtime at £{(HOLLIE_RATE*1.5).toFixed(2)}/h, with NOW Pension taken as salary sacrifice (before tax, NI &amp; student loan), then tax, NI and Plan 2 student loan on what's left.</p>
           </div>
         )}
 
