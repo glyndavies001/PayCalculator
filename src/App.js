@@ -185,23 +185,13 @@ function calcPay({ stdHrs, otHrs, weekendOtHrs, holidayHrs, bonus, perfAllowance
     annualGross: gross*12, annualNet: net*12, annualTax: tax*12, annualNI: ni*12 };
 }
 
-// Hollie's pay: £14.71/h, 40h/week, OT at 1.5x, no bonus. Paid last working day of the
-// calendar month. Bank holidays count as normal working days; holiday hours are treated
-// as worked. Pension (NEST) and student loan (Plan 2) use the same rates/thresholds as Glyn.
+// Hollie's pay: flat £2,390.38 gross/month regardless of working days, plus overtime at
+// 1.5× £14.71 on top (paid a month in arrears). No bonus. Pension (NEST) and student loan
+// (Plan 2) use the same rates/thresholds as Glyn.
 const HOLLIE_RATE = 14.71;
-function hollieMonthHours(d) {
-  const now = d || new Date();
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  let wd = 0;
-  for (let x = new Date(now.getFullYear(), now.getMonth(), 1); x <= end; x.setDate(x.getDate() + 1)) {
-    const dow = x.getDay();
-    if (dow !== 0 && dow !== 6) wd++;
-  }
-  return wd * 8;
-}
+const HOLLIE_FLAT_GROSS = 2390.38;
 function calcHolliePay(otHrs) {
-  const baseHours = hollieMonthHours();
-  const stdPay = baseHours * HOLLIE_RATE;
+  const stdPay = HOLLIE_FLAT_GROSS;
   const otPay = (Number(otHrs) || 0) * (HOLLIE_RATE * 1.5);
   const gross = stdPay + otPay;
   const tax = Math.max(0, gross - PAY.taxFreeMonthly) * 0.20;
@@ -212,7 +202,7 @@ function calcHolliePay(otHrs) {
   const sl = Math.max(0, gross - PAY.slThreshold) * 0.09;
   const deductions = tax + ni + nest + sl;
   const net = gross - deductions;
-  return { baseHours, stdPay, otPay, gross, tax, ni, nest, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
+  return { stdPay, otPay, gross, tax, ni, nest, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
 }
 
 const INITIAL_HISTORY = [
@@ -626,7 +616,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.39";
+const APP_VERSION = "1.13.40";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -3424,7 +3414,7 @@ const calcTimesheetTotals = days => {
             <div style={card}>
               <SectionLabel>This month</SectionLabel>
               {[
-                [`Base pay (${hollieCalc.baseHours}h × £${HOLLIE_RATE})`, fmt(hollieCalc.stdPay), "#c8cee0", false],
+                [`Base pay (flat monthly)`, fmt(hollieCalc.stdPay), "#c8cee0", false],
                 [`Overtime (worked ${holliePrevName})`, fmt(hollieCalc.otPay), "#c84aff", false],
                 ["Gross", fmt(hollieCalc.gross), "#e8eaf0", true],
                 ["Tax", "−"+fmt(hollieCalc.tax), "#ff6b8a", false],
@@ -3453,7 +3443,7 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
 
-            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on £{HOLLIE_RATE}/h, 40h/week (bank holidays counted), tax &amp; NI at standard rates, NEST pension and Plan 2 student loan.</p>
+            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on a flat {fmt(HOLLIE_FLAT_GROSS)}/month gross plus overtime at £{(HOLLIE_RATE*1.5).toFixed(2)}/h, with tax, NI, NEST pension and Plan 2 student loan deducted.</p>
           </div>
         )}
 
