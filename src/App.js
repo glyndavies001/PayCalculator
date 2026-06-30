@@ -620,7 +620,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.41";
+const APP_VERSION = "1.13.43";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -2176,7 +2176,7 @@ export default function App() {
   const [tsUploading,setTsUploading]=useState(false);
   const [tsProgress,setTsProgress]=useState(null);
   const [showManualTs,setShowManualTs]=useState(false);
-  const [showPayslipUpload,setShowPayslipUpload]=useState(false);
+  const [showPayslipUpload,setShowPayslipUpload]=useState(true);
   const [showQueueDiag,setShowQueueDiag]=useState(false);
   const [showBackups,setShowBackups]=useState(false);
   const [backupList,setBackupList]=useState([]);
@@ -2418,7 +2418,7 @@ export default function App() {
         const resp=await fetch(API_PROXY,{
           method:"POST",
           headers:await authHeaders(),
-          body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:1500,messages:[{role:"user",content:[
+          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:[
             {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
             {type:"text",text:'Extract payslip data. Return ONLY valid JSON with this exact shape:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00,"weekendOt":0.00,"holidayPay":0.00,"hourlyAllowance":0.00,"regularPay":0.00}\n\nField definitions:\n- month: payment month/year (e.g. "May 2026")\n- date: payment date as DD/MM/YYYY\n- gross: TOTAL gross pay (sum of all earnings)\n- net: net pay (gross minus all deductions)\n- tax: PAYE total\n- ni: Employee National Insurance Contribution\n- nest: NEST pension contribution\n- sl: Student Loan deduction\n- bonus: Performance Bonus line only\n- ot: Overtime line ONLY (not weekend hours, not holiday pay)\n- weekendOt: Weekend Hours line (£ amount)\n- holidayPay: SUM of all "Holiday" earning lines (could be multiple, may include "Holiday (Contracted Staff YYYY)")\n- hourlyAllowance: SUM of all "Hourly Allowance" lines including any with brackets like "Hourly Allowance (Hols)"\n- regularPay: Regular Hours line (£ amount only)\nIf a field is not present, use 0.00. Return JSON only, no markdown, no explanation.'}
           ]}]})
@@ -2727,7 +2727,7 @@ const calcTimesheetTotals = days => {
           method: "POST",
           headers: await authHeaders(),
           body: JSON.stringify({
-            model: "claude-sonnet-4-5", max_tokens: 1000,
+            model: "claude-sonnet-4-6", max_tokens: 1000,
             messages: [{ role: "user", content: [
               contentBlock,
               { type: "text", text: 'This is a JLI work timesheet email. Extract each row as a JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m","holiday":""},{"date":"DD/MM","day":"Mon","hours":"0h 00m","holiday":"Full Day"}]\nRules:\n- Include ALL rows including weekends, holidays, and zero-hour days\n- "holiday" field: copy the EXACT text from the Holiday column. If the column is empty or shows "-", use "" (empty string). Do NOT normalise or reword it -- preserve whatever text JLI put there (e.g. "Full Day", "Half Day", "Annual Leave", "AL", "H", "0.5" etc)\n- Holiday rows typically have "-" for In/Out and "0h 00m" for hours\n- Use the hours column value exactly as shown' }
@@ -4505,7 +4505,7 @@ const calcTimesheetTotals = days => {
               </div>
             </div>
 
-          <div style={{...card,marginBottom:14,padding:0}}>
+          <div style={{...card,marginBottom:multiResults.length>0?0:14,padding:0}}>
             <div onClick={()=>{haptic();setShowPayslipUpload(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
               <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>📄 Upload Payslips</div>
               <span style={{color:"#3a4460",fontSize:14}}>{showPayslipUpload?"⌃":"⌄"}</span>
@@ -4520,23 +4520,23 @@ const calcTimesheetTotals = days => {
                 :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
               }
             </label>
-            {multiResults.length>0&&(
-              <div style={{marginTop:16,textAlign:"left"}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
-                  ✓ {multiResults.filter(r=>r.ok).length} of {multiResults.length} added
-                </div>
-                {multiResults.map((r,i)=>(
-                  <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:12}}>
-                    {r.ok
-                      ?<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}</span><span style={{color:"#8892b0"}}>Gross {fmt(r.parsed.gross)} - Net {fmt(r.parsed.net)}</span></div>
-                      :<div style={{color:"#ff6b8a"}}>⚠ {r.name} -- {r.err}</div>
-                    }
-                  </div>
-                ))}
-              </div>
-            )}
             </div>)}
           </div>
+          {multiResults.length>0&&(
+            <div style={{...card,marginBottom:14,textAlign:"left"}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
+                ✓ {multiResults.filter(r=>r.ok).length} of {multiResults.length} added
+              </div>
+              {multiResults.map((r,i)=>(
+                <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:12}}>
+                  {r.ok
+                    ?<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}</span><span style={{color:"#8892b0"}}>Gross {fmt(r.parsed.gross)} · Net {fmt(r.parsed.net)}</span></div>
+                    :<div style={{color:"#ff6b8a"}}>⚠ {r.name} — {r.err}</div>
+                  }
+                </div>
+              ))}
+            </div>
+          )}
 
           <div style={{...card,marginBottom:14,padding:0}}>
             <div onClick={()=>{haptic();setShowManualTs(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
