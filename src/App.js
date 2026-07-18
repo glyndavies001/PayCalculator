@@ -620,7 +620,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.43";
+const APP_VERSION = "1.13.44";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1877,7 +1877,7 @@ export default function App() {
   // Poll /api/timesheet -- 5s when items pending, 60s when empty
   React.useEffect(() => {
     if (!tsSecret || !user) return;
-    let intervalMs = 60000;
+    let intervalMs = 10000;
     let timer = null;
 
     const poll = async () => {
@@ -1901,7 +1901,7 @@ export default function App() {
           // More items -- poll again in 5s
           if ((data.remaining || 1) > 1) intervalMs = 5000;
         } else {
-          intervalMs = 60000;
+          intervalMs = 10000;
         }
       } catch { /* silent */ }
       timer = setTimeout(poll, intervalMs);
@@ -2289,7 +2289,37 @@ export default function App() {
   },[tierOverride,latest]);
   const effectiveAllowance=PAY.bonusTiers[effectiveTierIdx].allowance;
 
-  const cr=useMemo(()=>calcPay({...ci, _allowanceOverride: effectiveAllowance}),[ci, effectiveAllowance]);
+  // Shortfall absorption: if actual weekday hours in the period are below contracted
+  // (working days × 8.25), absorb the deficit from weekend OT first, then weekday OT,
+  // then std hours. Done silently — the pay calc just uses the effective figures.
+  const effHrs=useMemo(()=>{
+    const STD=8.25;
+    const cur=getCurrentPayPeriodKey();
+    const now=new Date();
+    const periodDays=(accumulated.days||[]).filter(d=>{
+      if(!d||!d.date)return false;
+      const [dd,mm]=String(d.date).split("/").map(Number);
+      if(!dd||!mm)return false;
+      let yr=now.getFullYear();
+      if(now.getMonth()===0&&mm===12)yr-=1;
+      else if(now.getMonth()===11&&mm===1)yr+=1;
+      return payPeriodKeyForDate(new Date(yr,mm-1,dd))===cur;
+    });
+    const shortfall=Math.round(
+      periodDays
+        .filter(d=>!d.isHoliday&&!d.day?.toLowerCase().startsWith("sat")&&!d.day?.toLowerCase().startsWith("sun"))
+        .reduce((s,d)=>s+Math.max(0,STD-(d.hrs||0)),0)
+      *100)/100;
+    let rem=shortfall;
+    const weekendOtHrs=Math.max(0,(ci.weekendOtHrs||0)-rem);
+    rem=Math.max(0,rem-(ci.weekendOtHrs||0));
+    const otHrs=Math.max(0,(ci.otHrs||0)-rem);
+    rem=Math.max(0,rem-(ci.otHrs||0));
+    const stdHrs=Math.max(0,(ci.stdHrs||0)-rem);
+    return{stdHrs,otHrs,weekendOtHrs};
+  },[accumulated.days,ci.stdHrs,ci.otHrs,ci.weekendOtHrs]);
+
+  const cr=useMemo(()=>calcPay({...ci,stdHrs:effHrs.stdHrs,otHrs:effHrs.otHrs,weekendOtHrs:effHrs.weekendOtHrs,_allowanceOverride:effectiveAllowance}),[ci,effectiveAllowance,effHrs]);
   const surplus=cr.net-totalOut;
 
   // Hollie's pay calc (partner view). OT is paid a month in ARREARS: hours are logged
@@ -3548,9 +3578,9 @@ const calcTimesheetTotals = days => {
             <div style={card}>
               <SectionLabel>Gross Breakdown</SectionLabel>
               {[
-                ["Standard Pay", ci.stdHrs+"hrs x £"+(PAY.baseRate+effectiveAllowance).toFixed(2), fmt(cr.stdPay), "#e8eaf0"],
-                ["Overtime Pay", ci.otHrs+"hrs x £"+PAY.otRate, fmt(cr.otPay), "#4affd4"],
-                ["Weekend OT",   ci.weekendOtHrs+"hrs x £"+PAY.weekendOtRate, fmt(cr.wkPay), "#00c88c"],
+                ["Standard Pay", effHrs.stdHrs+"hrs x £"+(PAY.baseRate+effectiveAllowance).toFixed(2), fmt(cr.stdPay), "#e8eaf0"],
+                ["Overtime Pay", effHrs.otHrs+"hrs x £"+PAY.otRate, fmt(cr.otPay), "#4affd4"],
+                ["Weekend OT",   effHrs.weekendOtHrs+"hrs x £"+PAY.weekendOtRate, fmt(cr.wkPay), "#00c88c"],
                 ["Perf. Bonus",  "", fmt(cr.bonus), "#ffb84a"],
               ].map(([l,sub,v,c])=>(
                 <div key={l} style={{...row,flexDirection:"column",gap:2}}>
