@@ -620,7 +620,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.44";
+const APP_VERSION = "1.13.45";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -852,7 +852,11 @@ function currentPeriodTotals(days) {
   });
   const otHrs = Math.round(inPeriod.reduce((s, d) => s + (d.otHrs || 0), 0) * 100) / 100;
   const weekendOtHrs = Math.round(inPeriod.reduce((s, d) => s + (d.wkOtHrs || 0), 0) * 100) / 100;
-  const holidayHrs = Math.round(inPeriod.reduce((s, d) => s + (d.isHoliday ? (d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS) : 0), 0) * 100) / 100;
+  const holidayHrs = Math.round(inPeriod.reduce((s, d) => {
+    if (d.isHoliday) return s + (d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS);
+    if (d.isPartialHol) return s + (d.holHrs || 0);
+    return s;
+  }, 0) * 100) / 100;
   return { otHrs, weekendOtHrs, holidayHrs, days: inPeriod };
 }
 
@@ -1759,23 +1763,26 @@ export default function App() {
   const applyTimesheetDays = React.useCallback((days, emailId, meta = null) => {
     const STD = 8.25;
     const enrichedDays = days.map(d => {
-      const { isHoliday, isHalf } = normaliseHoliday(d.holiday);
-      const hrs = isHoliday ? 0 : parseHM(d.hours);
+      const norm = normaliseHoliday(d.holiday);
+      const { isHoliday, isHalf, isPartialHol, holHrs: partialHolHrs } = norm;
       const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
-      const otHrs = (isHoliday || isWeekend) ? 0 : Math.max(0, Math.round((hrs - STD) * 100) / 100);
+      const hrs = isHoliday ? 0 : parseHM(d.hours);
+      const holHrs = isPartialHol ? partialHolHrs : 0;
+      const effectiveHrs = hrs + holHrs;
+      const otHrs = (isHoliday || isWeekend) ? 0 : Math.max(0, Math.round((effectiveHrs - STD) * 100) / 100);
       const wkOtHrs = (!isHoliday && isWeekend) ? hrs : 0;
-      return { ...d, hrs, otHrs, wkOtHrs, isHoliday, isHalf };
+      return { ...d, hrs, holHrs, otHrs, wkOtHrs, isHoliday, isHalf, isPartialHol };
     });
 
     // Auto-log holidays to leave
-    const holidayDays = enrichedDays.filter(d => d.isHoliday);
+    const holidayDays = enrichedDays.filter(d => d.isHoliday || d.isPartialHol);
     if (holidayDays.length > 0) {
       setLeaveLogs(prev => {
         const newEntries = holidayDays.map(d => {
           const [dd, mm] = d.date.split("/").map(Number);
           const year = new Date().getFullYear();
           const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
-          const hours = d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS;
+          const hours = d.isPartialHol ? d.holHrs : (d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS);
           return { id: genUUID(), date: dateStr, hours, label: "Annual Leave (auto)" };
         });
         const merged = [...prev, ...newEntries]
@@ -2308,7 +2315,7 @@ export default function App() {
     const shortfall=Math.round(
       periodDays
         .filter(d=>!d.isHoliday&&!d.day?.toLowerCase().startsWith("sat")&&!d.day?.toLowerCase().startsWith("sun"))
-        .reduce((s,d)=>s+Math.max(0,STD-(d.hrs||0)),0)
+        .reduce((s,d)=>s+Math.max(0,STD-((d.hrs||0)+(d.holHrs||0))),0)
       *100)/100;
     let rem=shortfall;
     const weekendOtHrs=Math.max(0,(ci.weekendOtHrs||0)-rem);
@@ -2706,11 +2713,20 @@ export default function App() {
 // Returns: { isHoliday: bool, isHalf: bool, rawValue: string }
 // Designed to handle format changes without code updates.
 function normaliseHoliday(val) {
-  if (!val || val.trim() === "" || val.trim() === "-") return { isHoliday: false, isHalf: false, rawValue: val || "" };
+  if (!val || val.trim() === "" || val.trim() === "-") return { isHoliday: false, isHalf: false, isPartialHol: false, holHrs: 0, rawValue: val || "" };
   const v = val.trim().toLowerCase();
-  // Half day signals
+  // Detect time-duration partial holiday (e.g. "2h 45m", "1h 30m") — these are
+  // hours-taken values on a day where some work was also done, not a full/half day flag.
+  const partialMatch = v.match(/^(\d+)h\s*(\d+m)?$/);
+  if (partialMatch) {
+    const h = parseInt(partialMatch[1]) || 0;
+    const m = parseInt((partialMatch[2] || "0m").replace("m", "")) || 0;
+    const holHrs = Math.round((h + m / 60) * 100) / 100;
+    return { isHoliday: false, isHalf: false, isPartialHol: true, holHrs, rawValue: val.trim() };
+  }
+  // Half day signals (non-numeric flags)
   const isHalf = v.includes("half") || v === "0.5" || v === "4h" || v.includes("am") || v.includes("pm") || v.includes("morning") || v.includes("afternoon");
-  return { isHoliday: true, isHalf, rawValue: val.trim() };
+  return { isHoliday: true, isHalf, isPartialHol: false, holHrs: isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS, rawValue: val.trim() };
 }
 
 const calcTimesheetTotals = days => {
@@ -4151,6 +4167,16 @@ const calcTimesheetTotals = days => {
                     .map((d,i)=>{
                     const isWeekend=d.day.toLowerCase().startsWith("sat")||d.day.toLowerCase().startsWith("sun");
                     const isHol=d.isHoliday||false;
+                    const isPartHol=d.isPartialHol||false;
+                    if(isPartHol) return(
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px",fontSize:12,background:"#0d121a",borderBottom:"1px solid #1a2030",alignItems:"center",borderLeft:"3px solid #4a9eff"}}>
+                        <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
+                        <span style={{color:"#4a9eff",fontWeight:700}}>{d.day}</span>
+                        <span style={{textAlign:"right",fontSize:11}}><span style={{color:"#e8eaf0",fontWeight:600}}>{d.hours}</span><span style={{color:"#00c88c",fontWeight:600}}> +{d.holiday} hol</span></span>
+                        <span style={{textAlign:"right",color:"#4affd4",fontWeight:600}}>{d.otHrs>0?"+"+d.otHrs+"h":"--"}</span>
+                        <span style={{textAlign:"right",color:"#3a4460"}}>--</span>
+                      </div>
+                    );
                     if(isHol) return(
                       <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px",fontSize:12,background:"#0d1a10",borderBottom:"1px solid #1a2e1a",alignItems:"center",borderLeft:"3px solid #00c88c"}}>
                         <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
