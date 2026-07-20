@@ -620,7 +620,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.45";
+const APP_VERSION = "1.13.46";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -4747,6 +4747,32 @@ const calcTimesheetTotals = days => {
                   setImportMsg("✓ Last email cleared -- will re-poll");
                   setTimeout(()=>setImportMsg(""),4000);
                 }} style={{marginTop:6,width:"100%",background:"#1a1500",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Reset Last Email ID</button>
+                <button onClick={()=>{
+                  haptic("medium");
+                  const STD=8.25;
+                  const rescanned=(accumulated.days||[]).map(d=>{
+                    const norm=normaliseHoliday(d.holiday);
+                    const {isHoliday,isHalf,isPartialHol,holHrs:partialHolHrs}=norm;
+                    const isWeekend=d.day.toLowerCase().startsWith("sat")||d.day.toLowerCase().startsWith("sun");
+                    const hrs=isHoliday?0:parseHM(d.hours);
+                    const holHrs=isPartialHol?partialHolHrs:0;
+                    const effectiveHrs=hrs+holHrs;
+                    const otHrs=(isHoliday||isWeekend)?0:Math.max(0,Math.round((effectiveHrs-STD)*100)/100);
+                    const wkOtHrs=(!isHoliday&&isWeekend)?hrs:0;
+                    return{...d,hrs,holHrs,otHrs,wkOtHrs,isHoliday,isHalf,isPartialHol};
+                  });
+                  const totalOtHrs=Math.round(rescanned.reduce((s,d)=>s+(d.otHrs||0),0)*100)/100;
+                  const totalWkndHrs=Math.round(rescanned.reduce((s,d)=>s+(d.wkOtHrs||0),0)*100)/100;
+                  const newAcc={...accumulated,otHrs:totalOtHrs,weekendOtHrs:totalWkndHrs,days:rescanned};
+                  setAccumulated(newAcc);
+                  if(user)db.saveAccumulator(user.id,newAcc,new Date().toISOString()).catch(e=>console.error("Rescan save failed:",e));
+                  const pt=currentPeriodTotals(rescanned);
+                  setC("otHrs",pt.otHrs);
+                  setC("weekendOtHrs",pt.weekendOtHrs);
+                  setC("holidayHrs",pt.holidayHrs);
+                  setImportMsg(`✓ ${rescanned.length} days rescanned`);
+                  setTimeout(()=>setImportMsg(""),4000);
+                }} style={{marginTop:6,width:"100%",background:"#0d1a1a",border:"1px solid #4affd4",borderRadius:6,color:"#4affd4",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>🔄 Rescan stored days</button>
                 </div>)}
               </div>
             )}
