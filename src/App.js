@@ -303,6 +303,9 @@ const SK = {
   notifPerm:    "vaulted_notif_perm",    // browser notification permission (device-specific)
   tsSecret:     "vaulted_ts_secret",     // device-specific (could differ per device)
   tsLastEmail:  "vaulted_ts_last_email", // device-specific dedup tracking
+  pickerTap:    "vaulted_picker_tap",    // ms timestamp of last upload-box tap (survives reload)
+  pickerEvent:  "vaulted_picker_event",  // ms timestamp of last change event received
+  loadCount:    "vaulted_load_count",    // app load counter (picker-death diagnostics)
   // Below kept for backward compat - falls back to defaults if missing
   cats:         "vaulted_cats",
   billCats:     "vaulted_billcats",
@@ -620,7 +623,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.48";
+const APP_VERSION = "1.13.49";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1219,6 +1222,16 @@ export default function App() {
   const pullDist=useRef(0);
   const [uploading,setUploading]=useState(false);
   const [lastPickerEvent,setLastPickerEvent]=useState(null);
+  const [pickerDeath,setPickerDeath]=useState(false);
+  // Picker-death detection: if the app (re)loads while a recent upload-box tap has no
+  // matching change event, Android killed the page while the document picker was open.
+  useEffect(()=>{
+    const n=(parseInt(localStorage.getItem(SK.loadCount))||0)+1;
+    localStorage.setItem(SK.loadCount,String(n));
+    const tap=parseInt(localStorage.getItem(SK.pickerTap))||0;
+    const evt=parseInt(localStorage.getItem(SK.pickerEvent))||0;
+    if(tap && Date.now()-tap<3*60*1000 && evt<tap) setPickerDeath(true);
+  },[]);
   const [pending,setPending]=useState(null);
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
@@ -2448,6 +2461,8 @@ export default function App() {
 
   const handleUpload=async e=>{
     setLastPickerEvent(new Date());
+    localStorage.setItem(SK.pickerEvent,String(Date.now()));
+    setPickerDeath(false);
     const files=Array.from(e.target.files||[]);
     if(!files.length){
       setMultiResults([{ok:false,name:"(no file)",err:"Picker returned no file — try selecting again"}]);
@@ -4592,7 +4607,14 @@ const calcTimesheetTotals = days => {
               </div>
               {showPayslipUpload&&(<div style={{padding:"0 14px 14px",textAlign:"center"}}>
                 <p style={{fontSize:12,color:"#5a6480",marginBottom:16}}>Select one or more payslip PDFs. They will be read and added to your history automatically.</p>
-                <label style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer",position:"relative"}}>
+                {pickerDeath&&(
+                  <div style={{background:"#2a1500",border:"1px solid #ffb84a",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
+                    <div style={{fontSize:12,fontWeight:700,color:"#ffb84a",marginBottom:4}}>⚠ Android reloaded the app while the file picker was open</div>
+                    <div style={{fontSize:11,color:"#c8a060",lineHeight:1.5}}>The selected file was lost with the old page. This is the silent-upload cause. Try again — if it repeats, we'll add a share-target route that bypasses the picker.</div>
+                    <button onClick={()=>{haptic();localStorage.removeItem(SK.pickerTap);setPickerDeath(false);}} style={{marginTop:8,background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>Dismiss</button>
+                  </div>
+                )}
+                <label onClick={()=>{localStorage.setItem(SK.pickerTap,String(Date.now()));}} style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer",position:"relative"}}>
                   <input type="file" accept=".pdf,application/pdf" multiple onChange={handleUpload} disabled={uploading}
                     style={{position:"absolute",left:0,top:0,width:"100%",height:"100%",opacity:0,cursor:uploading?"not-allowed":"pointer"}}/>
                   {uploading
@@ -4600,7 +4622,9 @@ const calcTimesheetTotals = days => {
                     :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
                   }
                 </label>
-                <div style={{fontSize:9,color:"#2a3050",marginTop:6,textAlign:"center"}}>Last picker event: {lastPickerEvent?lastPickerEvent.toLocaleTimeString("en-GB"):"none this session"}</div>
+                <div style={{fontSize:9,color:"#2a3050",marginTop:6,textAlign:"center"}}>
+                  Tap: {(()=>{const t=parseInt(localStorage.getItem(SK.pickerTap))||0;return t?new Date(t).toLocaleTimeString("en-GB"):"—";})()} · Event: {lastPickerEvent?lastPickerEvent.toLocaleTimeString("en-GB"):(()=>{const t=parseInt(localStorage.getItem(SK.pickerEvent))||0;return t?new Date(t).toLocaleTimeString("en-GB")+" (prev)":"—";})()} · Loads: {localStorage.getItem(SK.loadCount)||0}
+                </div>
               </div>)}
             </div>
             {multiResults.length>0&&(
