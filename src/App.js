@@ -623,7 +623,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.51";
+const APP_VERSION = "1.13.52";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -2459,16 +2459,8 @@ export default function App() {
   };
   const deletePayslip=month=>{updH(history.filter(h=>h.month!==month));setDeleteConfirm(null);setExpandedPayslip(null);};
 
-  const handleUpload=async e=>{
-    setLastPickerEvent(new Date());
-    localStorage.setItem(SK.pickerEvent,String(Date.now()));
-    setPickerDeath(false);
-    const files=Array.from(e.target.files||[]);
-    if(!files.length){
-      setMultiResults([{ok:false,name:"(no file)",err:"Picker returned no file — try selecting again"}]);
-      e.target.value="";
-      return;
-    }
+  // Shared by the upload box and the Android share-target intake.
+  const processPayslipFiles=async files=>{
     setUploading(true);
     setMultiResults([]);
     const results=[];
@@ -2545,9 +2537,58 @@ export default function App() {
     } finally {
       setUploadProgress(null);
       setUploading(false);
-      e.target.value="";
     }
   };
+
+  const handleUpload=async e=>{
+    setLastPickerEvent(new Date());
+    localStorage.setItem(SK.pickerEvent,String(Date.now()));
+    setPickerDeath(false);
+    const files=Array.from(e.target.files||[]);
+    if(!files.length){
+      setMultiResults([{ok:false,name:"(no file)",err:"Picker returned no file — try selecting again"}]);
+      e.target.value="";
+      return;
+    }
+    try { await processPayslipFiles(files); }
+    finally { e.target.value=""; }
+  };
+
+  // Android share-target intake: sw.js stashes shared PDFs in the "vaulted-share"
+  // cache and redirects here. Once the user is signed in, pull them out, process
+  // them through the normal payslip flow, and land on the Diag payslips section.
+  const shareIntakeRan=useRef(false);
+  useEffect(()=>{
+    if(!user||shareIntakeRan.current)return;
+    shareIntakeRan.current=true;
+    (async()=>{
+      try{
+        if(!("caches" in window))return;
+        const share=await caches.open("vaulted-share");
+        const metaRes=await share.match("/shared-meta");
+        if(!metaRes)return;
+        const meta=await metaRes.json();
+        const files=[];
+        for(let i=0;i<(meta.count||0);i++){
+          const r=await share.match(`/shared-file-${i}`);
+          if(r){
+            const b=await r.blob();
+            const name=decodeURIComponent(r.headers.get("X-File-Name")||`shared-${i}.pdf`);
+            files.push(new File([b],name,{type:b.type||"application/pdf"}));
+          }
+        }
+        await share.delete("/shared-meta");
+        for(let i=0;i<(meta.count||0);i++)await share.delete(`/shared-file-${i}`);
+        if(files.length){
+          setTab("Diag");
+          setShowPayslipUpload(true);
+          setLastPickerEvent(new Date());
+          localStorage.setItem(SK.pickerEvent,String(Date.now()));
+          await processPayslipFiles(files);
+        }
+      }catch(e){console.error("Share intake failed:",e);}
+    })();
+  },[user]);
 
   const hSB=(id,v)=>{const n=parseFloat(v);updSB(sharedBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditSh(null);};
   const hGB=(id,v)=>{const n=parseFloat(v);updGB(glynBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditGl(null);};
