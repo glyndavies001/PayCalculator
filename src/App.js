@@ -620,7 +620,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.47";
+const APP_VERSION = "1.13.48";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1218,6 +1218,7 @@ export default function App() {
   const pullStart=useRef(null);
   const pullDist=useRef(0);
   const [uploading,setUploading]=useState(false);
+  const [lastPickerEvent,setLastPickerEvent]=useState(null);
   const [pending,setPending]=useState(null);
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
@@ -2446,76 +2447,91 @@ export default function App() {
   const deletePayslip=month=>{updH(history.filter(h=>h.month!==month));setDeleteConfirm(null);setExpandedPayslip(null);};
 
   const handleUpload=async e=>{
-    const files=Array.from(e.target.files);
-    if(!files.length) return;
+    setLastPickerEvent(new Date());
+    const files=Array.from(e.target.files||[]);
+    if(!files.length){
+      setMultiResults([{ok:false,name:"(no file)",err:"Picker returned no file — try selecting again"}]);
+      e.target.value="";
+      return;
+    }
     setUploading(true);
     setMultiResults([]);
     const results=[];
     const successful=[];
-    for(let i=0;i<files.length;i++){
-      const file=files[i];
-      setUploadProgress(`Reading ${i+1} of ${files.length}...`);
-      try {
-        const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
-        const resp=await fetch(API_PROXY,{
-          method:"POST",
-          headers:await authHeaders(),
-          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:[
-            {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
-            {type:"text",text:'Extract payslip data. Return ONLY valid JSON with this exact shape:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00,"weekendOt":0.00,"holidayPay":0.00,"hourlyAllowance":0.00,"regularPay":0.00}\n\nField definitions:\n- month: payment month/year (e.g. "May 2026")\n- date: payment date as DD/MM/YYYY\n- gross: TOTAL gross pay (sum of all earnings)\n- net: net pay (gross minus all deductions)\n- tax: PAYE total\n- ni: Employee National Insurance Contribution\n- nest: NEST pension contribution\n- sl: Student Loan deduction\n- bonus: Performance Bonus line only\n- ot: Overtime line ONLY (not weekend hours, not holiday pay)\n- weekendOt: Weekend Hours line (£ amount)\n- holidayPay: SUM of all "Holiday" earning lines (could be multiple, may include "Holiday (Contracted Staff YYYY)")\n- hourlyAllowance: SUM of all "Hourly Allowance" lines including any with brackets like "Hourly Allowance (Hols)"\n- regularPay: Regular Hours line (£ amount only)\nIf a field is not present, use 0.00. Return JSON only, no markdown, no explanation.'}
-          ]}]})
-        });
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error("API " + resp.status + ": " + text.slice(0, 200));
+    try {
+      for(let i=0;i<files.length;i++){
+        const file=files[i];
+        setUploadProgress(`Reading ${i+1} of ${files.length}...`);
+        try {
+          const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
+          const resp=await fetch(API_PROXY,{
+            method:"POST",
+            headers:await authHeaders(),
+            body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:[
+              {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
+              {type:"text",text:'Extract payslip data. Return ONLY valid JSON with this exact shape:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00,"weekendOt":0.00,"holidayPay":0.00,"hourlyAllowance":0.00,"regularPay":0.00}\n\nField definitions:\n- month: payment month/year (e.g. "May 2026")\n- date: payment date as DD/MM/YYYY\n- gross: TOTAL gross pay (sum of all earnings)\n- net: net pay (gross minus all deductions)\n- tax: PAYE total\n- ni: Employee National Insurance Contribution\n- nest: NEST pension contribution\n- sl: Student Loan deduction\n- bonus: Performance Bonus line only\n- ot: Overtime line ONLY (not weekend hours, not holiday pay)\n- weekendOt: Weekend Hours line (£ amount)\n- holidayPay: SUM of all "Holiday" earning lines (could be multiple, may include "Holiday (Contracted Staff YYYY)")\n- hourlyAllowance: SUM of all "Hourly Allowance" lines including any with brackets like "Hourly Allowance (Hols)"\n- regularPay: Regular Hours line (£ amount only)\nIf a field is not present, use 0.00. Return JSON only, no markdown, no explanation.'}
+            ]}]})
+          });
+          if (!resp.ok) {
+            const text = await resp.text();
+            throw new Error("API " + resp.status + ": " + text.slice(0, 200));
+          }
+          const data=await resp.json();
+          if(data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+          if(!data.content) throw new Error("No content in API response: " + JSON.stringify(data).slice(0, 200));
+          const rawText = data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim();
+          let parsed;
+          try { parsed = JSON.parse(rawText); }
+          catch(jsonErr) { throw new Error("Could not parse JSON: " + rawText.slice(0, 200)); }
+          if(!parsed.month) throw new Error("Missing 'month' field in extracted data");
+          // Allowance is active whenever a performance bonus was paid (they're the same tier)
+          parsed.perfAllowance = (parsed.bonus || 0) > 0;
+          // Save to Supabase
+          if (user) {
+            try { await trackSave(db.upsertPayslip(user.id, parsed)); }
+            catch(dbErr) { console.error("Supabase save failed:", dbErr); }
+          }
+          successful.push(parsed);
+          results.push({ok:true,parsed});
+        } catch(err){
+          console.error("Upload error for", file.name, err);
+          results.push({ok:false,name:file.name,err:err.message||String(err)||"Unknown error"});
         }
-        const data=await resp.json();
-        if(data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-        if(!data.content) throw new Error("No content in API response: " + JSON.stringify(data).slice(0, 200));
-        const rawText = data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim();
-        let parsed;
-        try { parsed = JSON.parse(rawText); }
-        catch(jsonErr) { throw new Error("Could not parse JSON: " + rawText.slice(0, 200)); }
-        if(!parsed.month) throw new Error("Missing 'month' field in extracted data");
-        // Allowance is active whenever a performance bonus was paid (they're the same tier)
-        parsed.perfAllowance = (parsed.bonus || 0) > 0;
-        // Save to Supabase
-        if (user) {
-          try { await trackSave(db.upsertPayslip(user.id, parsed)); }
-          catch(dbErr) { console.error("Supabase save failed:", dbErr); }
+      }
+      // Show results IMMEDIATELY -- before any post-processing that could throw
+      setMultiResults(results);
+      // Post-success updates guarded so a failure here can't hide the results
+      if(successful.length>0){
+        try {
+          setHistory(prev=>{
+            let h=[...prev];
+            successful.forEach(p=>{const exists=h.find(x=>x.month===p.month);h=exists?h.map(x=>x.month===p.month?p:x):[...h,p];});
+            return sortH(h);
+          });
+          const last=successful[successful.length-1];
+          setC("bonus", last.bonus);
+          setC("perfAllowance", last.perfAllowance);
+          // A payslip means a pay period has closed. If the accumulator still holds a
+          // previous period's hours, reset it and clear the calculator now.
+          if (shouldResetTimesheet(accumulatedRef.current.lastUpload)) {
+            const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+            setAccumulated(empty);
+            if (user) db.saveAccumulator(user.id, empty, null);
+            setC("otHrs", 0);
+            setC("weekendOtHrs", 0);
+            setC("holidayHrs", 0);
+            setC("stdHrs", getCurrentMonthHours());
+          }
+        } catch(postErr){
+          console.error("Post-upload processing failed:", postErr);
+          setMultiResults([...results,{ok:false,name:"(post-processing)",err:"Saved OK but follow-up update failed: "+(postErr.message||postErr)}]);
         }
-        successful.push(parsed);
-        results.push({ok:true,parsed});
-      } catch(err){
-        console.error("Upload error for", file.name, err);
-        results.push({ok:false,name:file.name,err:err.message||String(err)||"Unknown error"});
       }
+    } finally {
+      setUploadProgress(null);
+      setUploading(false);
+      e.target.value="";
     }
-    if(successful.length>0){
-      setHistory(prev=>{
-        let h=[...prev];
-        successful.forEach(p=>{const exists=h.find(x=>x.month===p.month);h=exists?h.map(x=>x.month===p.month?p:x):[...h,p];});
-        return sortH(h);
-      });
-      const last=successful[successful.length-1];
-      setC("bonus", last.bonus);
-      setC("perfAllowance", last.perfAllowance);
-      // A payslip means a pay period has closed. If the accumulator still holds a
-      // previous period's hours, reset it and clear the calculator now.
-      if (shouldResetTimesheet(accumulatedRef.current.lastUpload)) {
-        const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
-        setAccumulated(empty);
-        if (user) db.saveAccumulator(user.id, empty, null);
-        setC("otHrs", 0);
-        setC("weekendOtHrs", 0);
-        setC("holidayHrs", 0);
-        setC("stdHrs", getCurrentMonthHours());
-      }
-    }
-    setMultiResults(results);
-    setUploadProgress(null);
-    setUploading(false);
-    e.target.value="";
   };
 
   const hSB=(id,v)=>{const n=parseFloat(v);updSB(sharedBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditSh(null);};
@@ -2996,7 +3012,7 @@ const calcTimesheetTotals = days => {
                     {discrepancies.filter(d=>d.status==="discrepancy"&&!dismissedDiscs.includes(d.month)).map(d=>d.month).join(", ")} - Tap to review
                   </div>
                 </div>
-                <span style={{fontSize:11,color:"#ff6b8a",fontWeight:700}}>Review -></span>
+                <span style={{fontSize:11,color:"#ff6b8a",fontWeight:700}}>Review →</span>
               </div>
             )}
 
@@ -3022,7 +3038,7 @@ const calcTimesheetTotals = days => {
                   <div style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>Add Vaulted to Home Screen</div>
                   <div style={{fontSize:11,color:"#3a4460",marginTop:2}}>Install for quick access -- works offline</div>
                 </div>
-                <span style={{fontSize:11,color:"#4a9eff",fontWeight:700}}>Install -></span>
+                <span style={{fontSize:11,color:"#4a9eff",fontWeight:700}}>Install →</span>
               </div>
             )}
             {showTsReminder&&(
@@ -3232,7 +3248,7 @@ const calcTimesheetTotals = days => {
                     <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:11}}>
                       <span style={{color:"#8892b0"}}>{c.name}</span>
                       <span>
-                        <span style={{color:"#5a6480"}}>{fmt(c.old)} -> </span>
+                        <span style={{color:"#5a6480"}}>{fmt(c.old)} → </span>
                         <span style={{color:"#e8eaf0",fontWeight:600}}>{fmt(c.new)}</span>
                         <span style={{color:up?"#ff8c4a":"#00c88c",marginLeft:6,fontWeight:700}}>
                           {up?"+":""}{fmt(diff)}
@@ -4576,14 +4592,15 @@ const calcTimesheetTotals = days => {
               </div>
               {showPayslipUpload&&(<div style={{padding:"0 14px 14px",textAlign:"center"}}>
                 <p style={{fontSize:12,color:"#5a6480",marginBottom:16}}>Select one or more payslip PDFs. They will be read and added to your history automatically.</p>
-                <label htmlFor="payslip-upload-input" style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer",position:"relative"}}>
-                  <input id="payslip-upload-input" type="file" accept=".pdf,application/pdf" multiple onChange={handleUpload} disabled={uploading}
+                <label style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer",position:"relative"}}>
+                  <input type="file" accept=".pdf,application/pdf" multiple onChange={handleUpload} disabled={uploading}
                     style={{position:"absolute",left:0,top:0,width:"100%",height:"100%",opacity:0,cursor:uploading?"not-allowed":"pointer"}}/>
                   {uploading
                     ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing..."}</div></div>
                     :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
                   }
                 </label>
+                <div style={{fontSize:9,color:"#2a3050",marginTop:6,textAlign:"center"}}>Last picker event: {lastPickerEvent?lastPickerEvent.toLocaleTimeString("en-GB"):"none this session"}</div>
               </div>)}
             </div>
             {multiResults.length>0&&(
