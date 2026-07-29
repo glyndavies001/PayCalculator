@@ -12,6 +12,7 @@
 // Anthropic) so those always hit the network untouched.
 
 const CACHE = "vaulted-runtime";
+const SHARE_CACHE = "vaulted-share";
 const SHELL = ["/", "/index.html", "/manifest.json", "/favicon.ico", "/icon-192.png", "/icon-512.png"];
 
 // Install: take over immediately and pre-cache the app shell for offline use.
@@ -27,7 +28,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== SHARE_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -35,11 +36,29 @@ self.addEventListener("activate", (event) => {
 // Fetch: network-first for same-origin GETs; cache only as an offline fallback.
 self.addEventListener("fetch", (event) => {
   const req = event.request;
+  const url = new URL(req.url);
+
+  // Web Share Target: receive PDFs shared into the app, stash them in a cache,
+  // then redirect into the app which picks them up on load.
+  if (req.method === "POST" && url.origin === self.location.origin && url.pathname === "/share-target") {
+    event.respondWith((async () => {
+      try {
+        const formData = await req.formData();
+        const files = formData.getAll("payslips").filter(Boolean);
+        const share = await caches.open(SHARE_CACHE);
+        await Promise.all(files.map((f, i) =>
+          share.put(`/shared-file-${i}`, new Response(f, { headers: { "Content-Type": f.type || "application/pdf", "X-File-Name": encodeURIComponent(f.name || `shared-${i}.pdf`) } }))
+        ));
+        await share.put("/shared-meta", new Response(JSON.stringify({ count: files.length, at: Date.now() }), { headers: { "Content-Type": "application/json" } }));
+      } catch (e) { /* fall through to the app either way */ }
+      return Response.redirect("/", 303);
+    })());
+    return;
+  }
 
   // Let non-GET, cross-origin (Supabase/Anthropic), and API calls pass straight
   // through to the network — never cache or intercept them.
   if (req.method !== "GET") return;
-  const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/")) return;
 

@@ -15,5 +15,15 @@
   "theme_color": "#0d0f14",
   "background_color": "#0d0f14",
   "description": "Track your payslips, budget and pay estimates",
-  "prefer_related_applications": false
+  "prefer_related_applications": false,
+  "share_target": {
+    "action": "/share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        { "name": "payslips", "accept": ["application/pdf", ".pdf"] }
+      ]
+    }
+  }
 }
