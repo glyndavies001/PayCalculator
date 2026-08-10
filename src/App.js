@@ -623,7 +623,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.52";
+const APP_VERSION = "1.13.53";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -2341,9 +2341,9 @@ export default function App() {
     rem=Math.max(0,rem-(ci.weekendOtHrs||0));
     const otHrs=Math.max(0,(ci.otHrs||0)-rem);
     rem=Math.max(0,rem-(ci.otHrs||0));
-    const stdHrs=Math.max(0,(ci.stdHrs||0)-rem);
+    const stdHrs=Math.max(0,(ci.stdHrs||0)-rem-(ci.holidayHrs||0));
     return{stdHrs,otHrs,weekendOtHrs};
-  },[accumulated.days,ci.stdHrs,ci.otHrs,ci.weekendOtHrs]);
+  },[accumulated.days,ci.stdHrs,ci.otHrs,ci.weekendOtHrs,ci.holidayHrs]);
 
   const cr=useMemo(()=>calcPay({...ci,stdHrs:effHrs.stdHrs,otHrs:effHrs.otHrs,weekendOtHrs:effHrs.weekendOtHrs,_allowanceOverride:effectiveAllowance}),[ci,effectiveAllowance,effHrs]);
   const surplus=cr.net-totalOut;
