@@ -318,6 +318,7 @@ const db = {
   async getPayslips(userId) {
     const { data, error } = await supabase.from("payslips").select("*").eq("user_id", userId).order("date", { ascending: false });
     reportDbError("getPayslips", error);
+    if (error) return null; // null = fetch failed; [] = genuinely empty
     return (data || []).map(r => ({ month: r.month, date: r.date, gross: r.gross, net: r.net, tax: r.tax, ni: r.ni, nest: r.nest, sl: r.sl, bonus: r.bonus, ot: r.ot, weekendOt: r.weekend_ot, holidayPay: r.holiday_pay, hourlyAllowance: r.hourly_allowance, regularPay: r.regular_pay, note: r.note }));
   },
   async upsertPayslip(userId, p) {
@@ -331,6 +332,7 @@ const db = {
   async getSharedBills() {
     const { data, error } = await supabase.from("shared_bills").select("*").order("bill_id");
     reportDbError("getSharedBills", error);
+    if (error) return null; // null = fetch failed; [] = genuinely empty
     return data || [];
   },
   async upsertSharedBill(b) {
@@ -344,6 +346,7 @@ const db = {
   async getGlynBills(userId) {
     const { data, error } = await supabase.from("glyn_bills").select("*").eq("user_id", userId).order("bill_id");
     reportDbError("getGlynBills", error);
+    if (error) return null; // null = fetch failed; [] = genuinely empty
     return data || [];
   },
   async upsertGlynBill(userId, b) {
@@ -623,7 +626,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.53";
+const APP_VERSION = "1.13.54";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1332,12 +1335,12 @@ export default function App() {
         setIsOwner(owner);
 
         // Payslips -- merge with INITIAL_HISTORY for months not yet in DB
-        if (payslips.length > 0) {
+        if (payslips && payslips.length > 0) {
           setHistory(payslips.sort((a,b)=>{
             const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
             return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
           }));
-        } else if (owner) {
+        } else if (payslips && owner) {
           // First login (owner) -- seed DB with INITIAL_HISTORY
           const sorted = [...INITIAL_HISTORY].sort((a,b)=>{
             const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
@@ -1345,23 +1348,23 @@ export default function App() {
           });
           setHistory(sorted);
           for (const p of sorted) await trackSave(() => db.upsertPayslip(user.id, p));
-        } else {
+        } else if (payslips) {
           setHistory([]); // partner starts with their own (empty) payslip history
-        }
+        } // payslips === null -> fetch failed; keep current state, never seed
 
         // Bills -- merge with defaults if DB empty
-        if (sBills.length > 0) {
+        if (sBills && sBills.length > 0) {
           setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
-        } else {
+        } else if (sBills) {
           for (const b of INITIAL_SHARED_BILLS) await trackSave(() => db.upsertSharedBill(b));
-        }
-        if (gBills.length > 0) {
+        } // sBills === null -> fetch failed; keep current state, never seed
+        if (gBills && gBills.length > 0) {
           setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
-        } else if (owner) {
+        } else if (gBills && owner) {
           for (const b of INITIAL_GLYN_BILLS) await trackSave(() => db.upsertGlynBill(user.id, b));
-        } else {
+        } else if (gBills) {
           setGlynBills([]); // partner has no personal bills (and can't see the owner's)
-        }
+        } // gBills === null -> fetch failed; keep current state, never seed
 
         if (lLogs.length > 0) setLeaveLogs(lLogs);
         if (lSettings) setLeaveSettings(lSettings);
@@ -1461,13 +1464,13 @@ export default function App() {
     if (!user) return;
     const channel = supabase.channel("vaulted-sync")
       .on("postgres_changes", { event: "*", schema: "public", table: "payslips" }, () =>
-        db.getPayslips(user.id).then(p => setHistory(p.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);})))
+        db.getPayslips(user.id).then(p => p && setHistory(p.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);})))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_bills" }, () =>
-        db.getSharedBills().then(b => setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), isCarGlyn: r.is_car_glyn }))))
+        db.getSharedBills().then(b => b && setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), isCarGlyn: r.is_car_glyn }))))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "glyn_bills", filter: "user_id=eq."+user.id }, () =>
-        db.getGlynBills(user.id).then(b => setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))
+        db.getGlynBills(user.id).then(b => b && setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_logs" }, () =>
         db.getLeaveLogs(user.id).then(setLeaveLogs)
@@ -1613,9 +1616,9 @@ export default function App() {
         db.getDiscrepancies(user.id), db.getScenarios(user.id), db.getAppSettings(user.id),
         db.getAccumulator(user.id),
       ]);
-      if (payslips.length > 0) setHistory(payslips.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);}));
-      if (sBills.length > 0) setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
-      if (gBills.length > 0) setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
+      if (payslips && payslips.length > 0) setHistory(payslips.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);}));
+      if (sBills && sBills.length > 0) setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
+      if (gBills && gBills.length > 0) setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
       setLeaveLogs(lLogs);
       if (lSettings) setLeaveSettings(lSettings);
       setMonthlyTs(mTs);
