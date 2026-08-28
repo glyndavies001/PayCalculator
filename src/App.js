@@ -314,9 +314,21 @@ const SK = {
 };
 
 // Supabase DB helpers
+// Retry a read once after a short delay when Supabase rejects a freshly-
+// refreshed token ("JWT issued at future" -- transient clock skew on app wake).
+const jwtRetry = async (run) => {
+  let res = await run();
+  const msg = (res.error && res.error.message) || "";
+  if (/issued/i.test(msg) && /future/i.test(msg)) {
+    await new Promise(r => setTimeout(r, 1500));
+    res = await run();
+  }
+  return res;
+};
+
 const db = {
   async getPayslips(userId) {
-    const { data, error } = await supabase.from("payslips").select("*").eq("user_id", userId).order("date", { ascending: false });
+    const { data, error } = await jwtRetry(() => supabase.from("payslips").select("*").eq("user_id", userId).order("date", { ascending: false }));
     reportDbError("getPayslips", error);
     if (error) return null; // null = fetch failed; [] = genuinely empty
     return (data || []).map(r => ({ month: r.month, date: r.date, gross: r.gross, net: r.net, tax: r.tax, ni: r.ni, nest: r.nest, sl: r.sl, bonus: r.bonus, ot: r.ot, weekendOt: r.weekend_ot, holidayPay: r.holiday_pay, hourlyAllowance: r.hourly_allowance, regularPay: r.regular_pay, note: r.note }));
@@ -330,7 +342,7 @@ const db = {
     reportDbError("deletePayslip", error);
   },
   async getSharedBills() {
-    const { data, error } = await supabase.from("shared_bills").select("*").order("bill_id");
+    const { data, error } = await jwtRetry(() => supabase.from("shared_bills").select("*").order("bill_id"));
     reportDbError("getSharedBills", error);
     if (error) return null; // null = fetch failed; [] = genuinely empty
     return data || [];
@@ -344,7 +356,7 @@ const db = {
     reportDbError("deleteSharedBill", error);
   },
   async getGlynBills(userId) {
-    const { data, error } = await supabase.from("glyn_bills").select("*").eq("user_id", userId).order("bill_id");
+    const { data, error } = await jwtRetry(() => supabase.from("glyn_bills").select("*").eq("user_id", userId).order("bill_id"));
     reportDbError("getGlynBills", error);
     if (error) return null; // null = fetch failed; [] = genuinely empty
     return data || [];
@@ -359,13 +371,14 @@ const db = {
   },
   async getAllPersonalBills() {
     // RLS: owner sees all personal bills, partner sees only their own. Used for owner backups.
-    const { data, error } = await supabase.from("glyn_bills").select("*").order("bill_id");
+    const { data, error } = await jwtRetry(() => supabase.from("glyn_bills").select("*").order("bill_id"));
     reportDbError("getAllPersonalBills", error);
+    if (error) return null; // null = fetch failed
     return data || [];
   },
   async getSharedSettings() {
-    const { data, error } = await supabase.from("shared_settings").select("*").eq("id", 1).maybeSingle();
-    if (error && error.code !== "PGRST116") reportDbError("getSharedSettings", error);
+    const { data, error } = await jwtRetry(() => supabase.from("shared_settings").select("*").eq("id", 1).maybeSingle());
+    if (error && error.code !== "PGRST116") { reportDbError("getSharedSettings", error); throw error; }
     return data;
   },
   async saveSharedSettings(cats, billCats) {
@@ -373,8 +386,9 @@ const db = {
     reportDbError("saveSharedSettings", error);
   },
   async getSettlements() {
-    const { data, error } = await supabase.from("settlements").select("*").order("created_at", { ascending: false });
+    const { data, error } = await jwtRetry(() => supabase.from("settlements").select("*").order("created_at", { ascending: false }));
     reportDbError("getSettlements", error);
+    if (error) return null; // null = fetch failed
     return data || [];
   },
   async upsertSettlement(s) {
@@ -386,8 +400,9 @@ const db = {
     reportDbError("deleteSettlement", error);
   },
   async getGifts() {
-    const { data, error } = await supabase.from("gifts").select("*").order("created_at", { ascending: true });
+    const { data, error } = await jwtRetry(() => supabase.from("gifts").select("*").order("created_at", { ascending: true }));
     reportDbError("getGifts", error);
+    if (error) return null; // null = fetch failed
     return data || [];
   },
   async upsertGift(g) {
@@ -399,8 +414,9 @@ const db = {
     reportDbError("deleteGift", error);
   },
   async getScheduledBills() {
-    const { data, error } = await supabase.from("scheduled_bills").select("*").order("created_at", { ascending: true });
+    const { data, error } = await jwtRetry(() => supabase.from("scheduled_bills").select("*").order("created_at", { ascending: true }));
     reportDbError("getScheduledBills", error);
+    if (error) return null; // null = fetch failed
     return data || [];
   },
   async upsertScheduledBill(b) {
@@ -412,8 +428,9 @@ const db = {
     reportDbError("deleteScheduledBill", error);
   },
   async getLeaveLogs(userId) {
-    const { data, error } = await supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false });
+    const { data, error } = await jwtRetry(() => supabase.from("leave_logs").select("*").eq("user_id", userId).order("date", { ascending: false }));
     reportDbError("getLeaveLogs", error);
+    if (error) return null; // null = fetch failed
     return (data || []).map(r => ({ id: r.id, date: r.date, hours: r.hours, label: r.label }));
   },
   async upsertLeaveLog(userId, entry) {
@@ -425,7 +442,7 @@ const db = {
     reportDbError("deleteLeaveLog", error);
   },
   async getLeaveSettings(userId) {
-    const { data, error } = await supabase.from("leave_settings").select("*").eq("user_id", userId).single();
+    const { data, error } = await jwtRetry(() => supabase.from("leave_settings").select("*").eq("user_id", userId).single());
     if (error && error.code !== "PGRST116") reportDbError("getLeaveSettings", error);
     return data ? { baseEntitlement: data.base_entitlement, serviceDays: data.service_days, startYear: data.start_year } : null;
   },
@@ -434,8 +451,9 @@ const db = {
     reportDbError("saveLeaveSettings", error);
   },
   async getMonthlyTs(userId) {
-    const { data, error } = await supabase.from("monthly_timesheets").select("*").eq("user_id", userId).order("saved_at", { ascending: false });
+    const { data, error } = await jwtRetry(() => supabase.from("monthly_timesheets").select("*").eq("user_id", userId).order("saved_at", { ascending: false }));
     reportDbError("getMonthlyTs", error);
+    if (error) return null; // null = fetch failed
     return (data || []).map(r => ({ emailId: r.email_id, period: r.period, month: r.month, totalHrs: r.total_hrs, stdHrs: r.std_hrs, otHrs: r.ot_hrs, wkndHrs: r.wknd_hrs, holHrs: r.hol_hrs, days: r.days, savedAt: r.saved_at }));
   },
   async upsertMonthlyTs(userId, entry) {
@@ -443,8 +461,9 @@ const db = {
     reportDbError("upsertMonthlyTs", error);
   },
   async getDiscrepancies(userId) {
-    const { data, error } = await supabase.from("discrepancies").select("*").eq("user_id", userId).order("checked_at", { ascending: false });
+    const { data, error } = await jwtRetry(() => supabase.from("discrepancies").select("*").eq("user_id", userId).order("checked_at", { ascending: false }));
     reportDbError("getDiscrepancies", error);
+    if (error) return null; // null = fetch failed
     return (data || []).map(r => ({ month: r.month, period: r.period, status: r.status, items: r.items, ts: r.ts_data, payslip: r.payslip_data, expected: r.expected_data, checkedAt: r.checked_at }));
   },
   async upsertDiscrepancy(userId, d) {
@@ -452,8 +471,9 @@ const db = {
     reportDbError("upsertDiscrepancy", error);
   },
   async getScenarios(userId) {
-    const { data, error } = await supabase.from("scenarios").select("*").eq("user_id", userId).order("created_at");
+    const { data, error } = await jwtRetry(() => supabase.from("scenarios").select("*").eq("user_id", userId).order("created_at"));
     reportDbError("getScenarios", error);
+    if (error) return null; // null = fetch failed
     return (data || []).map(r => ({ id: r.id, name: r.name, stdHrs: r.std_hrs, otHrs: r.ot_hrs, weekendOtHrs: r.weekend_ot_hrs, bonus: r.bonus, tierOverride: r.tier_override }));
   },
   async upsertScenario(userId, s) {
@@ -465,7 +485,7 @@ const db = {
     reportDbError("deleteScenario", error);
   },
   async getAppSettings(userId) {
-    const { data, error } = await supabase.from("app_settings").select("*").eq("user_id", userId).single();
+    const { data, error } = await jwtRetry(() => supabase.from("app_settings").select("*").eq("user_id", userId).single());
     if (error && error.code !== "PGRST116") reportDbError("getAppSettings", error);
     return data || null;
   },
@@ -475,7 +495,7 @@ const db = {
     reportDbError("saveAppSettings", error);
   },
   async getAccumulator(userId) {
-    const { data, error } = await supabase.from("timesheet_accumulator").select("*").eq("user_id", userId).single();
+    const { data, error } = await jwtRetry(() => supabase.from("timesheet_accumulator").select("*").eq("user_id", userId).single());
     if (error && error.code !== "PGRST116") reportDbError("getAccumulator", error);
     return data ? { data: data.data, lastUpload: data.last_upload } : null;
   },
@@ -499,12 +519,13 @@ const db = {
     } catch (e) {}
   },
   async getBackups(userId, limit = 30) {
-    const { data, error } = await supabase.from("backups").select("id, size_bytes, trigger, created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(limit);
+    const { data, error } = await jwtRetry(() => supabase.from("backups").select("id, size_bytes, trigger, created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(limit));
     reportDbError("getBackups", error);
+    if (error) return null; // null = fetch failed
     return data || [];
   },
   async getBackup(backupId) {
-    const { data, error } = await supabase.from("backups").select("*").eq("id", backupId).single();
+    const { data, error } = await jwtRetry(() => supabase.from("backups").select("*").eq("id", backupId).single());
     if (error && error.code !== "PGRST116") reportDbError("getBackup", error);
     return data;
   },
@@ -626,7 +647,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.54";
+const APP_VERSION = "1.13.55";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1366,11 +1387,11 @@ export default function App() {
           setGlynBills([]); // partner has no personal bills (and can't see the owner's)
         } // gBills === null -> fetch failed; keep current state, never seed
 
-        if (lLogs.length > 0) setLeaveLogs(lLogs);
+        if (lLogs && lLogs.length > 0) setLeaveLogs(lLogs);
         if (lSettings) setLeaveSettings(lSettings);
-        if (mTs.length > 0) setMonthlyTs(mTs);
-        if (discs.length > 0) setDiscrepancies(discs);
-        if (scens.length > 0) setScenarios(scens);
+        if (mTs && mTs.length > 0) setMonthlyTs(mTs);
+        if (discs && discs.length > 0) setDiscrepancies(discs);
+        if (scens && scens.length > 0) setScenarios(scens);
         if (appSettings) {
           if (appSettings.calc_inputs) {
             const rolled = applyPeriodRollover(appSettings.calc_inputs);
@@ -1404,11 +1425,11 @@ export default function App() {
           }
         } catch (e) {}
 
-        try { setSettlements(await db.getSettlements()); } catch (e) {}
+        try { const st = await db.getSettlements(); if (st) setSettlements(st); } catch (e) {}
 
-        try { setGifts(await db.getGifts()); } catch (e) {}
+        try { const gf = await db.getGifts(); if (gf) setGifts(gf); } catch (e) {}
 
-        try { setScheduledBills(await db.getScheduledBills()); } catch (e) {}
+        try { const sc = await db.getScheduledBills(); if (sc) setScheduledBills(sc); } catch (e) {}
 
         // Load accumulator from DB - migrate from localStorage if DB is empty
         const accData = await db.getAccumulator(user.id);
@@ -1473,7 +1494,7 @@ export default function App() {
         db.getGlynBills(user.id).then(b => b && setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_logs" }, () =>
-        db.getLeaveLogs(user.id).then(setLeaveLogs)
+        db.getLeaveLogs(user.id).then(l => l && setLeaveLogs(l))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "timesheet_accumulator", filter: "user_id=eq."+user.id }, () => {
         db.getAccumulator(user.id).then(acc => {
@@ -1488,25 +1509,25 @@ export default function App() {
         });
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_settings" }, () =>
-        db.getSharedSettings().then(ss => { if (ss) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); } })
+        db.getSharedSettings().then(ss => { if (ss) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); } }).catch(() => {})
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "settlements" }, () =>
-        db.getSettlements().then(setSettlements)
+        db.getSettlements().then(st => st && setSettlements(st))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "gifts" }, () =>
-        db.getGifts().then(setGifts)
+        db.getGifts().then(gf => gf && setGifts(gf))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "scheduled_bills" }, () =>
-        db.getScheduledBills().then(setScheduledBills)
+        db.getScheduledBills().then(sc => sc && setScheduledBills(sc))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_settings", filter: "user_id=eq."+user.id }, () =>
         db.getLeaveSettings(user.id).then(ls => { if (ls) setLeaveSettings(ls); })
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "monthly_timesheets", filter: "user_id=eq."+user.id }, () =>
-        db.getMonthlyTs(user.id).then(setMonthlyTs)
+        db.getMonthlyTs(user.id).then(m => m && setMonthlyTs(m))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "discrepancies", filter: "user_id=eq."+user.id }, () =>
-        db.getDiscrepancies(user.id).then(setDiscrepancies)
+        db.getDiscrepancies(user.id).then(d => d && setDiscrepancies(d))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "app_settings", filter: "user_id=eq."+user.id }, () => {
         if (Date.now() - lastAppSettingsWrite < 4000) return; // ignore our own recent writes (don't clobber live edits)
@@ -1619,11 +1640,11 @@ export default function App() {
       if (payslips && payslips.length > 0) setHistory(payslips.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);}));
       if (sBills && sBills.length > 0) setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
       if (gBills && gBills.length > 0) setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
-      setLeaveLogs(lLogs);
+      if (lLogs) setLeaveLogs(lLogs);
       if (lSettings) setLeaveSettings(lSettings);
-      setMonthlyTs(mTs);
-      setDiscrepancies(discs);
-      setScenarios(scens);
+      if (mTs) setMonthlyTs(mTs);
+      if (discs) setDiscrepancies(discs);
+      if (scens) setScenarios(scens);
       if (appSettings) {
         if (appSettings.calc_inputs) {
           const rolled = applyPeriodRollover(appSettings.calc_inputs);
@@ -1657,11 +1678,11 @@ export default function App() {
         }
       } catch (e) {}
 
-      try { setSettlements(await db.getSettlements()); } catch (e) {}
+      try { const st = await db.getSettlements(); if (st) setSettlements(st); } catch (e) {}
 
-      try { setGifts(await db.getGifts()); } catch (e) {}
+      try { const gf = await db.getGifts(); if (gf) setGifts(gf); } catch (e) {}
 
-      try { setScheduledBills(await db.getScheduledBills()); } catch (e) {}
+      try { const sc = await db.getScheduledBills(); if (sc) setScheduledBills(sc); } catch (e) {}
 
       if (accData && accData.data) {
         setAccumulated(accData.data);
@@ -4901,7 +4922,7 @@ const calcTimesheetTotals = days => {
                     haptic();
                     if(!showBackups&&user){
                       setBackupLoading(true);
-                      try{setBackupList(await db.getBackups(user.id));}catch(e){}
+                      try{setBackupList((await db.getBackups(user.id)) || []);}catch(e){}
                       setBackupLoading(false);
                     }
                     setShowBackups(v=>!v);
@@ -4918,7 +4939,7 @@ const calcTimesheetTotals = days => {
                         try{
                           const backupData=await buildBackupData();
                           await db.createBackup(user.id,backupData,"manual");
-                          setBackupList(await db.getBackups(user.id));
+                          setBackupList((await db.getBackups(user.id)) || []);
                           setImportMsg("✓ Backup saved to cloud");
                         }catch(e){setImportMsg("⚠ Backup failed");}
                         setBackupLoading(false);
@@ -4962,7 +4983,7 @@ const calcTimesheetTotals = days => {
                               haptic("medium");
                               try{
                                 await db.deleteBackup(b.id);
-                                setBackupList(await db.getBackups(user.id));
+                                setBackupList((await db.getBackups(user.id)) || []);
                               }catch(e){}
                             }} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
                           </div>
