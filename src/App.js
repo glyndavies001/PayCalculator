@@ -261,25 +261,26 @@ const INITIAL_HISTORY = [
   { month: "Apr 2026", date: "29/04/2026", gross: 2957.36, net: 2280.31, tax: 381.8,  ni: 152.75, nest: 97.5,  sl: 45, bonus: 240, ot: 117.48 },
 ];
 
-const HOLLIE_CAR = 100;
+// Split modes for shared bills: undefined/"even" = 50/50, "pct" = your % of the
+// total (partner covers the rest), "fixed" = partner pays a set £, you cover the rest.
 const INITIAL_SHARED_BILLS = [
-  { id: 1,  name: "Food",               total: 300,    isCarGlyn: false },
-  { id: 2,  name: "Petrol",             total: 160,    isCarGlyn: false },
-  { id: 3,  name: "Gaia",               total: 100,    isCarGlyn: false },
-  { id: 4,  name: "Mortgage",           total: 501.59, isCarGlyn: false },
-  { id: 5,  name: "Council Tax",        total: 161,    isCarGlyn: false },
-  { id: 6,  name: "UW Gas & Electric",  total: 126.31, isCarGlyn: false },
-  { id: 7,  name: "Dwr Cymru",          total: 31.5,   isCarGlyn: false },
-  { id: 8,  name: "Sky (TV+Broadband)", total: 60,     isCarGlyn: false },
-  { id: 9,  name: "Netflix",            total: 12.99,  isCarGlyn: false },
-  { id: 10, name: "Disney+",            total: 9.99,   isCarGlyn: false },
-  { id: 11, name: "Spotify",            total: 17.99,  isCarGlyn: false },
-  { id: 12, name: "Car 🚗",             total: 416.02, isCarGlyn: true  },
-  { id: 13, name: "Barclays Hoover",    total: 100.64, isCarGlyn: false },
-  { id: 14, name: "Medivet",            total: 17.5,   isCarGlyn: false },
-  { id: 15, name: "Pet Insurance",      total: 4.97,   isCarGlyn: false },
-  { id: 16, name: "Head Room",          total: 100,    isCarGlyn: false },
-  { id: 17, name: "Angie",              total: 7,      isCarGlyn: false },
+  { id: 1,  name: "Food",               total: 300 },
+  { id: 2,  name: "Petrol",             total: 160 },
+  { id: 3,  name: "Gaia",               total: 100 },
+  { id: 4,  name: "Mortgage",           total: 501.59 },
+  { id: 5,  name: "Council Tax",        total: 161 },
+  { id: 6,  name: "UW Gas & Electric",  total: 126.31 },
+  { id: 7,  name: "Dwr Cymru",          total: 31.5 },
+  { id: 8,  name: "Sky (TV+Broadband)", total: 60 },
+  { id: 9,  name: "Netflix",            total: 12.99 },
+  { id: 10, name: "Disney+",            total: 9.99 },
+  { id: 11, name: "Spotify",            total: 17.99 },
+  { id: 12, name: "Car 🚗",             total: 416.02, splitMode: "fixed", splitValue: 100 },
+  { id: 13, name: "Barclays Hoover",    total: 100.64 },
+  { id: 14, name: "Medivet",            total: 17.5 },
+  { id: 15, name: "Pet Insurance",      total: 4.97 },
+  { id: 16, name: "Head Room",          total: 100 },
+  { id: 17, name: "Angie",              total: 7 },
 ];
 const INITIAL_GLYN_BILLS = [
   { id: 101, name: "Barclays Phone", total: 38.08 },
@@ -292,8 +293,20 @@ const INITIAL_GLYN_BILLS = [
 ];
 
 function billShares(b) {
-  if (b.isCarGlyn) return { glyn: Math.max(0, b.total - HOLLIE_CAR), hollie: HOLLIE_CAR };
-  return { glyn: b.total / 2, hollie: b.total / 2 };
+  const total = Number(b.total) || 0;
+  // A mode with no value yet (user just tapped "% split") stays 50/50 until set
+  const hasVal = b.splitValue !== null && b.splitValue !== undefined && b.splitValue !== "";
+  const val = Number(b.splitValue);
+  if (b.splitMode === "pct" && hasVal && isFinite(val)) {
+    const pct = Math.min(100, Math.max(0, val));
+    const glyn = total * (pct / 100);
+    return { glyn, hollie: total - glyn };
+  }
+  if (b.splitMode === "fixed" && hasVal && isFinite(val)) {
+    const hollie = Math.min(Math.max(0, val), total);
+    return { glyn: total - hollie, hollie };
+  }
+  return { glyn: total / 2, hollie: total / 2 };
 }
 
 // localStorage keys -- only truly device-local settings (Supabase has the rest)
@@ -348,7 +361,7 @@ const db = {
     return data || [];
   },
   async upsertSharedBill(b) {
-    const { error } = await supabase.from("shared_bills").upsert({ bill_id: b.id, name: b.name, total: b.total, is_car_glyn: b.isCarGlyn || false }, { onConflict: "bill_id" });
+    const { error } = await supabase.from("shared_bills").upsert({ bill_id: b.id, name: b.name, total: b.total, is_car_glyn: false, split_mode: b.splitMode || null, split_value: b.splitValue != null ? b.splitValue : null }, { onConflict: "bill_id" });
     reportDbError("upsertSharedBill", error);
   },
   async deleteSharedBill(billId) {
@@ -420,7 +433,7 @@ const db = {
     return data || [];
   },
   async upsertScheduledBill(b) {
-    const { error } = await supabase.from("scheduled_bills").upsert({ id: b.id, name: b.name, total: b.total, is_car_glyn: b.is_car_glyn, scope: b.scope, owner: b.owner, freq: b.freq, months: b.months, year: b.year }, { onConflict: "id" });
+    const { error } = await supabase.from("scheduled_bills").upsert({ id: b.id, name: b.name, total: b.total, is_car_glyn: false, split_mode: b.split_mode || null, split_value: b.split_value != null ? b.split_value : null, scope: b.scope, owner: b.owner, freq: b.freq, months: b.months, year: b.year }, { onConflict: "id" });
     reportDbError("upsertScheduledBill", error);
   },
   async deleteScheduledBill(id) {
@@ -647,7 +660,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.55";
+const APP_VERSION = "1.13.56";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -765,10 +778,16 @@ function CollapsibleChart({title,data,dataKey,color}) {
   );
 }
 
-function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,onMove,onDragStart}) {
+function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,onMove,onDragStart,onSplitChange}) {
   const [val,setVal]=useState(String(bill.total));
+  const [splitOpen,setSplitOpen]=useState(false);
+  const [sv,setSv]=useState(bill.splitValue!=null?String(bill.splitValue):"");
   const sh=isGlynOnly?null:billShares(bill);
+  const setMode=(m)=>{setSv("");onSplitChange&&onSplitChange(bill.id,m,null);};
+  const commitVal=()=>{const n=parseFloat(sv);onSplitChange&&onSplitChange(bill.id,bill.splitMode,isFinite(n)?n:null);};
+  const segBtn=(on)=>({flex:1,background:on?"#15203a":"#161b28",border:"1px solid "+(on?"#4a9eff":"#2a3050"),borderRadius:5,color:on?"#4a9eff":"#5a6480",fontSize:11,fontWeight:700,padding:"6px",cursor:"pointer"});
   return (
+    <>
     <div draggable onDragStart={onDragStart} style={{
       display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",
       padding:"11px 12px",fontSize:13,alignItems:"center",
@@ -784,13 +803,33 @@ function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,on
           {fmt(bill.total)}
         </span>
       )}
-      {!isGlynOnly&&<><span style={{textAlign:"right",color:"#4a9eff",fontWeight:700}}>{fmt(sh.glyn)}</span><span style={{textAlign:"right",color:"#c84aff",fontWeight:700}}>{fmt(sh.hollie)}</span></>}
+      {!isGlynOnly&&<>
+        <span onClick={()=>onSplitChange&&setSplitOpen(v=>!v)} style={{textAlign:"right",color:"#4a9eff",fontWeight:700,cursor:onSplitChange?"pointer":"default",borderBottom:bill.splitMode?"1px dashed #2a3050":"none"}}>{fmt(sh.glyn)}</span>
+        <span onClick={()=>onSplitChange&&setSplitOpen(v=>!v)} style={{textAlign:"right",color:"#c84aff",fontWeight:700,cursor:onSplitChange?"pointer":"default",borderBottom:bill.splitMode?"1px dashed #2a3050":"none"}}>{fmt(sh.hollie)}</span>
+      </>}
       <button onClick={onDelete} style={{background:"none",border:"none",color:"#5a6480",fontSize:16,cursor:"pointer",padding:"8px 4px",textAlign:"center",lineHeight:1}}>✕</button>
     </div>
+    {splitOpen&&!isGlynOnly&&(
+      <div style={{padding:"10px 12px",background:"#0d1117",borderBottom:"1px solid #1e2535"}}>
+        <div style={{fontSize:10,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>Split — {bill.name}</div>
+        <div style={{display:"flex",gap:6,marginBottom:bill.splitMode?6:0}}>
+          <button onClick={()=>setMode(null)} style={segBtn(!bill.splitMode)}>50/50</button>
+          <button onClick={()=>setMode("pct")} style={segBtn(bill.splitMode==="pct")}>% split</button>
+          <button onClick={()=>setMode("fixed")} style={segBtn(bill.splitMode==="fixed")}>£ fixed</button>
+        </div>
+        {bill.splitMode&&(
+          <input autoFocus type="number" value={sv} onChange={e=>setSv(e.target.value)} onBlur={commitVal}
+            onKeyDown={e=>{if(e.key==="Enter"){commitVal();setSplitOpen(false);}}}
+            placeholder={bill.splitMode==="pct"?"Glyn's % (e.g. 60)":"Hollie pays £"}
+            style={{width:"100%",boxSizing:"border-box",background:"#1e2535",border:"1px solid #4a9eff",borderRadius:5,color:"#e8eaf0",fontSize:12,padding:"7px 8px"}}/>
+        )}
+      </div>
+    )}
+    </>
   );
 }
 
-function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,onBillBlur,onBillDelete,onBillMove,onCatDelete,onCatRename,dragBill,setDragOver,dragOver,onDrop}) {
+function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,onBillBlur,onBillDelete,onBillMove,onCatDelete,onCatRename,onSplitChange,dragBill,setDragOver,dragOver,onDrop}) {
   const [renaming,setRenaming]=useState(false);
   const [rv,setRv]=useState(cat.name);
   const cb=bills.filter(b=>billCats[b.id]===cat.id);
@@ -822,7 +861,7 @@ function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,on
         <BillRow key={b.id} bill={b} idx={i} isGlynOnly={isGlynOnly}
           editing={editingBill===b.id} onEditStart={()=>setEditingBill(b.id)}
           onEditBlur={v=>onBillBlur(b.id,v)} onDelete={()=>onBillDelete(b.id)}
-          onMove={()=>onBillMove(b.id)}
+          onMove={()=>onBillMove(b.id)} onSplitChange={onSplitChange}
           onDragStart={()=>{dragBill.current=b.id;}}/>
       ))}
     </div>
@@ -1187,7 +1226,7 @@ export default function App() {
   const [editGl,setEditGl]=useState(null);
   const [addSh,setAddSh]=useState(false);
   const [addGl,setAddGl]=useState(false);
-  const [newSh,setNewSh]=useState({name:"",total:"",isCarGlyn:false});
+  const [newSh,setNewSh]=useState({name:"",total:"",splitMode:null,splitValue:""});
   const [newGl,setNewGl]=useState({name:"",total:""});
   const [addingCat,setAddingCat]=useState(null);
   const [newCat,setNewCat]=useState("");
@@ -1375,7 +1414,7 @@ export default function App() {
 
         // Bills -- merge with defaults if DB empty
         if (sBills && sBills.length > 0) {
-          setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
+          setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), splitMode: b.split_mode || null, splitValue: b.split_value != null ? parseFloat(b.split_value) : null })));
         } else if (sBills) {
           for (const b of INITIAL_SHARED_BILLS) await trackSave(() => db.upsertSharedBill(b));
         } // sBills === null -> fetch failed; keep current state, never seed
@@ -1488,7 +1527,7 @@ export default function App() {
         db.getPayslips(user.id).then(p => p && setHistory(p.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);})))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_bills" }, () =>
-        db.getSharedBills().then(b => b && setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), isCarGlyn: r.is_car_glyn }))))
+        db.getSharedBills().then(b => b && setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), splitMode: r.split_mode || null, splitValue: r.split_value != null ? parseFloat(r.split_value) : null }))))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "glyn_bills", filter: "user_id=eq."+user.id }, () =>
         db.getGlynBills(user.id).then(b => b && setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))
@@ -1638,7 +1677,7 @@ export default function App() {
         db.getAccumulator(user.id),
       ]);
       if (payslips && payslips.length > 0) setHistory(payslips.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);}));
-      if (sBills && sBills.length > 0) setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), isCarGlyn: b.is_car_glyn })));
+      if (sBills && sBills.length > 0) setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), splitMode: b.split_mode || null, splitValue: b.split_value != null ? parseFloat(b.split_value) : null })));
       if (gBills && gBills.length > 0) setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
       if (lLogs) setLeaveLogs(lLogs);
       if (lSettings) setLeaveSettings(lSettings);
@@ -2317,7 +2356,7 @@ export default function App() {
     if(sb.freq==="once") return sb.year===schedNowYear && ms.includes(schedNowMonth);
     return ms.includes(schedNowMonth);
   };
-  const schedShares=(sb)=>billShares({total:Number(sb.total)||0,isCarGlyn:sb.is_car_glyn});
+  const schedShares=(sb)=>billShares({total:Number(sb.total)||0,splitMode:sb.split_mode,splitValue:sb.split_value});
   const myId=user?user.id:null;
   const activeSchedShared=scheduledBills.filter(b=>b.scope==="shared"&&schedActive(b));
   const activeSchedPersonal=scheduledBills.filter(b=>b.scope==="personal"&&b.owner===myId&&schedActive(b));
@@ -2614,11 +2653,12 @@ export default function App() {
     })();
   },[user]);
 
+  const hSplit=(id,mode,value)=>{updSB(sharedBills.map(b=>b.id===id?{...b,splitMode:mode||null,splitValue:mode&&value!=null?value:null}:b));};
   const hSB=(id,v)=>{const n=parseFloat(v);updSB(sharedBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditSh(null);};
   const hGB=(id,v)=>{const n=parseFloat(v);updGB(glynBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditGl(null);};
   const delSh=id=>{const bill=sharedBills.find(b=>b.id===id);const prevBills=sharedBills;const prevCats=billCats;updSB(sharedBills.filter(b=>b.id!==id));const bc={...billCats};delete bc[id];updBC(bc);showUndoToast((bill?bill.name:"Bill")+" deleted",()=>{updSB(prevBills);updBC(prevCats);});};
   const delGl=id=>{const bill=glynBills.find(b=>b.id===id);const prevBills=glynBills;const prevCats=glynBillCats;updGB(glynBills.filter(b=>b.id!==id));const bc={...glynBillCats};delete bc[id];updGBC(bc);showUndoToast((bill?bill.name:"Bill")+" deleted",()=>{updGB(prevBills);updGBC(prevCats);});};
-  const addShBill=()=>{if(!newSh.name.trim())return;updSB([...sharedBills,{id:Date.now(),name:newSh.name.trim(),total:parseFloat(newSh.total)||0,isCarGlyn:newSh.isCarGlyn}]);setNewSh({name:"",total:"",isCarGlyn:false});setAddSh(false);};
+  const addShBill=()=>{if(!newSh.name.trim())return;const sv=parseFloat(newSh.splitValue);updSB([...sharedBills,{id:Date.now(),name:newSh.name.trim(),total:parseFloat(newSh.total)||0,splitMode:newSh.splitMode,splitValue:newSh.splitMode&&isFinite(sv)?sv:null}]);setNewSh({name:"",total:"",splitMode:null,splitValue:""});setAddSh(false);};
   const addGlBill=()=>{if(!newGl.name.trim())return;updGB([...glynBills,{id:Date.now(),name:newGl.name.trim(),total:parseFloat(newGl.total)||0}]);setNewGl({name:"",total:""});setAddGl(false);};
   const addCategory=(isGlyn)=>{if(!newCat.trim())return;const c={id:Date.now(),name:newCat.trim()};isGlyn?updGC([...glynCats,c]):updC([...cats,c]);setNewCat("");setAddingCat(null);};
   const delCat=(id,isGlyn)=>{
@@ -2746,7 +2786,8 @@ export default function App() {
       id:schedForm.id||Date.now(),
       name,
       total:parseFloat(schedForm.total)||0,
-      is_car_glyn:schedForm.scope==="shared"?!!schedForm.isCarGlyn:false,
+      split_mode:schedForm.scope==="shared"?(schedForm.splitMode||null):null,
+      split_value:schedForm.scope==="shared"&&schedForm.splitMode&&isFinite(parseFloat(schedForm.splitValue))?parseFloat(schedForm.splitValue):null,
       scope:schedForm.scope,
       owner:existing?existing.owner:myId,
       freq:schedForm.freq,
@@ -3406,14 +3447,14 @@ const calcTimesheetTotals = days => {
                   <CatSection key={cat.id} cat={cat} bills={sharedBills} billCats={billCats} isGlynOnly={false}
                     editingBill={editSh} setEditingBill={setEditSh} onBillBlur={hSB} onBillDelete={delSh}
                     onCatDelete={id=>delCat(id,false)} onCatRename={(id,n)=>renCat(id,n,false)}
-                    onBillMove={id=>setMoveBill({id,isGlyn:false})}
+                    onBillMove={id=>setMoveBill({id,isGlyn:false})} onSplitChange={hSplit}
                     dragBill={dragBill} setDragOver={setDragOver} dragOver={dragOver} onDrop={id=>drop(id,false)}/>
                 ))}
                 {(()=>{const u=sharedBills.filter(b=>!billCats[b.id]);if(!u.length)return null;return(
                   <div onDragOver={e=>{e.preventDefault();setDragOver("ush");}} onDragLeave={()=>setDragOver(null)} onDrop={()=>drop(null,false)}
                     style={{border:"1px solid "+(dragOver==="ush"?"#4a9eff":"#1e2535"),borderTop:"none"}}>
                     <div style={{padding:"8px 10px",background:dragOver==="ush"?"#0d1525":"#0f1520"}}><span style={{fontSize:10,fontWeight:700,color:"#3a4460",textTransform:"uppercase",letterSpacing:1}}>Uncategorised</span></div>
-                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={false} editing={editSh===b.id} onEditStart={()=>setEditSh(b.id)} onEditBlur={v=>hSB(b.id,v)} onDelete={()=>delSh(b.id)} onMove={()=>setMoveBill({id:b.id,isGlyn:false})} onDragStart={()=>{dragBill.current=b.id;}}/>)}
+                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={false} editing={editSh===b.id} onEditStart={()=>setEditSh(b.id)} onEditBlur={v=>hSB(b.id,v)} onDelete={()=>delSh(b.id)} onMove={()=>setMoveBill({id:b.id,isGlyn:false})} onSplitChange={hSplit} onDragStart={()=>{dragBill.current=b.id;}}/>)}
                   </div>
                 );})()}
                 {addSh&&(
@@ -3422,10 +3463,18 @@ const calcTimesheetTotals = days => {
                       <input autoFocus placeholder="Bill name" value={newSh.name} onChange={e=>setNewSh(r=>({...r,name:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12}}/>
                       <input placeholder="£ Total" type="number" value={newSh.total} onChange={e=>setNewSh(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
                     </div>
-                    <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"#8892b0",marginBottom:10,cursor:"pointer"}}>
-                      <input type="checkbox" checked={newSh.isCarGlyn} onChange={e=>setNewSh(r=>({...r,isCarGlyn:e.target.checked}))}/>
-                      Car exception (Hollie pays £{HOLLIE_CAR}, Glyn pays rest)
-                    </label>
+                    <div style={{display:"flex",gap:6,marginBottom:6}}>
+                      {[{k:null,l:"50/50"},{k:"pct",l:"% split"},{k:"fixed",l:"£ fixed"}].map(o=>(
+                        <button key={o.l} onClick={()=>setNewSh(r=>({...r,splitMode:o.k,splitValue:""}))}
+                          style={{flex:1,background:newSh.splitMode===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.splitMode===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.splitMode===o.k?"#00c88c":"#5a6480",fontSize:11,fontWeight:700,padding:"6px",cursor:"pointer"}}>{o.l}</button>
+                      ))}
+                    </div>
+                    {newSh.splitMode&&(
+                      <input placeholder={newSh.splitMode==="pct"?"Your % (e.g. 60)":"Hollie pays £"} type="number" value={newSh.splitValue}
+                        onChange={e=>setNewSh(r=>({...r,splitValue:e.target.value}))}
+                        style={{...inp,padding:"6px 8px",fontSize:12,marginBottom:10,width:"100%",boxSizing:"border-box"}}/>
+                    )}
+                    {!newSh.splitMode&&<div style={{height:10}}/>}
                     <div style={{display:"flex",gap:6}}>
                       <button onClick={addShBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"8px",cursor:"pointer"}}>Add Bill</button>
                       <button onClick={()=>setAddSh(false)} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"8px 12px",cursor:"pointer"}}>Cancel</button>
@@ -3438,7 +3487,7 @@ const calcTimesheetTotals = days => {
                     {activeSchedShared.map(b=>{
                       const sh=schedShares(b);
                       return (
-                        <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",isCarGlyn:!!b.is_car_glyn,scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});setSchedOpen(true);}}
+                        <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});setSchedOpen(true);}}
                           style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",alignItems:"center",padding:"10px",fontSize:12,borderTop:"1px solid #141824",background:"#0c1320",cursor:"pointer"}}>
                           <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(schedNowMonth)}</span></span>
                           <span style={{textAlign:"right",color:"#8892b0"}}>{fmt(b.total)}</span>
@@ -3511,7 +3560,7 @@ const calcTimesheetTotals = days => {
                   <div style={{border:"1px solid #2a3a55",borderTop:"none"}}>
                     <div style={{padding:"8px 10px",background:"#0e1726"}}><span style={{fontSize:10,fontWeight:700,color:"#8ec5ff",textTransform:"uppercase",letterSpacing:1}}>📅 Due this month</span></div>
                     {activeSchedPersonal.map(b=>(
-                      <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",isCarGlyn:!!b.is_car_glyn,scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});setSchedOpen(true);}}
+                      <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});setSchedOpen(true);}}
                         style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",alignItems:"center",padding:"10px",fontSize:12,borderTop:"1px solid #141824",background:"#0c1320",cursor:"pointer"}}>
                         <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(schedNowMonth)}</span></span>
                         <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(b.total)}</span>
@@ -5131,10 +5180,19 @@ const calcTimesheetTotals = days => {
                   <button onClick={()=>setF({scope:"personal"})} style={seg(f.scope==="personal")}>My bills</button>
                 </div>
                 {f.scope==="shared"&&(
-                  <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"#8892b0",marginBottom:14,cursor:"pointer"}}>
-                    <input type="checkbox" checked={!!f.isCarGlyn} onChange={e=>setF({isCarGlyn:e.target.checked})}/>
-                    Car split ({themName} pays £{HOLLIE_CAR}, rest is yours)
-                  </label>
+                  <>
+                    <div style={{...hdr,marginBottom:6}}>Split</div>
+                    <div style={{display:"flex",gap:8,marginBottom:f.splitMode?8:14}}>
+                      <button onClick={()=>setF({splitMode:null,splitValue:""})} style={seg(!f.splitMode)}>50/50</button>
+                      <button onClick={()=>setF({splitMode:"pct",splitValue:""})} style={seg(f.splitMode==="pct")}>% split</button>
+                      <button onClick={()=>setF({splitMode:"fixed",splitValue:""})} style={seg(f.splitMode==="fixed")}>£ fixed</button>
+                    </div>
+                    {f.splitMode&&(
+                      <input value={f.splitValue||""} onChange={e=>setF({splitValue:e.target.value.replace(/[^0-9.]/g,"")})} inputMode="decimal"
+                        placeholder={f.splitMode==="pct"?"Your % (e.g. 60)":themName+" pays £"}
+                        style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
+                    )}
+                  </>
                 )}
 
                 <div style={{...hdr,marginBottom:6}}>When</div>
@@ -5168,7 +5226,7 @@ const calcTimesheetTotals = days => {
           );
         }
         const row=(b)=>(
-          <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",isCarGlyn:!!b.is_car_glyn,scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});}}
+          <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});}}
             style={{...card,marginBottom:8,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:14,fontWeight:600,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.name} <span style={{fontSize:10,color:"#5a6480",fontWeight:700}}>· {tag(b)}</span></div>
@@ -5187,7 +5245,7 @@ const calcTimesheetTotals = days => {
               {grab}
               <div style={{fontSize:14,color:"#e8eaf0",fontWeight:800,marginBottom:4}}>Scheduled bills</div>
               <div style={{fontSize:11,color:"#5a6480",marginBottom:12}}>Bills that appear in Budget only during the month(s) they're due.</div>
-              <button onClick={()=>setSchedForm({id:null,name:"",total:"",isCarGlyn:false,scope:budTab==="glyn"?"personal":"shared",freq:"annual",months:[],year:schedNowYear})}
+              <button onClick={()=>setSchedForm({id:null,name:"",total:"",splitMode:null,splitValue:"",scope:budTab==="glyn"?"personal":"shared",freq:"annual",months:[],year:schedNowYear})}
                 style={{width:"100%",background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"13px",cursor:"pointer",marginBottom:14}}>
                 ＋ Add scheduled bill
               </button>
