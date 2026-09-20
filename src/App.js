@@ -662,7 +662,7 @@ const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!
 // Signed variant: adjustments can be negative (a credit in that month).
 const fmtS = n => (Number(n) < 0 ? "−" : "") + fmt(n);
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.64";
+const APP_VERSION = "1.13.65";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -3396,9 +3396,10 @@ const calcTimesheetTotals = days => {
           };
 
           // One row, used for standing bills and for this month's scheduled ones.
-          const row=(key,{name,sub,amt,her,onName,onAmount,drag,tag,neg})=>(
+          const row=(key,{name,sub,amt,her,onName,onAmount,drag,tag,neg,first})=>(
             <div key={key} draggable={!!drag} onDragStart={drag}
-              style={{display:"flex",alignItems:"center",gap:10,padding:"11px 13px",borderTop:"1px solid #171d2b"}}>
+              style={{display:"flex",alignItems:"center",gap:10,padding:"11px 13px",borderTop:"1px solid #171d2b",
+                ...(first?{borderTop:"none"}:{})}}>
               <div onClick={onName} style={{flex:1,minWidth:0,cursor:onName?"pointer":"default"}}>
                 <div style={{fontSize:13.5,color:neg?"#4ad07a":"#c8cee0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   {name}
@@ -3413,8 +3414,8 @@ const calcTimesheetTotals = days => {
             </div>
           );
 
-          const editRow=(b)=>(
-            <div key={b.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 13px",borderTop:"1px solid #171d2b",background:"#0f141f"}}>
+          const editRow=(b,first)=>(
+            <div key={b.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 13px",borderTop:first?"none":"1px solid #171d2b",background:"#0f141f"}}>
               <span style={{flex:1,fontSize:12,color:"#5a6480"}}>Total for {b.name}</span>
               <input autoFocus type="number" defaultValue={String(b.total)}
                 onBlur={e=>onAmt(b.id,e.target.value)}
@@ -3423,7 +3424,8 @@ const calcTimesheetTotals = days => {
             </div>
           );
 
-          const billRows=list=>list.map(b=>editingId===b.id?editRow(b):row(b.id,{
+          const billRows=list=>list.map((b,bi)=>editingId===b.id?editRow(b,bi===0):row(b.id,{
+            first:bi===0,
             name:b.name,
             sub:isG?null:splitNote(b),
             amt:isG?b.total:mineOf(b),
@@ -3435,28 +3437,36 @@ const calcTimesheetTotals = days => {
 
           // Each category is a banded block inside the card, so the list reads as
           // groups rather than one run of rows.
-          const band=(name,value,count,first,tint)=>(
+          // Each category is its own card, so the groups can't run together.
+          const band=(name,value,count,tint)=>(
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-              padding:"9px 13px",background:"#10151f",
-              borderTop:first?"none":"1px solid #2a3050"}}>
-              <span style={{fontSize:11.5,fontWeight:700,color:tint||"#a8b0c4"}}>
+              padding:"10px 13px",background:"#10151f",borderBottom:"1px solid #1e2535"}}>
+              <span style={{fontSize:12,fontWeight:700,color:tint||"#c8cee0",letterSpacing:.2}}>
                 {name}
                 {count!=null&&<span style={{color:"#3a4460",fontWeight:600,marginLeft:7}}>{count}</span>}
               </span>
-              <span style={{fontSize:12,fontWeight:700,color:"#7a8499"}}>{fmtS(value)}</span>
+              <span style={{fontSize:12.5,fontWeight:700,color:"#7a8499"}}>{fmtS(value)}</span>
             </div>
           );
-          const section=(label,value,list,catId,first)=>(
-            <div key={label+(catId||"")}
-              onDragOver={catId!==undefined?(e=>{e.preventDefault();setDragOver(catId);}):undefined}
-              onDragLeave={catId!==undefined?(()=>setDragOver(null)):undefined}
-              onDrop={catId!==undefined?(()=>drop(catId,isG)):undefined}
-              style={{background:dragOver===catId&&catId!==undefined?"#15203a":"transparent"}}>
-              {band(label,value,list.length,first)}
-              {list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"9px 13px"}}>Drop bills here</div>}
-              {billRows(list)}
-            </div>
+          const groupCard=(key,inner,active)=>(
+            <div key={key} style={{background:"#141824",borderRadius:12,overflow:"hidden",
+              border:"1px solid "+(active?"#4a9eff":"#1e2535")}}>{inner}</div>
           );
+          const section=(label,value,list,catId)=>{
+            const on=dragOver===catId&&catId!==undefined;
+            return (
+              <div key={label+(catId||"")}
+                onDragOver={catId!==undefined?(e=>{e.preventDefault();setDragOver(catId);}):undefined}
+                onDragLeave={catId!==undefined?(()=>setDragOver(null)):undefined}
+                onDrop={catId!==undefined?(()=>drop(catId,isG)):undefined}>
+                {groupCard(label+(catId||""),<>
+                  {band(label,value,list.length)}
+                  {list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"11px 13px"}}>Drop bills here</div>}
+                  {billRows(list)}
+                </>,on)}
+              </div>
+            );
+          };
 
           const uncat=bills.filter(b=>!bmap[b.id]);
 
@@ -3513,23 +3523,23 @@ const calcTimesheetTotals = days => {
             </div>
 
             {/* ── the bills ── */}
-            <div style={{background:"#141824",border:"1px solid #1e2535",borderRadius:12,overflow:"hidden"}}>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
               {bcats.map((c,ci)=>section(c.name,
                 bills.filter(b=>bmap[b.id]===c.id).reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),
-                bills.filter(b=>bmap[b.id]===c.id),c.id,ci===0))}
+                bills.filter(b=>bmap[b.id]===c.id),c.id))}
               {uncat.length>0&&section("Uncategorised",
-                uncat.reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),uncat,null,bcats.length===0)}
-              {bills.length===0&&<div style={{fontSize:12,color:"#3a4460",textAlign:"center",padding:"18px 12px"}}>No bills yet — add your first below.</div>}
+                uncat.reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),uncat,null)}
+              {bills.length===0&&groupCard("empty",<div style={{fontSize:12,color:"#3a4460",textAlign:"center",padding:"18px 12px"}}>No bills yet — add your first below.</div>)}
 
-              {schedRows.length>0&&(
-                <div>
+              {schedRows.length>0&&groupCard("sched",<>
                   {band("Only in "+selLabel,
                     schedRows.reduce((s,b)=>s+(isG?(Number(b.total)||0):schedShares(b)[isOwner?"glyn":"hollie"]),0),
-                    schedRows.length,false,"#ffb84a")}
-                  {schedRows.map(b=>{
+                    schedRows.length,"#ffb84a")}
+                  {schedRows.map((b,si)=>{
                     const sh=schedShares(b);
                     const myAmt=isG?(Number(b.total)||0):sh[isOwner?"glyn":"hollie"];
                     return row("s"+b.id,{
+                      first:si===0,
                       name:b.name,
                       sub:(isG?fmt(b.total):splitNote({total:Number(b.total)||0,splitMode:b.split_mode,splitValue:b.split_value}))+" · ends "+lastDayLabel(laSel?laSel.m:schedNowMonth),
                       amt:myAmt,
@@ -3540,10 +3550,10 @@ const calcTimesheetTotals = days => {
                       onAmount:()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||(laSel?laSel.yr:schedNowYear)});setSchedOpen(true);},
                     });
                   })}
-                </div>
-              )}
+                </>)}
 
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:13,background:"#0d1117",borderTop:"1px solid #2a3050",fontSize:13.5,fontWeight:800}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 13px",
+                background:"#141824",border:"1px solid #2a3050",borderRadius:12,fontSize:13.5,fontWeight:800}}>
                 <span style={{color:"#8892b0"}}>{isG?"My bills":"My share"} · {selLabel}</span>
                 <span style={{color:accent}}>{fmtS(listTotal)}</span>
               </div>
