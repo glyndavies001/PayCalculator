@@ -662,7 +662,7 @@ const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!
 // Signed variant: adjustments can be negative (a credit in that month).
 const fmtS = n => (Number(n) < 0 ? "−" : "") + fmt(n);
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.60";
+const APP_VERSION = "1.13.61";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1228,8 +1228,8 @@ export default function App() {
   const [editGl,setEditGl]=useState(null);
   const [addSh,setAddSh]=useState(false);
   const [addGl,setAddGl]=useState(false);
-  const [newSh,setNewSh]=useState({name:"",total:"",splitMode:null,splitValue:""});
-  const [newGl,setNewGl]=useState({name:"",total:""});
+  const [newSh,setNewSh]=useState({name:"",total:"",splitMode:null,splitValue:"",freq:"month",months:[]});
+  const [newGl,setNewGl]=useState({name:"",total:"",freq:"month",months:[]});
   const [addingCat,setAddingCat]=useState(null);
   const [newCat,setNewCat]=useState("");
   const [dragOver,setDragOver]=useState(null);
@@ -2708,8 +2708,55 @@ export default function App() {
   const hGB=(id,v)=>{const n=parseFloat(v);updGB(glynBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditGl(null);};
   const delSh=id=>{const bill=sharedBills.find(b=>b.id===id);const prevBills=sharedBills;const prevCats=billCats;updSB(sharedBills.filter(b=>b.id!==id));const bc={...billCats};delete bc[id];updBC(bc);showUndoToast((bill?bill.name:"Bill")+" deleted",()=>{updSB(prevBills);updBC(prevCats);});};
   const delGl=id=>{const bill=glynBills.find(b=>b.id===id);const prevBills=glynBills;const prevCats=glynBillCats;updGB(glynBills.filter(b=>b.id!==id));const bc={...glynBillCats};delete bc[id];updGBC(bc);showUndoToast((bill?bill.name:"Bill")+" deleted",()=>{updGB(prevBills);updGBC(prevCats);});};
-  const addShBill=()=>{if(!newSh.name.trim())return;const sv=parseFloat(newSh.splitValue);updSB([...sharedBills,{id:Date.now(),name:newSh.name.trim(),total:parseFloat(newSh.total)||0,splitMode:newSh.splitMode,splitValue:newSh.splitMode&&isFinite(sv)?sv:null}]);setNewSh({name:"",total:"",splitMode:null,splitValue:""});setAddSh(false);};
-  const addGlBill=()=>{if(!newGl.name.trim())return;updGB([...glynBills,{id:Date.now(),name:newGl.name.trim(),total:parseFloat(newGl.total)||0}]);setNewGl({name:"",total:""});setAddGl(false);};
+  // A bill is either "fixed" (a standing monthly bill) or lives in scheduled_bills
+  // as a one-off for a single month / an annual bill in chosen months.
+  const addSchedRow=(row)=>{
+    setScheduledBills(prev=>[...prev,row]);
+    if(user)trackSave(db.upsertScheduledBill(row));
+  };
+  // Turn a standing monthly bill into a scheduled one against the month in view.
+  const convertToScheduled=(billId,isG,freq)=>{
+    const bill=(isG?glynBills:sharedBills).find(b=>b.id===billId);
+    if(!bill)return;
+    const m=laSel?laSel.m:schedNowMonth, yr=laSel?laSel.yr:schedNowYear;
+    addSchedRow({id:Date.now(),name:bill.name,total:Number(bill.total)||0,
+      split_mode:isG?null:(bill.splitMode||null),split_value:isG?null:(bill.splitValue!=null?bill.splitValue:null),
+      scope:isG?"personal":"shared",owner:myId,freq,months:[m],year:freq==="once"?yr:null});
+    if(isG){
+      updGB(glynBills.filter(b=>b.id!==billId));
+      const c={...glynBillCats};delete c[billId];updGBC(c);
+    }else{
+      updSB(sharedBills.filter(b=>b.id!==billId));
+      const c={...billCats};delete c[billId];updBC(c);
+    }
+    haptic();
+  };
+  const addShBill=()=>{
+    if(!newSh.name.trim())return;
+    const sv=parseFloat(newSh.splitValue);
+    const total=parseFloat(newSh.total)||0;
+    const splitMode=newSh.splitMode&&!(total<0&&newSh.splitMode==="fixed")?newSh.splitMode:null;
+    if(newSh.freq==="month"){
+      updSB([...sharedBills,{id:Date.now(),name:newSh.name.trim(),total,splitMode,splitValue:splitMode&&isFinite(sv)?sv:null}]);
+    }else{
+      const ms=newSh.freq==="once"?[laSel?laSel.m:schedNowMonth]:(newSh.months.length?newSh.months.slice().sort((a,b)=>a-b):[laSel?laSel.m:schedNowMonth]);
+      addSchedRow({id:Date.now(),name:newSh.name.trim(),total,split_mode:splitMode,split_value:splitMode&&isFinite(sv)?sv:null,
+        scope:"shared",owner:myId,freq:newSh.freq,months:ms,year:newSh.freq==="once"?(laSel?laSel.yr:schedNowYear):null});
+    }
+    setNewSh({name:"",total:"",splitMode:null,splitValue:"",freq:"month",months:[]});setAddSh(false);
+  };
+  const addGlBill=()=>{
+    if(!newGl.name.trim())return;
+    const total=parseFloat(newGl.total)||0;
+    if(newGl.freq==="month"){
+      updGB([...glynBills,{id:Date.now(),name:newGl.name.trim(),total}]);
+    }else{
+      const ms=newGl.freq==="once"?[laSel?laSel.m:schedNowMonth]:(newGl.months.length?newGl.months.slice().sort((a,b)=>a-b):[laSel?laSel.m:schedNowMonth]);
+      addSchedRow({id:Date.now(),name:newGl.name.trim(),total,split_mode:null,split_value:null,
+        scope:"personal",owner:myId,freq:newGl.freq,months:ms,year:newGl.freq==="once"?(laSel?laSel.yr:schedNowYear):null});
+    }
+    setNewGl({name:"",total:"",freq:"month",months:[]});setAddGl(false);
+  };
   const addCategory=(isGlyn)=>{if(!newCat.trim())return;const c={id:Date.now(),name:newCat.trim()};isGlyn?updGC([...glynCats,c]):updC([...cats,c]);setNewCat("");setAddingCat(null);};
   const delCat=(id,isGlyn)=>{
     const cat=(isGlyn?glynCats:cats).find(c=>c.id===id);
@@ -2830,7 +2877,27 @@ export default function App() {
   const saveSchedBill=()=>{
     if(!schedForm)return;
     const name=(schedForm.name||"").trim();
-    if(!name||!schedForm.months.length)return;
+    if(!name)return;
+    // "Every month" turns a scheduled bill into a standing one: add it to the
+    // monthly list and drop the scheduled record.
+    if(schedForm.freq==="month"){
+      const total=parseFloat(schedForm.total)||0;
+      const sv=parseFloat(schedForm.splitValue);
+      const splitMode=schedForm.scope==="shared"&&schedForm.splitMode&&!(total<0&&schedForm.splitMode==="fixed")?schedForm.splitMode:null;
+      if(schedForm.scope==="shared"){
+        updSB([...sharedBills,{id:Date.now(),name,total,splitMode,splitValue:splitMode&&isFinite(sv)?sv:null}]);
+      }else{
+        updGB([...glynBills,{id:Date.now(),name,total}]);
+      }
+      if(schedForm.id){
+        setScheduledBills(prev=>prev.filter(x=>x.id!==schedForm.id));
+        if(user)trackSave(db.deleteScheduledBill(schedForm.id));
+      }
+      haptic();
+      setSchedForm(null);
+      return;
+    }
+    if(!schedForm.months.length)return;
     const existing=schedForm.id?scheduledBills.find(b=>b.id===schedForm.id):null;
     const row={
       id:schedForm.id||Date.now(),
@@ -3494,7 +3561,7 @@ const calcTimesheetTotals = days => {
               return (
                 <button onClick={()=>{haptic();setSchedForm(null);setSchedOpen(true);}}
                   style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:"#161b28",border:"1px dashed #2a3a55",borderRadius:8,color:"#8ec5ff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer",marginBottom:12}}>
-                  📅 Scheduled bills{activeCount?` · ${activeCount} due ${selIsNow?"this month":selLabel}`:""}
+                  📅 Non-monthly bills{activeCount?` · ${activeCount} due ${selIsNow?"this month":selLabel}`:""}
                 </button>
               );
             })()}
@@ -3572,6 +3639,21 @@ const calcTimesheetTotals = days => {
                       <input autoFocus placeholder="Bill name" value={newSh.name} onChange={e=>setNewSh(r=>({...r,name:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12}}/>
                       <input placeholder="£ Total" type="number" value={newSh.total} onChange={e=>setNewSh(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
                     </div>
+                    <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
+                    <div style={{display:"flex",gap:6,marginBottom:6}}>
+                      {[{k:"month",l:"Every month"},{k:"once",l:selIsNow?"This month":selLabel+" only"},{k:"annual",l:"Every year"}].map(o=>(
+                        <button key={o.k} onClick={()=>setNewSh(r=>({...r,freq:o.k,months:o.k==="annual"?(r.months.length?r.months:[laSel?laSel.m:schedNowMonth]):[]}))}
+                          style={{flex:1,background:newSh.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.freq===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"6px 2px",cursor:"pointer"}}>{o.l}</button>
+                      ))}
+                    </div>
+                    {newSh.freq==="annual"&&(
+                      <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:6}}>
+                        {MONTHS.map((mn,i)=>{const m=i+1;const on=newSh.months.includes(m);return (
+                          <button key={m} onClick={()=>setNewSh(r=>({...r,months:on?r.months.filter(x=>x!==m):[...r.months,m]}))}
+                            style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":"#5a6480",fontSize:10,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
+                        );})}
+                      </div>
+                    )}
                     <div style={{display:"flex",gap:6,marginBottom:6}}>
                       {[{k:null,l:"50/50"},{k:"pct",l:"% split"},{k:"fixed",l:"£ fixed"}].map(o=>(
                         <button key={o.l} onClick={()=>setNewSh(r=>({...r,splitMode:o.k,splitValue:""}))}
@@ -3659,6 +3741,21 @@ const calcTimesheetTotals = days => {
                       <input autoFocus placeholder="Bill name" value={newGl.name} onChange={e=>setNewGl(r=>({...r,name:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12}}/>
                       <input placeholder="£ Total" type="number" value={newGl.total} onChange={e=>setNewGl(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
                     </div>
+                    <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
+                    <div style={{display:"flex",gap:6,marginBottom:10}}>
+                      {[{k:"month",l:"Every month"},{k:"once",l:selIsNow?"This month":selLabel+" only"},{k:"annual",l:"Every year"}].map(o=>(
+                        <button key={o.k} onClick={()=>setNewGl(r=>({...r,freq:o.k,months:o.k==="annual"?(r.months.length?r.months:[laSel?laSel.m:schedNowMonth]):[]}))}
+                          style={{flex:1,background:newGl.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newGl.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newGl.freq===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"6px 2px",cursor:"pointer"}}>{o.l}</button>
+                      ))}
+                    </div>
+                    {newGl.freq==="annual"&&(
+                      <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:10}}>
+                        {MONTHS.map((mn,i)=>{const m=i+1;const on=newGl.months.includes(m);return (
+                          <button key={m} onClick={()=>setNewGl(r=>({...r,months:on?r.months.filter(x=>x!==m):[...r.months,m]}))}
+                            style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":"#5a6480",fontSize:10,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
+                        );})}
+                      </div>
+                    )}
                     <div style={{display:"flex",gap:6}}>
                       <button onClick={addGlBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"8px",cursor:"pointer"}}>Add Bill</button>
                       <button onClick={()=>setAddGl(false)} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"8px 12px",cursor:"pointer"}}>Cancel</button>
@@ -5236,6 +5333,15 @@ const calcTimesheetTotals = days => {
               <input key={moveBill.id} defaultValue={bill?bill.name:""} placeholder="Bill name"
                 onBlur={e=>{const v=e.target.value.trim();if(v&&bill&&v!==bill.name)renameBill(moveBill.id,v,isG);}}
                 style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
+              <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>How often</div>
+              <div style={{display:"flex",gap:6,marginBottom:6}}>
+                <button style={{flex:1,background:"#1a3a2a",border:"1px solid #00c88c",borderRadius:7,color:"#00c88c",fontSize:11,fontWeight:700,padding:"9px 2px",cursor:"default"}}>Every month ✓</button>
+                <button onClick={()=>{convertToScheduled(moveBill.id,isG,"once");setMoveBill(null);}}
+                  style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:7,color:"#8892b0",fontSize:11,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>{selIsNow?"This month":selLabel} only</button>
+                <button onClick={()=>{convertToScheduled(moveBill.id,isG,"annual");setMoveBill(null);}}
+                  style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:7,color:"#8892b0",fontSize:11,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Yearly in {laSel?MONTHS[laSel.m-1]:""}</button>
+              </div>
+              <div style={{fontSize:10,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>This is a fixed bill — it appears in every month, and edits apply everywhere. Switching moves it to {selIsNow?"this month":selLabel} only.</div>
               <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Move to category</div>
               {list.map(c=>(
                 <button key={c.id} onClick={()=>{haptic();assignCat(moveBill.id,c.id,isG);setMoveBill(null);}} style={{
@@ -5265,7 +5371,7 @@ const calcTimesheetTotals = days => {
           const setF=(patch)=>setSchedForm(p=>({...p,...patch}));
           const editing=!!f.id;
           const negAmt=(parseFloat(f.total)||0)<0;
-          const valid=(f.name||"").trim().length>0 && f.months.length>0 && (f.freq!=="once"||!!f.year);
+          const valid=(f.name||"").trim().length>0 && (f.freq==="month" || (f.months.length>0 && (f.freq!=="once"||!!f.year)));
           const seg=(active)=>({flex:1,background:active?"#1a3a5a":"transparent",border:active?"1px solid #2a5a8a":"1px solid #2a3050",borderRadius:8,color:active?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"});
           return (
             <div onClick={()=>setSchedOpen(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
@@ -5307,17 +5413,19 @@ const calcTimesheetTotals = days => {
 
                 <div style={{...hdr,marginBottom:6}}>When</div>
                 <div style={{display:"flex",gap:8,marginBottom:12}}>
+                  <button onClick={()=>setF({freq:"month"})} style={seg(f.freq==="month")}>Every month</button>
                   <button onClick={()=>setF({freq:"annual"})} style={seg(f.freq==="annual")}>Every year</button>
                   <button onClick={()=>setF({freq:"once",months:f.months.slice(0,1)})} style={seg(f.freq==="once")}>One-off</button>
                 </div>
 
-                <div style={{fontSize:11,color:"#5a6480",marginBottom:8}}>{f.freq==="once"?"Pick the month it's due":"Pick the month(s) it's due each year"}</div>
-                <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:14}}>
+                {f.freq==="month"&&<div style={{fontSize:11,color:"#5a6480",marginBottom:14}}>Due every month — it'll move into your standing bills list.</div>}
+                {f.freq!=="month"&&<div style={{fontSize:11,color:"#5a6480",marginBottom:8}}>{f.freq==="once"?"Pick the month it's due":"Pick the month(s) it's due each year"}</div>}
+                {f.freq!=="month"&&<div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:14}}>
                   {MONTH_ABBR.map((mn,i)=>{const m=i+1;const on=f.months.includes(m);return (
                     <button key={m} onClick={()=>{ if(f.freq==="once")setF({months:[m]}); else setF({months:on?f.months.filter(x=>x!==m):[...f.months,m]}); }}
                       style={{width:"calc(25% - 6px)",background:on?"#1a3a5a":"#0d1117",border:"1px solid "+(on?"#2a5a8a":"#2a3050"),borderRadius:8,color:on?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"10px 0",cursor:"pointer"}}>{mn}</button>
                   );})}
-                </div>
+                </div>}
 
                 {f.freq==="once"&&(<>
                   <div style={{...hdr,marginBottom:6}}>Year</div>
