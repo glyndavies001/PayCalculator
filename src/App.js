@@ -662,7 +662,7 @@ const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!
 // Signed variant: adjustments can be negative (a credit in that month).
 const fmtS = n => (Number(n) < 0 ? "−" : "") + fmt(n);
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.63";
+const APP_VERSION = "1.13.64";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -3433,17 +3433,27 @@ const calcTimesheetTotals = days => {
             drag:()=>{dragBill.current=b.id;},
           }));
 
-          const section=(label,value,list,catId)=>(
+          // Each category is a banded block inside the card, so the list reads as
+          // groups rather than one run of rows.
+          const band=(name,value,count,first,tint)=>(
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+              padding:"9px 13px",background:"#10151f",
+              borderTop:first?"none":"1px solid #2a3050"}}>
+              <span style={{fontSize:11.5,fontWeight:700,color:tint||"#a8b0c4"}}>
+                {name}
+                {count!=null&&<span style={{color:"#3a4460",fontWeight:600,marginLeft:7}}>{count}</span>}
+              </span>
+              <span style={{fontSize:12,fontWeight:700,color:"#7a8499"}}>{fmtS(value)}</span>
+            </div>
+          );
+          const section=(label,value,list,catId,first)=>(
             <div key={label+(catId||"")}
               onDragOver={catId!==undefined?(e=>{e.preventDefault();setDragOver(catId);}):undefined}
               onDragLeave={catId!==undefined?(()=>setDragOver(null)):undefined}
               onDrop={catId!==undefined?(()=>drop(catId,isG)):undefined}
               style={{background:dragOver===catId&&catId!==undefined?"#15203a":"transparent"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"11px 13px 5px"}}>
-                <span style={{fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase",color:"#5a6480"}}>{label}</span>
-                <span style={{fontSize:11,color:"#3a4460"}}>{fmtS(value)}</span>
-              </div>
-              {list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"4px 13px 8px"}}>Drop bills here</div>}
+              {band(label,value,list.length,first)}
+              {list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"9px 13px"}}>Drop bills here</div>}
               {billRows(list)}
             </div>
           );
@@ -3504,19 +3514,18 @@ const calcTimesheetTotals = days => {
 
             {/* ── the bills ── */}
             <div style={{background:"#141824",border:"1px solid #1e2535",borderRadius:12,overflow:"hidden"}}>
-              {bcats.map(c=>section(c.name,
+              {bcats.map((c,ci)=>section(c.name,
                 bills.filter(b=>bmap[b.id]===c.id).reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),
-                bills.filter(b=>bmap[b.id]===c.id),c.id))}
+                bills.filter(b=>bmap[b.id]===c.id),c.id,ci===0))}
               {uncat.length>0&&section("Uncategorised",
-                uncat.reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),uncat,null)}
+                uncat.reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),uncat,null,bcats.length===0)}
               {bills.length===0&&<div style={{fontSize:12,color:"#3a4460",textAlign:"center",padding:"18px 12px"}}>No bills yet — add your first below.</div>}
 
               {schedRows.length>0&&(
                 <div>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"11px 13px 5px",borderTop:"1px solid #1e2535"}}>
-                    <span style={{fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase",color:"#ffb84a"}}>Only in {selLabel}</span>
-                    <span style={{fontSize:11,color:"#3a4460"}}>{fmtS(schedRows.reduce((s,b)=>s+(isG?(Number(b.total)||0):schedShares(b)[isOwner?"glyn":"hollie"]),0))}</span>
-                  </div>
+                  {band("Only in "+selLabel,
+                    schedRows.reduce((s,b)=>s+(isG?(Number(b.total)||0):schedShares(b)[isOwner?"glyn":"hollie"]),0),
+                    schedRows.length,false,"#ffb84a")}
                   {schedRows.map(b=>{
                     const sh=schedShares(b);
                     const myAmt=isG?(Number(b.total)||0):sh[isOwner?"glyn":"hollie"];
