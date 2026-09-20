@@ -662,7 +662,7 @@ const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!
 // Signed variant: adjustments can be negative (a credit in that month).
 const fmtS = n => (Number(n) < 0 ? "−" : "") + fmt(n);
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.62";
+const APP_VERSION = "1.13.63";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -780,95 +780,8 @@ function CollapsibleChart({title,data,dataKey,color}) {
   );
 }
 
-function BillRow({bill,idx,isGlynOnly,editing,onEditStart,onEditBlur,onDelete,onMove,onDragStart,onSplitChange}) {
-  const [val,setVal]=useState(String(bill.total));
-  const [splitOpen,setSplitOpen]=useState(false);
-  const [sv,setSv]=useState(bill.splitValue!=null?String(bill.splitValue):"");
-  const sh=isGlynOnly?null:billShares(bill);
-  const setMode=(m)=>{setSv("");onSplitChange&&onSplitChange(bill.id,m,null);};
-  const commitVal=()=>{const n=parseFloat(sv);onSplitChange&&onSplitChange(bill.id,bill.splitMode,isFinite(n)?n:null);};
-  const segBtn=(on)=>({flex:1,background:on?"#15203a":"#161b28",border:"1px solid "+(on?"#4a9eff":"#2a3050"),borderRadius:5,color:on?"#4a9eff":"#5a6480",fontSize:11,fontWeight:700,padding:"6px",cursor:"pointer"});
-  return (
-    <>
-    <div draggable onDragStart={onDragStart} style={{
-      display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",
-      padding:"11px 12px",fontSize:13,alignItems:"center",
-      background:idx%2===0?"#161b28":"#11151f",borderBottom:"1px solid #1e2535",cursor:"grab"
-    }}>
-      <span onClick={onMove} style={{color:"#d8dcea",fontWeight:500,cursor:"pointer"}}>{bill.name}</span>
-      {editing?(
-        <input autoFocus type="number" value={val} onChange={e=>setVal(e.target.value)}
-          onBlur={()=>onEditBlur(val)} onKeyDown={e=>e.key==="Enter"&&onEditBlur(val)}
-          style={{background:"#1e2535",border:"1px solid #4a9eff",borderRadius:4,color:"#e8eaf0",fontSize:12,padding:"2px 4px",width:"100%",textAlign:"right"}}/>
-      ):(
-        <span onClick={onEditStart} style={{textAlign:"right",color:isGlynOnly?"#4a9eff":"#a8b0c4",display:"block",cursor:"pointer",borderBottom:"1px dashed #2a3050",fontWeight:600}}>
-          {fmt(bill.total)}
-        </span>
-      )}
-      {!isGlynOnly&&<>
-        <span onClick={()=>onSplitChange&&setSplitOpen(v=>!v)} style={{textAlign:"right",color:"#4a9eff",fontWeight:700,cursor:onSplitChange?"pointer":"default",borderBottom:bill.splitMode?"1px dashed #2a3050":"none"}}>{fmt(sh.glyn)}</span>
-        <span onClick={()=>onSplitChange&&setSplitOpen(v=>!v)} style={{textAlign:"right",color:"#c84aff",fontWeight:700,cursor:onSplitChange?"pointer":"default",borderBottom:bill.splitMode?"1px dashed #2a3050":"none"}}>{fmt(sh.hollie)}</span>
-      </>}
-      <button onClick={onDelete} style={{background:"none",border:"none",color:"#5a6480",fontSize:16,cursor:"pointer",padding:"8px 4px",textAlign:"center",lineHeight:1}}>✕</button>
-    </div>
-    {splitOpen&&!isGlynOnly&&(
-      <div style={{padding:"10px 12px",background:"#0d1117",borderBottom:"1px solid #1e2535"}}>
-        <div style={{fontSize:10,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>Split — {bill.name}</div>
-        <div style={{display:"flex",gap:6,marginBottom:bill.splitMode?6:0}}>
-          <button onClick={()=>setMode(null)} style={segBtn(!bill.splitMode)}>50/50</button>
-          <button onClick={()=>setMode("pct")} style={segBtn(bill.splitMode==="pct")}>% split</button>
-          <button onClick={()=>setMode("fixed")} style={segBtn(bill.splitMode==="fixed")}>£ fixed</button>
-        </div>
-        {bill.splitMode&&(
-          <input autoFocus type="number" value={sv} onChange={e=>setSv(e.target.value)} onBlur={commitVal}
-            onKeyDown={e=>{if(e.key==="Enter"){commitVal();setSplitOpen(false);}}}
-            placeholder={bill.splitMode==="pct"?"Glyn's % (e.g. 60)":"Hollie pays £"}
-            style={{width:"100%",boxSizing:"border-box",background:"#1e2535",border:"1px solid #4a9eff",borderRadius:5,color:"#e8eaf0",fontSize:12,padding:"7px 8px"}}/>
-        )}
-      </div>
-    )}
-    </>
-  );
-}
-
-function CatSection({cat,bills,billCats,isGlynOnly,editingBill,setEditingBill,onBillBlur,onBillDelete,onBillMove,onCatDelete,onCatRename,onSplitChange,dragBill,setDragOver,dragOver,onDrop}) {
-  const [renaming,setRenaming]=useState(false);
-  const [rv,setRv]=useState(cat.name);
-  const cb=bills.filter(b=>billCats[b.id]===cat.id);
-  const total=cb.reduce((s,b)=>s+b.total,0);
-  const glynTotal=isGlynOnly?total:cb.reduce((s,b)=>s+billShares(b).glyn,0);
-  return (
-    <div onDragOver={e=>{e.preventDefault();setDragOver(cat.id);}} onDragLeave={()=>setDragOver(null)} onDrop={()=>onDrop(cat.id)}
-      style={{border:"1px solid "+(dragOver===cat.id?"#4a9eff":(isGlynOnly?"#ff8c4a":"#1e2535")),borderTop:"none",transition:"border-color 0.15s"}}>
-      <div style={{display:"grid",gridTemplateColumns:isGlynOnly?"1fr 80px 26px":"1fr 70px 64px 64px 26px",alignItems:"center",padding:"10px 12px",background:dragOver===cat.id?"#15203a":"#1a1f2e",borderBottom:"1px solid #2a3050"}}>
-        {renaming?(
-          <input autoFocus value={rv} onChange={e=>setRv(e.target.value)}
-            onBlur={()=>{onCatRename(cat.id,rv);setRenaming(false);}}
-            onKeyDown={e=>{if(e.key==="Enter"){onCatRename(cat.id,rv);setRenaming(false);}}}
-            style={{background:"#1e2535",border:"1px solid #4a9eff",borderRadius:4,color:"#e8eaf0",fontSize:13,padding:"3px 6px",marginRight:8}}/>
-        ):(
-          <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
-            <span onDoubleClick={()=>setRenaming(true)} style={{fontSize:13,fontWeight:800,color:"#fff",cursor:"text",letterSpacing:0.3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title="Double-tap to rename">{cat.name}</span>
-            <button onClick={()=>setRenaming(true)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",padding:"2px 4px",flexShrink:0}}>✏️</button>
-          </div>
-        )}
-        <span style={{textAlign:"right",fontSize:13,color:"#fff",fontWeight:800}}>{fmt(total)}</span>
-        {!isGlynOnly&&<><span></span><span></span></>}
-        <div style={{display:"flex",alignItems:"center",justifyContent:"center"}}>
-          <button onClick={()=>onCatDelete(cat.id)} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:4,color:"#ff6b8a",fontSize:13,fontWeight:700,cursor:"pointer",padding:"7px 6px",lineHeight:1}}>✕</button>
-        </div>
-      </div>
-      {cb.length===0&&<div style={{padding:"10px",textAlign:"center",fontSize:11,color:"#2a3050",fontStyle:"italic"}}>Drop bills here</div>}
-      {cb.map((b,i)=>(
-        <BillRow key={b.id} bill={b} idx={i} isGlynOnly={isGlynOnly}
-          editing={editingBill===b.id} onEditStart={()=>setEditingBill(b.id)}
-          onEditBlur={v=>onBillBlur(b.id,v)} onDelete={()=>onBillDelete(b.id)}
-          onMove={()=>onBillMove(b.id)} onSplitChange={onSplitChange}
-          onDragStart={()=>{dragBill.current=b.id;}}/>
-      ))}
-    </div>
-  );
-}
+// BillRow / CatSection were retired in v1.13.63: the Budget tab now renders its
+// own rows and category sections inline, in the restructured card layout.
 
 
 // -- Haptic feedback ----------------------------------------------------------
@@ -1230,6 +1143,7 @@ export default function App() {
   const [addGl,setAddGl]=useState(false);
   const [newSh,setNewSh]=useState({name:"",total:"",splitMode:null,splitValue:"",freq:"month",months:[]});
   const [newGl,setNewGl]=useState({name:"",total:"",freq:"month",months:[]});
+  const [catsOpen,setCatsOpen]=useState(false);    // categories manager sheet
   const [addingCat,setAddingCat]=useState(null);
   const [newCat,setNewCat]=useState("");
   const [dragOver,setDragOver]=useState(null);
@@ -3458,102 +3372,129 @@ const calcTimesheetTotals = days => {
           </div>
         )}
 
-        {tab==="Budget"&&(
-          <div>
-            {isOwner && (()=>{
-              const savingsRate = cr.net > 0 ? Math.round((cr.net - totalOut) / cr.net * 100) : 0;
-              const srColor = savingsRate >= 20 ? "#00c88c" : savingsRate >= 10 ? "#ffb84a" : "#ff4a6a";
-              return (
-                <div style={{...card,marginBottom:12,background:"linear-gradient(135deg,#0a1520,#0d1117)",border:"1px solid #1e2535"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                    <span style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Monthly Surplus</span>
-                    <span style={{fontSize:22,fontWeight:800,color:srColor}}>{savingsRate}%</span>
-                  </div>
-                  <div style={{background:"#1e2535",borderRadius:99,height:8,overflow:"hidden",marginBottom:6}}>
-                    <div style={{width:Math.max(0,Math.min(100,savingsRate))+"%",height:"100%",background:`linear-gradient(90deg,${srColor}88,${srColor})`,borderRadius:99,transition:"width 0.3s"}}/>
-                  </div>
-                  <div style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>
-                    (Net Pay - Total Bills) / Net Pay - <span style={{color:savingsRate>=0?"#00c88c":"#ff4a6a"}}>{fmt(Math.abs(surplus))} {surplus>=0?"saved":"overspent"}</span> per month
-                  </div>
+        {tab==="Budget"&&(()=>{
+          const isG=budTab==="glyn";
+          const bills=isG?glynBills:sharedBills;
+          const bcats=isG?glynCats:cats;
+          const bmap=isG?glynBillCats:billCats;
+          const schedRows=isG?selSchedPersonal:selSchedShared;
+          const editingId=isG?editGl:editSh;
+          const setEditing=isG?setEditGl:setEditSh;
+          const onAmt=isG?hGB:hSB;
+          const accent=isG?"#ff8c4a":"#4a9eff";
+          const listTotal=isG?selPersonal:selShMine;
+          const themName=isOwner?"Hollie":"Glyn";
+          const mineOf=b=>isOwner?billShares(b).glyn:billShares(b).hollie;
+          const themOf=b=>isOwner?billShares(b).hollie:billShares(b).glyn;
+          const rate=viewerNet>0?Math.round(selSurplus/viewerNet*100):0;
+          const rateCol=rate>=20?"#00c88c":rate>=10?"#ffb84a":"#ff4a6a";
+
+          const splitNote=b=>{
+            if(b.splitMode==="pct"&&b.splitValue!=null)return fmt(b.total)+" · "+b.splitValue+"% mine";
+            if(b.splitMode==="fixed"&&b.splitValue!=null)return fmt(b.total)+" · "+themName+" "+fmt(b.splitValue);
+            return fmt(b.total)+" · 50/50";
+          };
+
+          // One row, used for standing bills and for this month's scheduled ones.
+          const row=(key,{name,sub,amt,her,onName,onAmount,drag,tag,neg})=>(
+            <div key={key} draggable={!!drag} onDragStart={drag}
+              style={{display:"flex",alignItems:"center",gap:10,padding:"11px 13px",borderTop:"1px solid #171d2b"}}>
+              <div onClick={onName} style={{flex:1,minWidth:0,cursor:onName?"pointer":"default"}}>
+                <div style={{fontSize:13.5,color:neg?"#4ad07a":"#c8cee0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {name}
+                  {tag&&<span style={{display:"inline-block",fontSize:9,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#1d1608",color:"#ffb84a",marginLeft:6,verticalAlign:1}}>{tag}</span>}
                 </div>
-              );
-            })()}
-            {billChanges.length > 0 && (
-              <div style={{background:"#0a1525",border:"1px solid #4a9eff44",borderRadius:12,padding:"12px 14px",marginBottom:12}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                  <span style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>📊 Bills changed</span>
-                  <button onClick={dismissBillChanges} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer"}}>Dismiss</button>
-                </div>
-                {billChanges.map((c,i)=>{
-                  const diff = c.new - c.old;
-                  const up = diff > 0;
+                {sub&&<div style={{fontSize:10.5,color:"#3a4460",marginTop:2}}>{sub}</div>}
+              </div>
+              <div onClick={onAmount} style={{textAlign:"right",cursor:onAmount?"pointer":"default"}}>
+                <div style={{fontSize:13.5,fontWeight:700,color:neg?"#4ad07a":"#e8eaf0"}}>{fmtS(amt)}</div>
+                {her!=null&&<div style={{fontSize:10.5,color:"#3a4460",marginTop:2}}>{themName.toLowerCase()} {fmtS(her)}</div>}
+              </div>
+            </div>
+          );
+
+          const editRow=(b)=>(
+            <div key={b.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 13px",borderTop:"1px solid #171d2b",background:"#0f141f"}}>
+              <span style={{flex:1,fontSize:12,color:"#5a6480"}}>Total for {b.name}</span>
+              <input autoFocus type="number" defaultValue={String(b.total)}
+                onBlur={e=>onAmt(b.id,e.target.value)}
+                onKeyDown={e=>{if(e.key==="Enter")onAmt(b.id,e.target.value);}}
+                style={{width:96,background:"#1e2535",border:"1px solid "+accent,borderRadius:6,color:"#e8eaf0",fontSize:13,padding:"7px 8px",textAlign:"right"}}/>
+            </div>
+          );
+
+          const billRows=list=>list.map(b=>editingId===b.id?editRow(b):row(b.id,{
+            name:b.name,
+            sub:isG?null:splitNote(b),
+            amt:isG?b.total:mineOf(b),
+            her:isG?null:themOf(b),
+            onName:()=>{haptic();setMoveBill({id:b.id,isGlyn:isG});},
+            onAmount:()=>{haptic();setEditing(b.id);},
+            drag:()=>{dragBill.current=b.id;},
+          }));
+
+          const section=(label,value,list,catId)=>(
+            <div key={label+(catId||"")}
+              onDragOver={catId!==undefined?(e=>{e.preventDefault();setDragOver(catId);}):undefined}
+              onDragLeave={catId!==undefined?(()=>setDragOver(null)):undefined}
+              onDrop={catId!==undefined?(()=>drop(catId,isG)):undefined}
+              style={{background:dragOver===catId&&catId!==undefined?"#15203a":"transparent"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"11px 13px 5px"}}>
+                <span style={{fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase",color:"#5a6480"}}>{label}</span>
+                <span style={{fontSize:11,color:"#3a4460"}}>{fmtS(value)}</span>
+              </div>
+              {list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"4px 13px 8px"}}>Drop bills here</div>}
+              {billRows(list)}
+            </div>
+          );
+
+          const uncat=bills.filter(b=>!bmap[b.id]);
+
+          return (
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+
+            {/* ── header: month, what's left, and the two totals ── */}
+            <div style={{...card,borderRadius:12,padding:"12px 12px 13px",display:"flex",flexDirection:"column",gap:11}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
+                <span style={{fontSize:14,fontWeight:800,color:"#e8eaf0"}}>{laSel?MONTHS[laSel.m-1]+" "+laSel.yr:""}</span>
+                {selIsNow
+                  ? <span style={{fontSize:10.5,fontWeight:700,padding:"3px 8px",borderRadius:20,background:"#0a2018",color:rateCol,border:"1px solid #17553f"}}>{rate}% left over</span>
+                  : <button onClick={()=>{haptic();setSelIdx(0);}} style={{background:"transparent",border:"1px solid #2a5a8a",borderRadius:20,color:"#8ec5ff",fontSize:10.5,fontWeight:700,padding:"3px 10px",cursor:"pointer"}}>Back to this month</button>}
+              </div>
+
+              <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4,WebkitOverflowScrolling:"touch"}}>
+                {lookAheadMonths.map((r,i)=>{
+                  const on=i===selIdx;
                   return (
-                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:11}}>
-                      <span style={{color:"#8892b0"}}>{c.name}</span>
-                      <span>
-                        <span style={{color:"#5a6480"}}>{fmt(c.old)} → </span>
-                        <span style={{color:"#e8eaf0",fontWeight:600}}>{fmt(c.new)}</span>
-                        <span style={{color:up?"#ff8c4a":"#00c88c",marginLeft:6,fontWeight:700}}>
-                          {up?"+":""}{fmt(diff)}
-                        </span>
-                      </span>
-                    </div>
+                    <button key={r.key} onClick={()=>{haptic();setSelIdx(i);}} style={{
+                      flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#0d1117",color:on?"#fff":(i===0?"#8ec5ff":"#5a6480"),
+                      border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"7px 11px",fontSize:11.5,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                      {MONTHS[r.m-1]}{r.m===1||i===0?" "+String(r.yr).slice(2):""}
+                      {r.hits.length>0&&<span style={{position:"absolute",top:4,right:4,width:5,height:5,borderRadius:3,background:on?"#fff":"#ffb84a"}}/>}
+                    </button>
                   );
                 })}
               </div>
-            )}
 
-            {isOwner ? (
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-              {[
-                {label:"Shared (my half)",value:fmt(selShMine),   accent:"#4a9eff"},
-                {label:"My Bills",         value:fmt(selPersonal), accent:"#ff8c4a"},
-                {label:"Surplus",          value:fmtS(selSurplus), accent:selSurplus>=0?"#00c88c":"#ff4a6a"},
-              ].map(k=>(
-                <div key={k.label} style={{...card,textAlign:"center",padding:"10px 6px"}}>
-                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>{k.label}</div>
-                  <div style={{fontSize:15,fontWeight:700,color:k.accent}}>{k.value}</div>
+              <div style={{display:"flex",alignItems:"flex-end",gap:14}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Left over</div>
+                  <div style={{fontSize:21,fontWeight:800,color:selSurplus>=0?"#00c88c":"#ff4a6a"}}>{fmtS(selSurplus)}</div>
                 </div>
-              ))}
-            </div>
-            ) : (
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-              {[
-                {label:"Shared (my share)",value:fmt(selShMine),    accent:"#c84aff"},
-                {label:"My Bills",         value:fmt(selPersonal),  accent:"#ff8c4a"},
-                {label:"Surplus",          value:fmtS(selSurplus),  accent:selSurplus>=0?"#00c88c":"#ff4a6a"},
-              ].map(k=>(
-                <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
-                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>{k.label}</div>
-                  <div style={{fontSize:16,fontWeight:800,color:k.accent}}>{k.value}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Shared</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#4a9eff"}}>{fmtS(selShMine)}</div>
                 </div>
-              ))}
-            </div>
-            )}
-
-            {/* month strip - the bills list below renders for the selected month */}
-            <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:6,marginBottom:selIsNow?10:6,WebkitOverflowScrolling:"touch"}}>
-              {lookAheadMonths.map((r,i)=>{
-                const on=i===selIdx;
-                return (
-                  <button key={r.key} onClick={()=>{haptic();setSelIdx(i);}} style={{
-                    flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#141824",color:on?"#fff":(i===0?"#8ec5ff":"#5a6480"),
-                    border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"7px 11px",fontSize:11.5,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
-                    {MONTHS[r.m-1]}{r.m===1||i===0?" "+String(r.yr).slice(2):""}
-                    {r.hits.length>0&&<span style={{position:"absolute",top:4,right:4,width:5,height:5,borderRadius:3,background:on?"#fff":"#ffb84a"}}/>}
-                  </button>
-                );
-              })}
-            </div>
-            {!selIsNow&&(
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,background:"#15203a",border:"1px solid #2a3a55",borderRadius:8,padding:"8px 10px",marginBottom:10}}>
-                <span style={{fontSize:11,color:"#8ec5ff",fontWeight:600}}>Viewing {selLabel} · standing bills are shared across every month</span>
-                <button onClick={()=>{haptic();setSelIdx(0);}} style={{flex:"0 0 auto",background:"transparent",border:"1px solid #2a5a8a",borderRadius:6,color:"#8ec5ff",fontSize:10.5,fontWeight:700,padding:"5px 8px",cursor:"pointer"}}>This month</button>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Mine</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#ff8c4a"}}>{fmtS(selPersonal)}</div>
+                </div>
               </div>
-            )}
+            </div>
 
-            <div style={{display:"flex",gap:4,marginBottom:12}}>
-              {[["shared","Shared Bills"],["glyn","My Bills"]].map(([v,l])=>(
+            {/* ── which list ── */}
+            <div style={{display:"flex",gap:4}}>
+              {[["shared","Shared"],["glyn","Mine"]].map(([v,l])=>(
                 <button key={v} onClick={()=>setBudTab(v)} style={{
                   flex:1,background:budTab===v?"#4a9eff":"#141824",color:budTab===v?"#fff":"#5a6480",
                   border:"1px solid "+(budTab===v?"#4a9eff":"#1e2535"),borderRadius:8,padding:"9px",fontSize:12,fontWeight:600,cursor:"pointer"
@@ -3561,31 +3502,138 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
 
-            {(()=>{
-              const activeCount=(budTab==="shared"?selSchedShared:selSchedPersonal).length;
-              return (
-                <button onClick={()=>{haptic();setSchedForm(null);setSchedOpen(true);}}
-                  style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:"#161b28",border:"1px dashed #2a3a55",borderRadius:8,color:"#8ec5ff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer",marginBottom:12}}>
-                  📅 Non-monthly bills{activeCount?` · ${activeCount} due ${selIsNow?"this month":selLabel}`:""}
-                </button>
-              );
-            })()}
+            {/* ── the bills ── */}
+            <div style={{background:"#141824",border:"1px solid #1e2535",borderRadius:12,overflow:"hidden"}}>
+              {bcats.map(c=>section(c.name,
+                bills.filter(b=>bmap[b.id]===c.id).reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),
+                bills.filter(b=>bmap[b.id]===c.id),c.id))}
+              {uncat.length>0&&section("Uncategorised",
+                uncat.reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),uncat,null)}
+              {bills.length===0&&<div style={{fontSize:12,color:"#3a4460",textAlign:"center",padding:"18px 12px"}}>No bills yet — add your first below.</div>}
 
-            {/* ── Year view: all 12 months side by side; tap one to open it above ── */}
-            <div style={{...card,marginBottom:12,padding:0}}>
-              <div onClick={()=>{haptic();setLaOpen(v=>!v);}} style={{padding:"11px 12px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{fontSize:12,fontWeight:600,color:"#8ec5ff"}}>📆 Year view · next 12 months</div>
-                <span style={{color:"#3a4460",fontSize:12}}>{laOpen?"⌃":"⌄"}</span>
-              </div>
-              {laOpen&&(
-                <div style={{padding:"0 10px 10px"}}>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",padding:"6px 6px 8px",fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase"}}>
-                    <span>Month</span>
-                    <span style={{textAlign:"right",color:"#4a9eff"}}>Shared</span>
-                    <span style={{textAlign:"right",color:"#ff8c4a"}}>Mine</span>
-                    <span style={{textAlign:"right",color:"#00c88c"}}>Left</span>
+              {schedRows.length>0&&(
+                <div>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"11px 13px 5px",borderTop:"1px solid #1e2535"}}>
+                    <span style={{fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase",color:"#ffb84a"}}>Only in {selLabel}</span>
+                    <span style={{fontSize:11,color:"#3a4460"}}>{fmtS(schedRows.reduce((s,b)=>s+(isG?(Number(b.total)||0):schedShares(b)[isOwner?"glyn":"hollie"]),0))}</span>
                   </div>
-                  {lookAheadMonths.map((r,i)=>(
+                  {schedRows.map(b=>{
+                    const sh=schedShares(b);
+                    const myAmt=isG?(Number(b.total)||0):sh[isOwner?"glyn":"hollie"];
+                    return row("s"+b.id,{
+                      name:b.name,
+                      sub:(isG?fmt(b.total):splitNote({total:Number(b.total)||0,splitMode:b.split_mode,splitValue:b.split_value}))+" · ends "+lastDayLabel(laSel?laSel.m:schedNowMonth),
+                      amt:myAmt,
+                      her:isG?null:sh[isOwner?"hollie":"glyn"],
+                      neg:Number(b.total)<0,
+                      tag:b.freq==="once"?"ONE-OFF":"ANNUAL",
+                      onName:()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||(laSel?laSel.yr:schedNowYear)});setSchedOpen(true);},
+                      onAmount:()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||(laSel?laSel.yr:schedNowYear)});setSchedOpen(true);},
+                    });
+                  })}
+                </div>
+              )}
+
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:13,background:"#0d1117",borderTop:"1px solid #2a3050",fontSize:13.5,fontWeight:800}}>
+                <span style={{color:"#8892b0"}}>{isG?"My bills":"My share"} · {selLabel}</span>
+                <span style={{color:accent}}>{fmtS(listTotal)}</span>
+              </div>
+            </div>
+
+            {/* ── add ── */}
+            {!(isG?addGl:addSh)&&(
+              <button onClick={()=>{haptic();isG?setAddGl(true):setAddSh(true);}}
+                style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:10,color:"#06101c",fontSize:13.5,fontWeight:700,padding:"13px",cursor:"pointer"}}>
+                + Add bill
+              </button>
+            )}
+
+            {addSh&&!isG&&(
+              <div style={{background:"#0a1a10",border:"1px solid #00c88c",borderRadius:10,padding:12}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:8}}>
+                  <input autoFocus placeholder="Bill name" value={newSh.name} onChange={e=>setNewSh(r=>({...r,name:e.target.value}))} style={{...inp,padding:"8px",fontSize:12}}/>
+                  <input placeholder="£ Total" type="number" value={newSh.total} onChange={e=>setNewSh(r=>({...r,total:e.target.value}))} style={{...inp,padding:"8px",fontSize:12,textAlign:"right"}}/>
+                </div>
+                <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
+                <div style={{display:"flex",gap:6,marginBottom:8}}>
+                  {[{k:"month",l:"Every month"},{k:"once",l:selIsNow?"This month":selLabel+" only"},{k:"annual",l:"Every year"}].map(o=>(
+                    <button key={o.k} onClick={()=>setNewSh(r=>({...r,freq:o.k,months:o.k==="annual"?(r.months.length?r.months:[laSel?laSel.m:schedNowMonth]):[]}))}
+                      style={{flex:1,background:newSh.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.freq===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"7px 2px",cursor:"pointer"}}>{o.l}</button>
+                  ))}
+                </div>
+                {newSh.freq==="annual"&&(
+                  <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>
+                    {MONTHS.map((mn,i)=>{const m=i+1;const on=newSh.months.includes(m);return (
+                      <button key={m} onClick={()=>setNewSh(r=>({...r,months:on?r.months.filter(x=>x!==m):[...r.months,m]}))}
+                        style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":"#5a6480",fontSize:10,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
+                    );})}
+                  </div>
+                )}
+                <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>Split</div>
+                <div style={{display:"flex",gap:6,marginBottom:8}}>
+                  {[{k:null,l:"50/50"},{k:"pct",l:"% split"},{k:"fixed",l:"£ fixed"}].map(o=>(
+                    <button key={o.l} onClick={()=>setNewSh(r=>({...r,splitMode:o.k,splitValue:""}))}
+                      style={{flex:1,background:newSh.splitMode===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.splitMode===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.splitMode===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"7px 2px",cursor:"pointer"}}>{o.l}</button>
+                  ))}
+                </div>
+                {newSh.splitMode&&(
+                  <input placeholder={newSh.splitMode==="pct"?"Your % (e.g. 60)":themName+" pays £"} type="number" value={newSh.splitValue}
+                    onChange={e=>setNewSh(r=>({...r,splitValue:e.target.value}))}
+                    style={{...inp,padding:"8px",fontSize:12,marginBottom:8,width:"100%",boxSizing:"border-box"}}/>
+                )}
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={addShBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:7,color:"#000",fontWeight:700,fontSize:12.5,padding:"10px",cursor:"pointer"}}>Add bill</button>
+                  <button onClick={()=>setAddSh(false)} style={{background:"#1e2535",border:"none",borderRadius:7,color:"#5a6480",fontSize:12.5,padding:"10px 14px",cursor:"pointer"}}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {addGl&&isG&&(
+              <div style={{background:"#0a1a10",border:"1px solid #00c88c",borderRadius:10,padding:12}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:8}}>
+                  <input autoFocus placeholder="Bill name" value={newGl.name} onChange={e=>setNewGl(r=>({...r,name:e.target.value}))} style={{...inp,padding:"8px",fontSize:12}}/>
+                  <input placeholder="£ Total" type="number" value={newGl.total} onChange={e=>setNewGl(r=>({...r,total:e.target.value}))} style={{...inp,padding:"8px",fontSize:12,textAlign:"right"}}/>
+                </div>
+                <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
+                <div style={{display:"flex",gap:6,marginBottom:8}}>
+                  {[{k:"month",l:"Every month"},{k:"once",l:selIsNow?"This month":selLabel+" only"},{k:"annual",l:"Every year"}].map(o=>(
+                    <button key={o.k} onClick={()=>setNewGl(r=>({...r,freq:o.k,months:o.k==="annual"?(r.months.length?r.months:[laSel?laSel.m:schedNowMonth]):[]}))}
+                      style={{flex:1,background:newGl.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newGl.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newGl.freq===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"7px 2px",cursor:"pointer"}}>{o.l}</button>
+                  ))}
+                </div>
+                {newGl.freq==="annual"&&(
+                  <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>
+                    {MONTHS.map((mn,i)=>{const m=i+1;const on=newGl.months.includes(m);return (
+                      <button key={m} onClick={()=>setNewGl(r=>({...r,months:on?r.months.filter(x=>x!==m):[...r.months,m]}))}
+                        style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":"#5a6480",fontSize:10,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
+                    );})}
+                  </div>
+                )}
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={addGlBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:7,color:"#000",fontWeight:700,fontSize:12.5,padding:"10px",cursor:"pointer"}}>Add bill</button>
+                  <button onClick={()=>setAddGl(false)} style={{background:"#1e2535",border:"none",borderRadius:7,color:"#5a6480",fontSize:12.5,padding:"10px 14px",cursor:"pointer"}}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {/* ── quiet footer ── */}
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>{haptic();setLaOpen(v=>!v);}} style={{flex:1,background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:"#8892b0",fontSize:11.5,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>📆 Year view</button>
+              <button onClick={()=>{haptic();setCatsOpen(true);}} style={{flex:1,background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:"#8892b0",fontSize:11.5,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>🗂 Categories</button>
+              <button onClick={()=>{haptic();setSchedForm(null);setSchedOpen(true);}} style={{flex:1,background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:"#8892b0",fontSize:11.5,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>📅 Non-monthly{schedRows.length?" · "+schedRows.length:""}</button>
+            </div>
+
+            {laOpen&&(
+              <div style={{...card,borderRadius:12,padding:"4px 10px 10px"}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",padding:"10px 6px 8px",fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase"}}>
+                  <span>Month</span>
+                  <span style={{textAlign:"right",color:"#4a9eff"}}>Shared</span>
+                  <span style={{textAlign:"right",color:"#ff8c4a"}}>Mine</span>
+                  <span style={{textAlign:"right",color:"#00c88c"}}>Left</span>
+                </div>
+                {lookAheadMonths.map((r,i)=>{
+                  const vs=viewerNet-r.total;
+                  return (
                     <div key={r.key} onClick={()=>{haptic();setSelIdx(i);setLaOpen(false);}}
                       style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",alignItems:"center",
                         padding:"9px 6px",fontSize:12.5,borderTop:"1px solid #1e2535",cursor:"pointer",
@@ -3596,202 +3644,27 @@ const calcTimesheetTotals = days => {
                       </span>
                       <span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(r.shared)}</span>
                       <span style={{textAlign:"right",color:"#ff8c4a",fontWeight:600}}>{fmt(r.personal)}</span>
-                      {(()=>{const vs=viewerNet-r.total;return <span style={{textAlign:"right",fontWeight:700,color:vs>=0?"#00c88c":"#ff4a6a"}}>{fmtS(vs)}</span>;})()}
+                      <span style={{textAlign:"right",fontWeight:700,color:vs>=0?"#00c88c":"#ff4a6a"}}>{fmtS(vs)}</span>
                     </div>
-                  ))}
-                  <div style={{fontSize:10,color:"#3a4460",padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
-                    Tap a month to open it above. "Left" assumes pay stays at your current estimate ({fmt(viewerNet)} net) — no overtime or holiday variation.
-                  </div>
+                  );
+                })}
+                <div style={{fontSize:10,color:"#3a4460",padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
+                  Tap a month to open it. "Left" assumes pay stays at your current estimate ({fmt(viewerNet)} net).
                 </div>
-              )}
-            </div>
-
-            {budTab==="shared"&&(
-              <div>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                  <span style={{fontSize:10,color:"#3a4460",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Categories</span>
-                  <button onClick={()=>setAddingCat("shared")} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:6,color:"#00c88c",fontSize:11,fontWeight:600,padding:"5px 10px",cursor:"pointer"}}>+ New</button>
-                </div>
-                {addingCat==="shared"&&(
-                  <div style={{display:"flex",gap:6,marginBottom:10}}>
-                    <input autoFocus placeholder="Category name..." value={newCat} onChange={e=>setNewCat(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCategory(false)} style={{...inp,flex:1,padding:"6px 8px",fontSize:12}}/>
-                    <button onClick={()=>addCategory(false)} style={{background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"6px 12px",cursor:"pointer"}}>Add</button>
-                    <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>✕</button>
-                  </div>
-                )}
-                <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"10px 12px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:10,fontWeight:700,color:"#7a8499",letterSpacing:1.5,textTransform:"uppercase",border:"1px solid #1e2535",borderBottom:"none"}}>
-                  <span>Bill</span><span style={{textAlign:"right"}}>Total</span><span style={{textAlign:"right",color:"#4a9eff"}}>Glyn</span><span style={{textAlign:"right",color:"#c84aff"}}>Hollie</span><span></span>
-                </div>
-                {cats.map(cat=>(
-                  <CatSection key={cat.id} cat={cat} bills={sharedBills} billCats={billCats} isGlynOnly={false}
-                    editingBill={editSh} setEditingBill={setEditSh} onBillBlur={hSB} onBillDelete={delSh}
-                    onCatDelete={id=>delCat(id,false)} onCatRename={(id,n)=>renCat(id,n,false)}
-                    onBillMove={id=>setMoveBill({id,isGlyn:false})} onSplitChange={hSplit}
-                    dragBill={dragBill} setDragOver={setDragOver} dragOver={dragOver} onDrop={id=>drop(id,false)}/>
-                ))}
-                {(()=>{const u=sharedBills.filter(b=>!billCats[b.id]);if(!u.length)return null;return(
-                  <div onDragOver={e=>{e.preventDefault();setDragOver("ush");}} onDragLeave={()=>setDragOver(null)} onDrop={()=>drop(null,false)}
-                    style={{border:"1px solid "+(dragOver==="ush"?"#4a9eff":"#1e2535"),borderTop:"none"}}>
-                    <div style={{padding:"8px 10px",background:dragOver==="ush"?"#0d1525":"#0f1520"}}><span style={{fontSize:10,fontWeight:700,color:"#3a4460",textTransform:"uppercase",letterSpacing:1}}>Uncategorised</span></div>
-                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={false} editing={editSh===b.id} onEditStart={()=>setEditSh(b.id)} onEditBlur={v=>hSB(b.id,v)} onDelete={()=>delSh(b.id)} onMove={()=>setMoveBill({id:b.id,isGlyn:false})} onSplitChange={hSplit} onDragStart={()=>{dragBill.current=b.id;}}/>)}
-                  </div>
-                );})()}
-                {addSh&&(
-                  <div style={{border:"1px solid #00c88c",borderTop:"none",background:"#0a1a10",padding:12}}>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:6}}>
-                      <input autoFocus placeholder="Bill name" value={newSh.name} onChange={e=>setNewSh(r=>({...r,name:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12}}/>
-                      <input placeholder="£ Total" type="number" value={newSh.total} onChange={e=>setNewSh(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
-                    </div>
-                    <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
-                    <div style={{display:"flex",gap:6,marginBottom:6}}>
-                      {[{k:"month",l:"Every month"},{k:"once",l:selIsNow?"This month":selLabel+" only"},{k:"annual",l:"Every year"}].map(o=>(
-                        <button key={o.k} onClick={()=>setNewSh(r=>({...r,freq:o.k,months:o.k==="annual"?(r.months.length?r.months:[laSel?laSel.m:schedNowMonth]):[]}))}
-                          style={{flex:1,background:newSh.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.freq===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"6px 2px",cursor:"pointer"}}>{o.l}</button>
-                      ))}
-                    </div>
-                    {newSh.freq==="annual"&&(
-                      <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:6}}>
-                        {MONTHS.map((mn,i)=>{const m=i+1;const on=newSh.months.includes(m);return (
-                          <button key={m} onClick={()=>setNewSh(r=>({...r,months:on?r.months.filter(x=>x!==m):[...r.months,m]}))}
-                            style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":"#5a6480",fontSize:10,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
-                        );})}
-                      </div>
-                    )}
-                    <div style={{display:"flex",gap:6,marginBottom:6}}>
-                      {[{k:null,l:"50/50"},{k:"pct",l:"% split"},{k:"fixed",l:"£ fixed"}].map(o=>(
-                        <button key={o.l} onClick={()=>setNewSh(r=>({...r,splitMode:o.k,splitValue:""}))}
-                          style={{flex:1,background:newSh.splitMode===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.splitMode===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.splitMode===o.k?"#00c88c":"#5a6480",fontSize:11,fontWeight:700,padding:"6px",cursor:"pointer"}}>{o.l}</button>
-                      ))}
-                    </div>
-                    {newSh.splitMode&&(
-                      <input placeholder={newSh.splitMode==="pct"?"Your % (e.g. 60)":"Hollie pays £"} type="number" value={newSh.splitValue}
-                        onChange={e=>setNewSh(r=>({...r,splitValue:e.target.value}))}
-                        style={{...inp,padding:"6px 8px",fontSize:12,marginBottom:10,width:"100%",boxSizing:"border-box"}}/>
-                    )}
-                    {!newSh.splitMode&&<div style={{height:10}}/>}
-                    <div style={{display:"flex",gap:6}}>
-                      <button onClick={addShBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"8px",cursor:"pointer"}}>Add Bill</button>
-                      <button onClick={()=>setAddSh(false)} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"8px 12px",cursor:"pointer"}}>Cancel</button>
-                    </div>
-                  </div>
-                )}
-                {selSchedShared.length>0&&(
-                  <div style={{border:"1px solid #2a3a55",borderTop:"none"}}>
-                    <div style={{padding:"8px 10px",background:"#0e1726"}}><span style={{fontSize:10,fontWeight:700,color:"#8ec5ff",textTransform:"uppercase",letterSpacing:1}}>📅 Due {selIsNow?"this month":selLabel}</span></div>
-                    {selSchedShared.map(b=>{
-                      const sh=schedShares(b);
-                      return (
-                        <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||(laSel?laSel.yr:schedNowYear)});setSchedOpen(true);}}
-                          style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",alignItems:"center",padding:"10px",fontSize:12,borderTop:"1px solid #141824",background:"#0c1320",cursor:"pointer"}}>
-                          <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:Number(b.total)<0?"#4ad07a":"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(laSel?laSel.m:schedNowMonth)}</span></span>
-                          <span style={{textAlign:"right",color:Number(b.total)<0?"#4ad07a":"#8892b0"}}>{fmtS(b.total)}</span>
-                          <span style={{textAlign:"right",color:sh.glyn<0?"#4ad07a":"#4a9eff"}}>{fmtS(sh.glyn)}</span>
-                          <span style={{textAlign:"right",color:sh.hollie<0?"#4ad07a":"#c84aff"}}>{fmtS(sh.hollie)}</span>
-                          <span style={{textAlign:"center",color:"#3a4460",fontSize:13}}>›</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"10px 10px",fontSize:11,fontWeight:700,background:"#141824",border:"1px solid #1e2535",borderTop:"1px solid #2a3050"}}>
-                  <span style={{color:"#5a6480"}}>TOTAL</span>
-                  <span style={{textAlign:"right",color:"#5a6480"}}>{fmtS(sharedBills.reduce((s,b)=>s+b.total,0)+selSchedShTotal)}</span>
-                  <span style={{textAlign:"right",color:"#4a9eff"}}>{fmtS(selShGlyn)}</span>
-                  <span style={{textAlign:"right",color:"#c84aff"}}>{fmtS(selShHollie)}</span>
-                  <span></span>
-                </div>
-                <div style={{display:"flex",gap:8,marginTop:10}}>
-                  <button onClick={()=>setAddSh(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
-                  {isOwner && <button onClick={()=>{if(!window.confirm("Reset all shared bills to defaults? This cannot be undone."))return;updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>}
-                </div>
-                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap total to edit · tap a bill to rename or move it · double-tap a category to rename</p>
               </div>
             )}
 
-            {budTab==="glyn"&&(
-              <div>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                  <span style={{fontSize:10,color:"#3a4460",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Categories</span>
-                  <button onClick={()=>setAddingCat("glyn")} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:6,color:"#00c88c",fontSize:11,fontWeight:600,padding:"5px 10px",cursor:"pointer"}}>+ New</button>
-                </div>
-                {addingCat==="glyn"&&(
-                  <div style={{display:"flex",gap:6,marginBottom:10}}>
-                    <input autoFocus placeholder="Category name..." value={newCat} onChange={e=>setNewCat(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCategory(true)} style={{...inp,flex:1,padding:"6px 8px",fontSize:12}}/>
-                    <button onClick={()=>addCategory(true)} style={{background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"6px 12px",cursor:"pointer"}}>Add</button>
-                    <button onClick={()=>{setAddingCat(null);setNewCat("");}} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"6px 10px",cursor:"pointer"}}>✕</button>
-                  </div>
-                )}
-                <div style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",padding:"10px 12px",background:"#0d1117",borderRadius:"8px 8px 0 0",fontSize:10,fontWeight:700,color:"#7a8499",letterSpacing:1.5,textTransform:"uppercase",border:"1px solid #ff8c4a",borderBottom:"none"}}>
-                  <span>Bill</span><span style={{textAlign:"right",color:"#ff8c4a"}}>Amount</span><span></span>
-                </div>
-                {glynCats.map(cat=>(
-                  <CatSection key={cat.id} cat={cat} bills={glynBills} billCats={glynBillCats} isGlynOnly={true}
-                    editingBill={editGl} setEditingBill={setEditGl} onBillBlur={hGB} onBillDelete={delGl}
-                    onCatDelete={id=>delCat(id,true)} onCatRename={(id,n)=>renCat(id,n,true)}
-                    onBillMove={id=>setMoveBill({id,isGlyn:true})}
-                    dragBill={dragBill} setDragOver={setDragOver} dragOver={dragOver} onDrop={id=>drop(id,true)}/>
-                ))}
-                {(()=>{const u=glynBills.filter(b=>!glynBillCats[b.id]);if(!u.length)return null;return(
-                  <div onDragOver={e=>{e.preventDefault();setDragOver("ugl");}} onDragLeave={()=>setDragOver(null)} onDrop={()=>drop(null,true)}
-                    style={{border:"1px solid "+(dragOver==="ugl"?"#4a9eff":"#ff8c4a"),borderTop:"none"}}>
-                    <div style={{padding:"8px 10px",background:dragOver==="ugl"?"#0d1525":"#0f1520"}}><span style={{fontSize:10,fontWeight:700,color:"#ff8c4a",textTransform:"uppercase",letterSpacing:1}}>Uncategorised</span></div>
-                    {u.map((b,i)=><BillRow key={b.id} bill={b} idx={i} isGlynOnly={true} editing={editGl===b.id} onEditStart={()=>setEditGl(b.id)} onEditBlur={v=>hGB(b.id,v)} onDelete={()=>delGl(b.id)} onMove={()=>setMoveBill({id:b.id,isGlyn:true})} onDragStart={()=>{dragBill.current=b.id;}}/>)}
-                  </div>
-                );})()}
-                {addGl&&(
-                  <div style={{border:"1px solid #00c88c",borderTop:"none",background:"#0a1a10",padding:12}}>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:10}}>
-                      <input autoFocus placeholder="Bill name" value={newGl.name} onChange={e=>setNewGl(r=>({...r,name:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12}}/>
-                      <input placeholder="£ Total" type="number" value={newGl.total} onChange={e=>setNewGl(r=>({...r,total:e.target.value}))} style={{...inp,padding:"6px 8px",fontSize:12,textAlign:"right"}}/>
-                    </div>
-                    <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
-                    <div style={{display:"flex",gap:6,marginBottom:10}}>
-                      {[{k:"month",l:"Every month"},{k:"once",l:selIsNow?"This month":selLabel+" only"},{k:"annual",l:"Every year"}].map(o=>(
-                        <button key={o.k} onClick={()=>setNewGl(r=>({...r,freq:o.k,months:o.k==="annual"?(r.months.length?r.months:[laSel?laSel.m:schedNowMonth]):[]}))}
-                          style={{flex:1,background:newGl.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newGl.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newGl.freq===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"6px 2px",cursor:"pointer"}}>{o.l}</button>
-                      ))}
-                    </div>
-                    {newGl.freq==="annual"&&(
-                      <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:10}}>
-                        {MONTHS.map((mn,i)=>{const m=i+1;const on=newGl.months.includes(m);return (
-                          <button key={m} onClick={()=>setNewGl(r=>({...r,months:on?r.months.filter(x=>x!==m):[...r.months,m]}))}
-                            style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":"#5a6480",fontSize:10,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
-                        );})}
-                      </div>
-                    )}
-                    <div style={{display:"flex",gap:6}}>
-                      <button onClick={addGlBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:6,color:"#000",fontWeight:700,fontSize:12,padding:"8px",cursor:"pointer"}}>Add Bill</button>
-                      <button onClick={()=>setAddGl(false)} style={{background:"#1e2535",border:"none",borderRadius:6,color:"#5a6480",fontSize:12,padding:"8px 12px",cursor:"pointer"}}>Cancel</button>
-                    </div>
-                  </div>
-                )}
-                {selSchedPersonal.length>0&&(
-                  <div style={{border:"1px solid #2a3a55",borderTop:"none"}}>
-                    <div style={{padding:"8px 10px",background:"#0e1726"}}><span style={{fontSize:10,fontWeight:700,color:"#8ec5ff",textTransform:"uppercase",letterSpacing:1}}>📅 Due {selIsNow?"this month":selLabel}</span></div>
-                    {selSchedPersonal.map(b=>(
-                      <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||(laSel?laSel.yr:schedNowYear)});setSchedOpen(true);}}
-                        style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",alignItems:"center",padding:"10px",fontSize:12,borderTop:"1px solid #141824",background:"#0c1320",cursor:"pointer"}}>
-                        <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:Number(b.total)<0?"#4ad07a":"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(laSel?laSel.m:schedNowMonth)}</span></span>
-                        <span style={{textAlign:"right",color:Number(b.total)<0?"#4ad07a":"#ff8c4a"}}>{fmtS(b.total)}</span>
-                        <span style={{textAlign:"center",color:"#3a4460",fontSize:13}}>›</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",padding:"10px 10px",fontSize:11,fontWeight:700,background:"#141824",border:"1px solid #ff8c4a",borderTop:"1px solid #2a3050"}}>
-                  <span style={{color:"#5a6480"}}>TOTAL</span>
-                  <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmtS(selPersonal)}</span>
-                  <span></span>
-                </div>
-                <div style={{display:"flex",gap:8,marginTop:10}}>
-                  <button onClick={()=>setAddGl(true)} style={{flex:1,background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>+ Add Bill</button>
-                  {isOwner && <button onClick={()=>{if(!window.confirm("Reset all personal bills to defaults? This cannot be undone."))return;updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}} style={{background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"10px 12px",cursor:"pointer"}}>Reset</button>}
-                </div>
-                <p style={{fontSize:10,color:"#3a4460",marginTop:8,textAlign:"center"}}>Tap amount to edit · tap a bill to rename or move it · double-tap a category to rename</p>
-              </div>
+            {isOwner&&(
+              <button onClick={()=>{
+                if(isG){if(!window.confirm("Reset all personal bills to defaults? This cannot be undone."))return;updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}
+                else{if(!window.confirm("Reset all shared bills to defaults? This cannot be undone."))return;updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}
+              }} style={{background:"transparent",border:"none",color:"#2a3050",fontSize:10.5,padding:"2px 0 4px",cursor:"pointer",alignSelf:"center"}}>
+                Reset {isG?"my":"shared"} bills to defaults
+              </button>
             )}
           </div>
-        )}
+          );
+        })()}
 
         {tab==="Pay Calc"&&!isOwner&&(
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -5323,6 +5196,43 @@ const calcTimesheetTotals = days => {
       )}
 
       {/* Move-to-category sheet */}
+      {catsOpen&&(()=>{
+        const isG=budTab==="glyn";
+        const list=isG?glynCats:cats;
+        const bmap=isG?glynBillCats:billCats;
+        const countIn=id=>(isG?glynBills:sharedBills).filter(b=>bmap[b.id]===id).length;
+        return(
+          <div onClick={()=>{setCatsOpen(false);setAddingCat(null);setNewCat("");}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
+            <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"78vh",overflowY:"auto"}}>
+              <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 10px"}}/>
+              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 10px"}}>Categories · {isG?"my bills":"shared bills"}</div>
+              {list.length===0&&<div style={{fontSize:12,color:"#5a6480",padding:"6px 4px 12px"}}>No categories yet. Bills sit under "Uncategorised" until you add one.</div>}
+              {list.map(c=>(
+                <div key={c.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                  <input defaultValue={c.name}
+                    onBlur={e=>{const v=e.target.value.trim();if(v&&v!==c.name)renCat(c.id,v,isG);}}
+                    style={{flex:1,background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:14,fontWeight:600,padding:"11px 12px"}}/>
+                  <span style={{fontSize:10.5,color:"#3a4460",width:52,textAlign:"right"}}>{countIn(c.id)} bill{countIn(c.id)===1?"":"s"}</span>
+                  <button onClick={()=>{haptic("medium");delCat(c.id,isG);}} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:7,color:"#ff6b8a",fontSize:13,fontWeight:700,padding:"9px 11px",cursor:"pointer"}}>✕</button>
+                </div>
+              ))}
+              {addingCat?(
+                <div style={{display:"flex",gap:6,marginTop:8}}>
+                  <input autoFocus placeholder="Category name" value={newCat} onChange={e=>setNewCat(e.target.value)}
+                    onKeyDown={e=>e.key==="Enter"&&addCategory(isG)}
+                    style={{flex:1,background:"#0d1117",border:"1px solid #00c88c",borderRadius:8,color:"#e8eaf0",fontSize:14,padding:"11px 12px"}}/>
+                  <button onClick={()=>addCategory(isG)} style={{background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontWeight:700,fontSize:13,padding:"11px 15px",cursor:"pointer"}}>Add</button>
+                </div>
+              ):(
+                <button onClick={()=>{haptic();setAddingCat(isG?"glyn":"shared");}} style={{width:"100%",background:"transparent",border:"1px dashed #2a3a55",borderRadius:9,color:"#8ec5ff",fontSize:12.5,fontWeight:600,padding:"12px",cursor:"pointer",marginTop:8}}>+ New category</button>
+              )}
+              <div style={{fontSize:10.5,color:"#3a4460",padding:"12px 4px 0",lineHeight:1.5}}>Deleting a category keeps its bills — they move to Uncategorised. Drag a bill onto a category to move it, or tap the bill's name.</div>
+              <button onClick={()=>{setCatsOpen(false);setAddingCat(null);setNewCat("");}} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
+            </div>
+          </div>
+        );
+      })()}
+
       {moveBill&&(()=>{
         const isG=moveBill.isGlyn;
         const list=isG?glynCats:cats;
@@ -5345,6 +5255,31 @@ const calcTimesheetTotals = days => {
                   style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:7,color:"#8892b0",fontSize:11,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Yearly in {laSel?MONTHS[laSel.m-1]:""}</button>
               </div>
               <div style={{fontSize:10,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>This is a fixed bill — it appears in every month, and edits apply everywhere. Switching moves it to {selIsNow?"this month":selLabel} only.</div>
+              {!isG&&bill&&(()=>{
+                const mode=bill.splitMode||null;
+                const them=isOwner?"Hollie":"Glyn";
+                const segS=(on)=>({flex:1,background:on?"#15203a":"#1e2535",border:"1px solid "+(on?"#4a9eff":"#2a3050"),borderRadius:7,color:on?"#4a9eff":"#8892b0",fontSize:11.5,fontWeight:700,padding:"9px 2px",cursor:"pointer"});
+                const sh=billShares(bill);
+                return (
+                  <>
+                    <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Split</div>
+                    <div style={{display:"flex",gap:6,marginBottom:mode?8:6}}>
+                      <button onClick={()=>hSplit(bill.id,null,null)} style={segS(!mode)}>50/50</button>
+                      <button onClick={()=>hSplit(bill.id,"pct",null)} style={segS(mode==="pct")}>% split</button>
+                      {Number(bill.total)>=0&&<button onClick={()=>hSplit(bill.id,"fixed",null)} style={segS(mode==="fixed")}>£ fixed</button>}
+                    </div>
+                    {mode&&(
+                      <input key={"sv"+bill.id+mode} type="number" defaultValue={bill.splitValue!=null?String(bill.splitValue):""}
+                        onBlur={e=>{const n=parseFloat(e.target.value);hSplit(bill.id,mode,isFinite(n)?n:null);}}
+                        placeholder={mode==="pct"?(isOwner?"Your %":"Glyn's %")+" (e.g. 60)":them+" pays £"}
+                        style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #4a9eff",borderRadius:8,color:"#e8eaf0",fontSize:14,fontWeight:600,padding:"11px 12px",marginBottom:8}}/>
+                    )}
+                    <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>
+                      You {fmt(isOwner?sh.glyn:sh.hollie)} · {them} {fmt(isOwner?sh.hollie:sh.glyn)}
+                    </div>
+                  </>
+                );
+              })()}
               <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Move to category</div>
               {list.map(c=>(
                 <button key={c.id} onClick={()=>{haptic();assignCat(moveBill.id,c.id,isG);setMoveBill(null);}} style={{
@@ -5357,6 +5292,10 @@ const calcTimesheetTotals = days => {
                 display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",textAlign:"left",background:!curCat?"#1a2535":"transparent",
                 border:"none",borderRadius:8,color:"#8892b0",fontSize:14,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginTop:4
               }}><span>Uncategorised</span>{!curCat&&<span style={{color:"#8892b0"}}>✓</span>}</button>
+              <button onClick={()=>{haptic("medium");const id=moveBill.id;setMoveBill(null);isG?delGl(id):delSh(id);}} style={{
+                width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:10,color:"#ff6b8a",
+                fontSize:13,fontWeight:600,padding:"12px",cursor:"pointer",marginTop:14
+              }}>Delete bill</button>
             </div>
           </div>
         );
