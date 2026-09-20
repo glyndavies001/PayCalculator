@@ -59,6 +59,22 @@ function getWorkingDaysInMonth(year, month) {
   }
   return count;
 }
+// Contracted hours for the pay period ENDING on the 28th of the given month
+// (month is 1-12). Same working-day count and contract rate as the live figure.
+function monthHoursFor(year, month) {
+  const periodEnd = new Date(year, month - 1, 28);
+  const periodStart = new Date(year, month - 2, 29);
+  let workDays = 0;
+  for (let d = new Date(periodStart); d <= periodEnd; d.setDate(d.getDate() + 1)) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) workDays++;
+  }
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const payMonthStr = months[periodEnd.getMonth()] + " " + periodEnd.getFullYear();
+  const rate = (typeof getRateFor === "function") ? getRateFor(payMonthStr) : { stdDayHrs: 8.25 };
+  return Math.round(workDays * rate.stdDayHrs * 100) / 100;
+}
+
 function getCurrentMonthHours() {
   // Returns standard hours for the current pay period (29th -> 28th)
   // and uses the applicable contract hours (8h before May 2026, 8.25h after)
@@ -666,7 +682,7 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 // so no migration); categories saved before this default by position.
 const CAT_COLORS = ["#4a9eff","#00c88c","#ff8c4a","#c84aff","#ffb84a","#4ad0c0","#ff6b8a","#8ec5ff"];
 const catColor = (cat, idx) => (cat && cat.color) || CAT_COLORS[(idx>=0?idx:0) % CAT_COLORS.length];
-const APP_VERSION = "1.13.66";
+const APP_VERSION = "1.13.67";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -2411,7 +2427,20 @@ export default function App() {
   const hollieSurplus=hollieCalc.net-hollieOut;
   // Whoever is signed in: their own net, and their surplus for the month in view.
   const viewerNet=isOwner?cr.net:hollieCalc.net;
-  const selSurplus=viewerNet-(selShMine+selPersonal);
+  // Forecasting a future month assumes NO overtime — only contracted hours at the
+  // current bonus tier. The current month keeps the live estimate, which reflects
+  // the overtime actually logged. Hollie's base pay is flat, so hers is constant.
+  const baselineNetFor=(yr,m)=>isOwner
+    ? calcPay({stdHrs:monthHoursFor(yr,m),otHrs:0,weekendOtHrs:0,holidayHrs:0,
+        bonus:ci.bonus,perfAllowance:ci.perfAllowance,_allowanceOverride:effectiveAllowance}).net
+    : calcHolliePay(0).net;
+  const netForIdx=(i)=>{
+    if(i===0)return viewerNet;
+    const r=lookAheadMonths[i];
+    return r?baselineNetFor(r.yr,r.m):viewerNet;
+  };
+  const selNet=netForIdx(selIdx);
+  const selSurplus=selNet-(selShMine+selPersonal);
 
   const chartData=useMemo(()=>{
     const s=sortH(history);
@@ -3401,7 +3430,7 @@ const calcTimesheetTotals = days => {
           const themName=isOwner?"Hollie":"Glyn";
           const mineOf=b=>isOwner?billShares(b).glyn:billShares(b).hollie;
           const themOf=b=>isOwner?billShares(b).hollie:billShares(b).glyn;
-          const rate=viewerNet>0?Math.round(selSurplus/viewerNet*100):0;
+          const rate=selNet>0?Math.round(selSurplus/selNet*100):0;
           const rateCol=rate>=20?"#00c88c":rate>=10?"#ffb84a":"#ff4a6a";
 
           const splitNote=b=>{
@@ -3668,7 +3697,7 @@ const calcTimesheetTotals = days => {
                   <span style={{textAlign:"right",color:"#00c88c"}}>Left</span>
                 </div>
                 {lookAheadMonths.map((r,i)=>{
-                  const vs=viewerNet-r.total;
+                  const vs=netForIdx(i)-r.total;
                   return (
                     <div key={r.key} onClick={()=>{haptic();setSelIdx(i);setLaOpen(false);}}
                       style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",alignItems:"center",
@@ -3685,7 +3714,7 @@ const calcTimesheetTotals = days => {
                   );
                 })}
                 <div style={{fontSize:10,color:"#3a4460",padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
-                  Tap a month to open it. "Left" assumes pay stays at your current estimate ({fmt(viewerNet)} net).
+                  Tap a month to open it. This month uses your live estimate ({fmt(viewerNet)} net); later months assume contracted hours only — no overtime — so they shift a little with each month's working days.
                 </div>
               </div>
             )}
