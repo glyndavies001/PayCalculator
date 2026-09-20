@@ -662,7 +662,7 @@ const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!
 // Signed variant: adjustments can be negative (a credit in that month).
 const fmtS = n => (Number(n) < 0 ? "−" : "") + fmt(n);
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.61";
+const APP_VERSION = "1.13.62";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -2454,11 +2454,12 @@ export default function App() {
   const selSchedShared=(laSel?laSel.hits:[]).filter(b=>b.scope==="shared");
   const selSchedPersonal=(laSel?laSel.hits:[]).filter(b=>b.scope==="personal");
   const selSchedShTotal=selSchedShared.reduce((a,b)=>a+(Number(b.total)||0),0);
-  const selShMine=laSel?laSel.shared:shGlyn;
-  const selShThem=sharedBills.reduce((a,b)=>a+(isOwner?billShares(b).hollie:billShares(b).glyn),0)
-    +selSchedShared.reduce((a,b)=>a+(isOwner?schedShares(b).hollie:schedShares(b).glyn),0);
+  const selShGlyn=sharedBills.reduce((a,b)=>a+billShares(b).glyn,0)
+    +selSchedShared.reduce((a,b)=>a+schedShares(b).glyn,0);
+  const selShHollie=sharedBills.reduce((a,b)=>a+billShares(b).hollie,0)
+    +selSchedShared.reduce((a,b)=>a+schedShares(b).hollie,0);
+  const selShMine=isOwner?selShGlyn:selShHollie;
   const selPersonal=laSel?laSel.personal:glOnly;
-  const selSurplus=laSel?laSel.surplus:surplus;
   const selLabel=laSel?MONTHS[laSel.m-1]+" "+String(laSel.yr).slice(2):"";
 
   // Hollie's pay calc (partner view). OT is paid a month in ARREARS: hours are logged
@@ -2490,6 +2491,9 @@ export default function App() {
   const hollieCalc=calcHolliePay(hollieOtForPay);
   const hollieOut=shHollie+glOnly;
   const hollieSurplus=hollieCalc.net-hollieOut;
+  // Whoever is signed in: their own net, and their surplus for the month in view.
+  const viewerNet=isOwner?cr.net:hollieCalc.net;
+  const selSurplus=viewerNet-(selShMine+selPersonal);
 
   const chartData=useMemo(()=>{
     const s=sortH(history);
@@ -3513,10 +3517,11 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
             ) : (
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
               {[
-                {label:"Your share of shared bills",value:fmt(selShMine),   accent:"#c84aff"},
-                {label:"Your personal bills",       value:fmt(selPersonal), accent:"#ff8c4a"},
+                {label:"Shared (my share)",value:fmt(selShMine),    accent:"#c84aff"},
+                {label:"My Bills",         value:fmt(selPersonal),  accent:"#ff8c4a"},
+                {label:"Surplus",          value:fmtS(selSurplus),  accent:selSurplus>=0?"#00c88c":"#ff4a6a"},
               ].map(k=>(
                 <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
                   <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>{k.label}</div>
@@ -3574,15 +3579,15 @@ const calcTimesheetTotals = days => {
               </div>
               {laOpen&&(
                 <div style={{padding:"0 10px 10px"}}>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 68px 62px"+(isOwner?" 66px":""),padding:"6px 6px 8px",fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",padding:"6px 6px 8px",fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase"}}>
                     <span>Month</span>
                     <span style={{textAlign:"right",color:"#4a9eff"}}>Shared</span>
                     <span style={{textAlign:"right",color:"#ff8c4a"}}>Mine</span>
-                    {isOwner&&<span style={{textAlign:"right",color:"#00c88c"}}>Left</span>}
+                    <span style={{textAlign:"right",color:"#00c88c"}}>Left</span>
                   </div>
                   {lookAheadMonths.map((r,i)=>(
                     <div key={r.key} onClick={()=>{haptic();setSelIdx(i);setLaOpen(false);}}
-                      style={{display:"grid",gridTemplateColumns:"1fr 68px 62px"+(isOwner?" 66px":""),alignItems:"center",
+                      style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",alignItems:"center",
                         padding:"9px 6px",fontSize:12.5,borderTop:"1px solid #1e2535",cursor:"pointer",
                         background:i===selIdx?"#15203a":"transparent"}}>
                       <span style={{color:i===selIdx?"#8ec5ff":"#d8dcea",fontWeight:i===selIdx?700:500}}>
@@ -3591,14 +3596,12 @@ const calcTimesheetTotals = days => {
                       </span>
                       <span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(r.shared)}</span>
                       <span style={{textAlign:"right",color:"#ff8c4a",fontWeight:600}}>{fmt(r.personal)}</span>
-                      {isOwner&&<span style={{textAlign:"right",fontWeight:700,color:r.surplus>=0?"#00c88c":"#ff4a6a"}}>{fmtS(r.surplus)}</span>}
+                      {(()=>{const vs=viewerNet-r.total;return <span style={{textAlign:"right",fontWeight:700,color:vs>=0?"#00c88c":"#ff4a6a"}}>{fmtS(vs)}</span>;})()}
                     </div>
                   ))}
-                  {isOwner&&(
-                    <div style={{fontSize:10,color:"#3a4460",padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
-                      Tap a month to open it above. "Left" assumes pay stays at your current estimate ({fmt(cr.net)} net) — no overtime or holiday variation.
-                    </div>
-                  )}
+                  <div style={{fontSize:10,color:"#3a4460",padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
+                    Tap a month to open it above. "Left" assumes pay stays at your current estimate ({fmt(viewerNet)} net) — no overtime or holiday variation.
+                  </div>
                 </div>
               )}
             </div>
@@ -3693,8 +3696,8 @@ const calcTimesheetTotals = days => {
                 <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"10px 10px",fontSize:11,fontWeight:700,background:"#141824",border:"1px solid #1e2535",borderTop:"1px solid #2a3050"}}>
                   <span style={{color:"#5a6480"}}>TOTAL</span>
                   <span style={{textAlign:"right",color:"#5a6480"}}>{fmtS(sharedBills.reduce((s,b)=>s+b.total,0)+selSchedShTotal)}</span>
-                  <span style={{textAlign:"right",color:"#4a9eff"}}>{fmtS(selShMine)}</span>
-                  <span style={{textAlign:"right",color:"#c84aff"}}>{fmtS(selShThem)}</span>
+                  <span style={{textAlign:"right",color:"#4a9eff"}}>{fmtS(selShGlyn)}</span>
+                  <span style={{textAlign:"right",color:"#c84aff"}}>{fmtS(selShHollie)}</span>
                   <span></span>
                 </div>
                 <div style={{display:"flex",gap:8,marginTop:10}}>
