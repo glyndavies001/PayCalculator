@@ -660,7 +660,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.57";
+const APP_VERSION = "1.13.58";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -3480,11 +3480,11 @@ const calcTimesheetTotals = days => {
                     const open=laMonth===r.key;
                     return (
                       <div key={r.key}>
-                        <div onClick={()=>{if(r.hits.length){haptic();setLaMonth(open?null:r.key);}}}
+                        <div onClick={()=>{haptic();setLaMonth(open?null:r.key);}}
                           style={{display:"grid",gridTemplateColumns:"1fr 68px 62px"+(isOwner?" 66px":""),alignItems:"center",
                             padding:"9px 6px",fontSize:12.5,borderTop:"1px solid #1e2535",
                             background:r.isNow?"#15203a":(open?"#11151f":"transparent"),
-                            cursor:r.hits.length?"pointer":"default"}}>
+                            cursor:"pointer"}}>
                           <span style={{color:r.isNow?"#8ec5ff":"#d8dcea",fontWeight:r.isNow?700:500}}>
                             {MONTH_ABBR[r.m-1]} {String(r.yr).slice(2)}
                             {r.extra>0&&<span style={{color:"#ffb84a",fontSize:10.5,fontWeight:700,marginLeft:5}}>+{fmt(r.extra)}</span>}
@@ -3493,17 +3493,24 @@ const calcTimesheetTotals = days => {
                           <span style={{textAlign:"right",color:"#ff8c4a",fontWeight:600}}>{fmt(r.personal)}</span>
                           {isOwner&&<span style={{textAlign:"right",fontWeight:700,color:r.surplus>=0?"#00c88c":"#ff4a6a"}}>{r.surplus<0?"−":""}{fmt(r.surplus)}</span>}
                         </div>
-                        {open&&r.hits.length>0&&(
-                          <div style={{padding:"4px 8px 8px",background:"#0d1117",borderTop:"1px solid #1e2535"}}>
-                            <div style={{fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase",padding:"5px 2px"}}>Scheduled this month</div>
-                            {r.hits.map(h=>(
-                              <div key={h.id} style={{display:"flex",justifyContent:"space-between",gap:8,padding:"4px 2px",fontSize:12}}>
-                                <span style={{color:"#a8b0c4",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                                  {h.name}<span style={{color:"#3a4460",fontSize:10,marginLeft:5}}>{h.scope==="shared"?"shared":"mine"}</span>
-                                </span>
-                                <span style={{color:h.scope==="shared"?"#4a9eff":"#ff8c4a",fontWeight:700,whiteSpace:"nowrap"}}>{fmt(h.mine)}</span>
-                              </div>
-                            ))}
+                        {open&&(
+                          <div style={{padding:"4px 8px 9px",background:"#0d1117",borderTop:"1px solid #1e2535"}}>
+                            {r.hits.length>0&&(<>
+                              <div style={{fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase",padding:"5px 2px"}}>Scheduled this month · tap to edit</div>
+                              {r.hits.map(h=>(
+                                <div key={h.id} onClick={e=>{e.stopPropagation();haptic();setSchedForm({id:h.id,name:h.name,total:h.total!=null?String(h.total):"",splitMode:h.split_mode||null,splitValue:h.split_value!=null?String(h.split_value):"",scope:h.scope,freq:h.freq,months:Array.isArray(h.months)?h.months:[],year:h.year||r.yr});setSchedOpen(true);}}
+                                  style={{display:"flex",justifyContent:"space-between",gap:8,padding:"6px 2px",fontSize:12,cursor:"pointer"}}>
+                                  <span style={{color:"#a8b0c4",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                    {h.name}<span style={{color:"#3a4460",fontSize:10,marginLeft:5}}>{h.scope==="shared"?"shared":"mine"}</span>
+                                  </span>
+                                  <span style={{color:h.scope==="shared"?"#4a9eff":"#ff8c4a",fontWeight:700,whiteSpace:"nowrap"}}>{fmt(h.mine)} ›</span>
+                                </div>
+                              ))}
+                            </>)}
+                            <button onClick={e=>{e.stopPropagation();haptic();setSchedForm({id:null,name:"",total:"",splitMode:null,splitValue:"",scope:budTab==="glyn"?"personal":"shared",freq:"once",months:[r.m],year:r.yr});setSchedOpen(true);}}
+                              style={{width:"100%",marginTop:r.hits.length?7:3,background:"#161b28",border:"1px dashed #2a3a55",borderRadius:7,color:"#8ec5ff",fontSize:11.5,fontWeight:600,padding:"9px",cursor:"pointer"}}>
+                              ＋ Add bill to {MONTH_ABBR[r.m-1]} {String(r.yr).slice(2)} · {budTab==="glyn"?"mine":"shared"}
+                            </button>
                           </div>
                         )}
                       </div>
