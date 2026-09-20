@@ -662,7 +662,11 @@ const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!
 // Signed variant: adjustments can be negative (a credit in that month).
 const fmtS = n => (Number(n) < 0 ? "−" : "") + fmt(n);
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.65";
+// Category colours. Stored on the category object itself (cats/glynCats are JSON,
+// so no migration); categories saved before this default by position.
+const CAT_COLORS = ["#4a9eff","#00c88c","#ff8c4a","#c84aff","#ffb84a","#4ad0c0","#ff6b8a","#8ec5ff"];
+const catColor = (cat, idx) => (cat && cat.color) || CAT_COLORS[(idx>=0?idx:0) % CAT_COLORS.length];
+const APP_VERSION = "1.13.66";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -2675,7 +2679,14 @@ export default function App() {
     }
     setNewGl({name:"",total:"",freq:"month",months:[]});setAddGl(false);
   };
-  const addCategory=(isGlyn)=>{if(!newCat.trim())return;const c={id:Date.now(),name:newCat.trim()};isGlyn?updGC([...glynCats,c]):updC([...cats,c]);setNewCat("");setAddingCat(null);};
+  const addCategory=(isGlyn)=>{
+    if(!newCat.trim())return;
+    const existing=isGlyn?glynCats:cats;
+    const used=existing.map((x,i)=>catColor(x,i));
+    const c={id:Date.now(),name:newCat.trim(),color:CAT_COLORS.find(x=>!used.includes(x))||CAT_COLORS[existing.length%CAT_COLORS.length]};
+    isGlyn?updGC([...glynCats,c]):updC([...cats,c]);
+    setNewCat("");setAddingCat(null);
+  };
   const delCat=(id,isGlyn)=>{
     const cat=(isGlyn?glynCats:cats).find(c=>c.id===id);
     if(isGlyn){
@@ -2694,6 +2705,10 @@ export default function App() {
       if(user) db.saveAppSettings(user.id,{cats_data:{cats:nc,billCats:bc,glynCats,glynBillCats}});
       showUndoToast((cat?cat.name:"Category")+" deleted",()=>{setCats(prevCats);setBillCats(prevBC);saveSharedCats(prevCats, prevBC);if(user)db.saveAppSettings(user.id,{cats_data:{cats:prevCats,billCats:prevBC,glynCats,glynBillCats}});});
     }
+  };
+  // Colour lives on the category object; cats are stored as JSON so this needs no migration.
+  const setCatColor=(id,color,isGlyn)=>{
+    isGlyn?updGC(glynCats.map(c=>c.id===id?{...c,color}:c)):updC(cats.map(c=>c.id===id?{...c,color}:c));
   };
   const renCat=(id,name,isGlyn)=>{isGlyn?updGC(glynCats.map(c=>c.id===id?{...c,name}:c)):updC(cats.map(c=>c.id===id?{...c,name}:c));};
   const drop=(catId,isGlyn)=>{
@@ -3440,19 +3455,21 @@ const calcTimesheetTotals = days => {
           // Each category is its own card, so the groups can't run together.
           const band=(name,value,count,tint)=>(
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-              padding:"10px 13px",background:"#10151f",borderBottom:"1px solid #1e2535"}}>
-              <span style={{fontSize:12,fontWeight:700,color:tint||"#c8cee0",letterSpacing:.2}}>
-                {name}
-                {count!=null&&<span style={{color:"#3a4460",fontWeight:600,marginLeft:7}}>{count}</span>}
+              padding:"10px 13px",background:tint?tint+"1c":"#10151f",
+              borderBottom:"1px solid "+(tint?tint+"33":"#1e2535")}}>
+              <span style={{display:"flex",alignItems:"center",gap:7,minWidth:0}}>
+                {tint&&<span style={{flex:"0 0 auto",width:7,height:7,borderRadius:4,background:tint}}/>}
+                <span style={{fontSize:12,fontWeight:700,color:tint||"#c8cee0",letterSpacing:.2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
+                {count!=null&&<span style={{flex:"0 0 auto",fontSize:11,color:"#3a4460",fontWeight:600}}>{count}</span>}
               </span>
-              <span style={{fontSize:12.5,fontWeight:700,color:"#7a8499"}}>{fmtS(value)}</span>
+              <span style={{flex:"0 0 auto",fontSize:12.5,fontWeight:700,color:"#7a8499"}}>{fmtS(value)}</span>
             </div>
           );
-          const groupCard=(key,inner,active)=>(
+          const groupCard=(key,inner,active,tint)=>(
             <div key={key} style={{background:"#141824",borderRadius:12,overflow:"hidden",
-              border:"1px solid "+(active?"#4a9eff":"#1e2535")}}>{inner}</div>
+              border:"1px solid "+(active?"#4a9eff":(tint?tint+"3d":"#1e2535"))}}>{inner}</div>
           );
-          const section=(label,value,list,catId)=>{
+          const section=(label,value,list,catId,tint)=>{
             const on=dragOver===catId&&catId!==undefined;
             return (
               <div key={label+(catId||"")}
@@ -3460,10 +3477,10 @@ const calcTimesheetTotals = days => {
                 onDragLeave={catId!==undefined?(()=>setDragOver(null)):undefined}
                 onDrop={catId!==undefined?(()=>drop(catId,isG)):undefined}>
                 {groupCard(label+(catId||""),<>
-                  {band(label,value,list.length)}
+                  {band(label,value,list.length,tint)}
                   {list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"11px 13px"}}>Drop bills here</div>}
                   {billRows(list)}
-                </>,on)}
+                </>,on,tint)}
               </div>
             );
           };
@@ -3526,7 +3543,7 @@ const calcTimesheetTotals = days => {
             <div style={{display:"flex",flexDirection:"column",gap:10}}>
               {bcats.map((c,ci)=>section(c.name,
                 bills.filter(b=>bmap[b.id]===c.id).reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),
-                bills.filter(b=>bmap[b.id]===c.id),c.id))}
+                bills.filter(b=>bmap[b.id]===c.id),c.id,catColor(c,ci)))}
               {uncat.length>0&&section("Uncategorised",
                 uncat.reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),uncat,null)}
               {bills.length===0&&groupCard("empty",<div style={{fontSize:12,color:"#3a4460",textAlign:"center",padding:"18px 12px"}}>No bills yet — add your first below.</div>)}
@@ -5226,15 +5243,28 @@ const calcTimesheetTotals = days => {
               <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 10px"}}/>
               <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 10px"}}>Categories · {isG?"my bills":"shared bills"}</div>
               {list.length===0&&<div style={{fontSize:12,color:"#5a6480",padding:"6px 4px 12px"}}>No categories yet. Bills sit under "Uncategorised" until you add one.</div>}
-              {list.map(c=>(
-                <div key={c.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-                  <input defaultValue={c.name}
-                    onBlur={e=>{const v=e.target.value.trim();if(v&&v!==c.name)renCat(c.id,v,isG);}}
-                    style={{flex:1,background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:14,fontWeight:600,padding:"11px 12px"}}/>
-                  <span style={{fontSize:10.5,color:"#3a4460",width:52,textAlign:"right"}}>{countIn(c.id)} bill{countIn(c.id)===1?"":"s"}</span>
-                  <button onClick={()=>{haptic("medium");delCat(c.id,isG);}} style={{background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:7,color:"#ff6b8a",fontSize:13,fontWeight:700,padding:"9px 11px",cursor:"pointer"}}>✕</button>
+              {list.map((c,ci)=>{
+                const col=catColor(c,ci);
+                return (
+                <div key={c.id} style={{background:"#0d1117",border:"1px solid "+col+"3d",borderRadius:10,padding:"10px 10px 8px",marginBottom:8}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{flex:"0 0 auto",width:9,height:9,borderRadius:5,background:col}}/>
+                    <input defaultValue={c.name}
+                      onBlur={e=>{const v=e.target.value.trim();if(v&&v!==c.name)renCat(c.id,v,isG);}}
+                      style={{flex:1,minWidth:0,background:"transparent",border:"none",color:"#e8eaf0",fontSize:14,fontWeight:600,padding:"4px 0"}}/>
+                    <span style={{flex:"0 0 auto",fontSize:10.5,color:"#3a4460"}}>{countIn(c.id)} bill{countIn(c.id)===1?"":"s"}</span>
+                    <button onClick={()=>{haptic("medium");delCat(c.id,isG);}} style={{flex:"0 0 auto",background:"transparent",border:"none",color:"#5a6480",fontSize:15,fontWeight:700,padding:"2px 4px",cursor:"pointer"}}>✕</button>
+                  </div>
+                  <div style={{display:"flex",gap:6,marginTop:8}}>
+                    {CAT_COLORS.map(cc=>(
+                      <button key={cc} onClick={()=>{haptic();setCatColor(c.id,cc,isG);}}
+                        style={{flex:1,height:22,borderRadius:5,background:cc,cursor:"pointer",
+                          border:col===cc?"2px solid #e8eaf0":"2px solid transparent"}}/>
+                    ))}
+                  </div>
                 </div>
-              ))}
+                );
+              })}
               {addingCat?(
                 <div style={{display:"flex",gap:6,marginTop:8}}>
                   <input autoFocus placeholder="Category name" value={newCat} onChange={e=>setNewCat(e.target.value)}
