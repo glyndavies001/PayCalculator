@@ -302,7 +302,7 @@ function billShares(b) {
     const glyn = total * (pct / 100);
     return { glyn, hollie: total - glyn };
   }
-  if (b.splitMode === "fixed" && hasVal && isFinite(val)) {
+  if (b.splitMode === "fixed" && hasVal && isFinite(val) && total > 0) {
     const hollie = Math.min(Math.max(0, val), total);
     return { glyn: total - hollie, hollie };
   }
@@ -659,8 +659,10 @@ const load = (key, fb) => { try { const v = localStorage.getItem(key); return v 
 const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+// Signed variant: adjustments can be negative (a credit in that month).
+const fmtS = n => (Number(n) < 0 ? "−" : "") + fmt(n);
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.59";
+const APP_VERSION = "1.13.60";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1232,8 +1234,8 @@ export default function App() {
   const [newCat,setNewCat]=useState("");
   const [dragOver,setDragOver]=useState(null);
   const [budTab,setBudTab]=useState("shared");
-  const [laOpen,setLaOpen]=useState(false);        // 12-month look-ahead panel
-  const [laMonth,setLaMonth]=useState(null);       // expanded month key
+  const [selIdx,setSelIdx]=useState(0);            // Budget tab: month offset 0-11 (0 = current)
+  const [laOpen,setLaOpen]=useState(false);        // collapsed 12-month Year view
   const [billSnapshot,setBillSnapshot]=useState(()=>{
     try { return JSON.parse(localStorage.getItem("vaulted_bill_snapshot")||"null"); } catch { return null; }
   });
@@ -2362,7 +2364,6 @@ export default function App() {
   const myId=user?user.id:null;
   const activeSchedShared=scheduledBills.filter(b=>b.scope==="shared"&&schedActive(b));
   const activeSchedPersonal=scheduledBills.filter(b=>b.scope==="personal"&&b.owner===myId&&schedActive(b));
-  const schedShTotal=activeSchedShared.reduce((s,b)=>s+(Number(b.total)||0),0);
   const shGlyn=sharedBills.reduce((s,b)=>s+billShares(b).glyn,0)+activeSchedShared.reduce((s,b)=>s+schedShares(b).glyn,0);
   const shHollie=sharedBills.reduce((s,b)=>s+billShares(b).hollie,0)+activeSchedShared.reduce((s,b)=>s+schedShares(b).hollie,0);
   const glOnly=glynBills.reduce((s,b)=>s+b.total,0)+activeSchedPersonal.reduce((s,b)=>s+(Number(b.total)||0),0);
@@ -2440,22 +2441,25 @@ export default function App() {
       const shared=baseShared+shHits.reduce((a,b)=>a+b.mine,0);
       const personal=basePersonal+peHits.reduce((a,b)=>a+b.mine,0);
       const extra=shHits.reduce((a,b)=>a+b.mine,0)+peHits.reduce((a,b)=>a+b.mine,0);
-      // Full bill list for this month: the standing monthly bills plus that
-      // month's scheduled ones, so expanding a month shows everything due.
-      const sharedList=[
-        ...sharedBills.map(b=>({id:b.id,name:b.name,mine:myShareOf(b),sched:null})),
-        ...shHits.map(b=>({id:"s"+b.id,name:b.name,mine:b.mine,sched:b})),
-      ];
-      const personalList=[
-        ...glynBills.map(b=>({id:b.id,name:b.name,mine:Number(b.total)||0,sched:null})),
-        ...peHits.map(b=>({id:"s"+b.id,name:b.name,mine:b.mine,sched:b})),
-      ];
       out.push({key:yr+"-"+m,m,yr,shared,personal,extra,total:shared+personal,
-        surplus:cr.net-(shared+personal),hits:[...shHits,...peHits],
-        sharedList,personalList,isNow:i===0});
+        surplus:cr.net-(shared+personal),hits:[...shHits,...peHits],isNow:i===0});
     }
     return out;
   },[sharedBills,glynBills,scheduledBills,myId,isOwner,schedNowMonth,schedNowYear,cr.net]);
+
+  // The Budget tab renders whichever month is selected. The app-wide figures
+  // (totalOut / surplus, used by Pay Calc) always stay on the current month.
+  const laSel=lookAheadMonths[selIdx]||lookAheadMonths[0];
+  const selIsNow=selIdx===0;
+  const selSchedShared=(laSel?laSel.hits:[]).filter(b=>b.scope==="shared");
+  const selSchedPersonal=(laSel?laSel.hits:[]).filter(b=>b.scope==="personal");
+  const selSchedShTotal=selSchedShared.reduce((a,b)=>a+(Number(b.total)||0),0);
+  const selShMine=laSel?laSel.shared:shGlyn;
+  const selShThem=sharedBills.reduce((a,b)=>a+(isOwner?billShares(b).hollie:billShares(b).glyn),0)
+    +selSchedShared.reduce((a,b)=>a+(isOwner?schedShares(b).hollie:schedShares(b).glyn),0);
+  const selPersonal=laSel?laSel.personal:glOnly;
+  const selSurplus=laSel?laSel.surplus:surplus;
+  const selLabel=laSel?MONTHS[laSel.m-1]+" "+String(laSel.yr).slice(2):"";
 
   // Hollie's pay calc (partner view). OT is paid a month in ARREARS: hours are logged
   // against the month they're worked (stored as a per-month map in calc_inputs, so nothing
@@ -2832,8 +2836,9 @@ export default function App() {
       id:schedForm.id||Date.now(),
       name,
       total:parseFloat(schedForm.total)||0,
-      split_mode:schedForm.scope==="shared"?(schedForm.splitMode||null):null,
-      split_value:schedForm.scope==="shared"&&schedForm.splitMode&&isFinite(parseFloat(schedForm.splitValue))?parseFloat(schedForm.splitValue):null,
+      // "fixed £" is meaningless on a negative adjustment - drop it back to 50/50
+      split_mode:schedForm.scope==="shared"&&!((parseFloat(schedForm.total)||0)<0&&schedForm.splitMode==="fixed")?(schedForm.splitMode||null):null,
+      split_value:schedForm.scope==="shared"&&schedForm.splitMode&&!((parseFloat(schedForm.total)||0)<0&&schedForm.splitMode==="fixed")&&isFinite(parseFloat(schedForm.splitValue))?parseFloat(schedForm.splitValue):null,
       scope:schedForm.scope,
       owner:existing?existing.owner:myId,
       freq:schedForm.freq,
@@ -3430,9 +3435,9 @@ const calcTimesheetTotals = days => {
             {isOwner ? (
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
               {[
-                {label:"Shared (my half)",value:fmt(shGlyn),  accent:"#4a9eff"},
-                {label:"My Bills",         value:fmt(glOnly), accent:"#ff8c4a"},
-                {label:"Surplus",          value:fmt(surplus),accent:surplus>=0?"#00c88c":"#ff4a6a"},
+                {label:"Shared (my half)",value:fmt(selShMine),   accent:"#4a9eff"},
+                {label:"My Bills",         value:fmt(selPersonal), accent:"#ff8c4a"},
+                {label:"Surplus",          value:fmtS(selSurplus), accent:selSurplus>=0?"#00c88c":"#ff4a6a"},
               ].map(k=>(
                 <div key={k.label} style={{...card,textAlign:"center",padding:"10px 6px"}}>
                   <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>{k.label}</div>
@@ -3443,8 +3448,8 @@ const calcTimesheetTotals = days => {
             ) : (
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
               {[
-                {label:"Your share of shared bills",value:fmt(shHollie),accent:"#c84aff"},
-                {label:"Your personal bills",       value:fmt(glOnly), accent:"#ff8c4a"},
+                {label:"Your share of shared bills",value:fmt(selShMine),   accent:"#c84aff"},
+                {label:"Your personal bills",       value:fmt(selPersonal), accent:"#ff8c4a"},
               ].map(k=>(
                 <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
                   <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>{k.label}</div>
@@ -3452,6 +3457,27 @@ const calcTimesheetTotals = days => {
                 </div>
               ))}
             </div>
+            )}
+
+            {/* month strip - the bills list below renders for the selected month */}
+            <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:6,marginBottom:selIsNow?10:6,WebkitOverflowScrolling:"touch"}}>
+              {lookAheadMonths.map((r,i)=>{
+                const on=i===selIdx;
+                return (
+                  <button key={r.key} onClick={()=>{haptic();setSelIdx(i);}} style={{
+                    flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#141824",color:on?"#fff":(i===0?"#8ec5ff":"#5a6480"),
+                    border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"7px 11px",fontSize:11.5,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                    {MONTHS[r.m-1]}{r.m===1||i===0?" "+String(r.yr).slice(2):""}
+                    {r.hits.length>0&&<span style={{position:"absolute",top:4,right:4,width:5,height:5,borderRadius:3,background:on?"#fff":"#ffb84a"}}/>}
+                  </button>
+                );
+              })}
+            </div>
+            {!selIsNow&&(
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,background:"#15203a",border:"1px solid #2a3a55",borderRadius:8,padding:"8px 10px",marginBottom:10}}>
+                <span style={{fontSize:11,color:"#8ec5ff",fontWeight:600}}>Viewing {selLabel} · standing bills are shared across every month</span>
+                <button onClick={()=>{haptic();setSelIdx(0);}} style={{flex:"0 0 auto",background:"transparent",border:"1px solid #2a5a8a",borderRadius:6,color:"#8ec5ff",fontSize:10.5,fontWeight:700,padding:"5px 8px",cursor:"pointer"}}>This month</button>
+              </div>
             )}
 
             <div style={{display:"flex",gap:4,marginBottom:12}}>
@@ -3464,19 +3490,19 @@ const calcTimesheetTotals = days => {
             </div>
 
             {(()=>{
-              const activeCount=(budTab==="shared"?activeSchedShared:activeSchedPersonal).length;
+              const activeCount=(budTab==="shared"?selSchedShared:selSchedPersonal).length;
               return (
                 <button onClick={()=>{haptic();setSchedForm(null);setSchedOpen(true);}}
                   style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:"#161b28",border:"1px dashed #2a3a55",borderRadius:8,color:"#8ec5ff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer",marginBottom:12}}>
-                  📅 Scheduled bills{activeCount?` · ${activeCount} due this month`:""}
+                  📅 Scheduled bills{activeCount?` · ${activeCount} due ${selIsNow?"this month":selLabel}`:""}
                 </button>
               );
             })()}
 
-            {/* ── 12-month look-ahead ── */}
+            {/* ── Year view: all 12 months side by side; tap one to open it above ── */}
             <div style={{...card,marginBottom:12,padding:0}}>
               <div onClick={()=>{haptic();setLaOpen(v=>!v);}} style={{padding:"11px 12px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{fontSize:12,fontWeight:600,color:"#8ec5ff"}}>📆 Look ahead · 12 months</div>
+                <div style={{fontSize:12,fontWeight:600,color:"#8ec5ff"}}>📆 Year view · next 12 months</div>
                 <span style={{color:"#3a4460",fontSize:12}}>{laOpen?"⌃":"⌄"}</span>
               </div>
               {laOpen&&(
@@ -3487,65 +3513,23 @@ const calcTimesheetTotals = days => {
                     <span style={{textAlign:"right",color:"#ff8c4a"}}>Mine</span>
                     {isOwner&&<span style={{textAlign:"right",color:"#00c88c"}}>Left</span>}
                   </div>
-                  {lookAheadMonths.map(r=>{
-                    const open=laMonth===r.key;
-                    return (
-                      <div key={r.key}>
-                        <div onClick={()=>{haptic();setLaMonth(open?null:r.key);}}
-                          style={{display:"grid",gridTemplateColumns:"1fr 68px 62px"+(isOwner?" 66px":""),alignItems:"center",
-                            padding:"9px 6px",fontSize:12.5,borderTop:"1px solid #1e2535",
-                            background:r.isNow?"#15203a":(open?"#11151f":"transparent"),
-                            cursor:"pointer"}}>
-                          <span style={{color:r.isNow?"#8ec5ff":"#d8dcea",fontWeight:r.isNow?700:500}}>
-                            {MONTH_ABBR[r.m-1]} {String(r.yr).slice(2)}
-                            {r.extra>0&&<span style={{color:"#ffb84a",fontSize:10.5,fontWeight:700,marginLeft:5}}>+{fmt(r.extra)}</span>}
-                          </span>
-                          <span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(r.shared)}</span>
-                          <span style={{textAlign:"right",color:"#ff8c4a",fontWeight:600}}>{fmt(r.personal)}</span>
-                          {isOwner&&<span style={{textAlign:"right",fontWeight:700,color:r.surplus>=0?"#00c88c":"#ff4a6a"}}>{r.surplus<0?"−":""}{fmt(r.surplus)}</span>}
-                        </div>
-                        {open&&(()=>{
-                          const grp=(title,list,total,accent)=>(
-                            <div style={{marginBottom:8}}>
-                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"6px 2px 4px",borderBottom:"1px solid #1a2030"}}>
-                                <span style={{fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase"}}>{title}</span>
-                                <span style={{fontSize:11.5,fontWeight:800,color:accent}}>{fmt(total)}</span>
-                              </div>
-                              {list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"6px 2px"}}>None</div>}
-                              {list.map(it=>(
-                                <div key={it.id}
-                                  onClick={it.sched?(e=>{e.stopPropagation();haptic();const h=it.sched;setSchedForm({id:h.id,name:h.name,total:h.total!=null?String(h.total):"",splitMode:h.split_mode||null,splitValue:h.split_value!=null?String(h.split_value):"",scope:h.scope,freq:h.freq,months:Array.isArray(h.months)?h.months:[],year:h.year||r.yr});setSchedOpen(true);}):undefined}
-                                  style={{display:"flex",justifyContent:"space-between",gap:8,padding:"5px 2px",fontSize:11.5,cursor:it.sched?"pointer":"default"}}>
-                                  <span style={{color:it.sched?"#c8cee0":"#8892b0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                                    {it.name}
-                                    {it.sched&&<span style={{color:"#ffb84a",fontSize:9,fontWeight:700,marginLeft:5}}>{it.sched.freq==="once"?"one-off":"annual"}</span>}
-                                  </span>
-                                  <span style={{color:it.sched?accent:"#7a8499",fontWeight:it.sched?700:600,whiteSpace:"nowrap"}}>{fmt(it.mine)}{it.sched?" ›":""}</span>
-                                </div>
-                              ))}
-                            </div>
-                          );
-                          return (
-                          <div style={{padding:"4px 8px 9px",background:"#0d1117",borderTop:"1px solid #1e2535"}}>
-                            {grp("Shared · my share",r.sharedList,r.shared,"#4a9eff")}
-                            {grp("Mine",r.personalList,r.personal,"#ff8c4a")}
-                            <div style={{display:"flex",justifyContent:"space-between",padding:"7px 2px",borderTop:"1px solid #1e2535",fontSize:12}}>
-                              <span style={{color:"#8892b0",fontWeight:700}}>Total out</span>
-                              <span style={{color:"#e8eaf0",fontWeight:800}}>{fmt(r.total)}</span>
-                            </div>
-                            <button onClick={e=>{e.stopPropagation();haptic();setSchedForm({id:null,name:"",total:"",splitMode:null,splitValue:"",scope:budTab==="glyn"?"personal":"shared",freq:"once",months:[r.m],year:r.yr});setSchedOpen(true);}}
-                              style={{width:"100%",marginTop:5,background:"#161b28",border:"1px dashed #2a3a55",borderRadius:7,color:"#8ec5ff",fontSize:11.5,fontWeight:600,padding:"9px",cursor:"pointer"}}>
-                              ＋ Add bill to {MONTH_ABBR[r.m-1]} {String(r.yr).slice(2)} · {budTab==="glyn"?"mine":"shared"}
-                            </button>
-                          </div>
-                          );
-                        })()}
-                      </div>
-                    );
-                  })}
+                  {lookAheadMonths.map((r,i)=>(
+                    <div key={r.key} onClick={()=>{haptic();setSelIdx(i);setLaOpen(false);}}
+                      style={{display:"grid",gridTemplateColumns:"1fr 68px 62px"+(isOwner?" 66px":""),alignItems:"center",
+                        padding:"9px 6px",fontSize:12.5,borderTop:"1px solid #1e2535",cursor:"pointer",
+                        background:i===selIdx?"#15203a":"transparent"}}>
+                      <span style={{color:i===selIdx?"#8ec5ff":"#d8dcea",fontWeight:i===selIdx?700:500}}>
+                        {MONTHS[r.m-1]} {String(r.yr).slice(2)}
+                        {r.extra!==0&&<span style={{color:r.extra<0?"#4ad07a":"#ffb84a",fontSize:10.5,fontWeight:700,marginLeft:5}}>{r.extra<0?"−":"+"}{fmt(r.extra)}</span>}
+                      </span>
+                      <span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(r.shared)}</span>
+                      <span style={{textAlign:"right",color:"#ff8c4a",fontWeight:600}}>{fmt(r.personal)}</span>
+                      {isOwner&&<span style={{textAlign:"right",fontWeight:700,color:r.surplus>=0?"#00c88c":"#ff4a6a"}}>{fmtS(r.surplus)}</span>}
+                    </div>
+                  ))}
                   {isOwner&&(
                     <div style={{fontSize:10,color:"#3a4460",padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
-                      "Left" assumes pay stays at your current estimate ({fmt(cr.net)} net) — no overtime or holiday variation.
+                      Tap a month to open it above. "Left" assumes pay stays at your current estimate ({fmt(cr.net)} net) — no overtime or holiday variation.
                     </div>
                   )}
                 </div>
@@ -3606,18 +3590,18 @@ const calcTimesheetTotals = days => {
                     </div>
                   </div>
                 )}
-                {activeSchedShared.length>0&&(
+                {selSchedShared.length>0&&(
                   <div style={{border:"1px solid #2a3a55",borderTop:"none"}}>
-                    <div style={{padding:"8px 10px",background:"#0e1726"}}><span style={{fontSize:10,fontWeight:700,color:"#8ec5ff",textTransform:"uppercase",letterSpacing:1}}>📅 Due this month</span></div>
-                    {activeSchedShared.map(b=>{
+                    <div style={{padding:"8px 10px",background:"#0e1726"}}><span style={{fontSize:10,fontWeight:700,color:"#8ec5ff",textTransform:"uppercase",letterSpacing:1}}>📅 Due {selIsNow?"this month":selLabel}</span></div>
+                    {selSchedShared.map(b=>{
                       const sh=schedShares(b);
                       return (
-                        <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});setSchedOpen(true);}}
+                        <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||(laSel?laSel.yr:schedNowYear)});setSchedOpen(true);}}
                           style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",alignItems:"center",padding:"10px",fontSize:12,borderTop:"1px solid #141824",background:"#0c1320",cursor:"pointer"}}>
-                          <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(schedNowMonth)}</span></span>
-                          <span style={{textAlign:"right",color:"#8892b0"}}>{fmt(b.total)}</span>
-                          <span style={{textAlign:"right",color:"#4a9eff"}}>{fmt(sh.glyn)}</span>
-                          <span style={{textAlign:"right",color:"#c84aff"}}>{fmt(sh.hollie)}</span>
+                          <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:Number(b.total)<0?"#4ad07a":"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(laSel?laSel.m:schedNowMonth)}</span></span>
+                          <span style={{textAlign:"right",color:Number(b.total)<0?"#4ad07a":"#8892b0"}}>{fmtS(b.total)}</span>
+                          <span style={{textAlign:"right",color:sh.glyn<0?"#4ad07a":"#4a9eff"}}>{fmtS(sh.glyn)}</span>
+                          <span style={{textAlign:"right",color:sh.hollie<0?"#4ad07a":"#c84aff"}}>{fmtS(sh.hollie)}</span>
                           <span style={{textAlign:"center",color:"#3a4460",fontSize:13}}>›</span>
                         </div>
                       );
@@ -3626,9 +3610,9 @@ const calcTimesheetTotals = days => {
                 )}
                 <div style={{display:"grid",gridTemplateColumns:"1fr 70px 64px 64px 26px",padding:"10px 10px",fontSize:11,fontWeight:700,background:"#141824",border:"1px solid #1e2535",borderTop:"1px solid #2a3050"}}>
                   <span style={{color:"#5a6480"}}>TOTAL</span>
-                  <span style={{textAlign:"right",color:"#5a6480"}}>{fmt(sharedBills.reduce((s,b)=>s+b.total,0)+schedShTotal)}</span>
-                  <span style={{textAlign:"right",color:"#4a9eff"}}>{fmt(shGlyn)}</span>
-                  <span style={{textAlign:"right",color:"#c84aff"}}>{fmt(shHollie)}</span>
+                  <span style={{textAlign:"right",color:"#5a6480"}}>{fmtS(sharedBills.reduce((s,b)=>s+b.total,0)+selSchedShTotal)}</span>
+                  <span style={{textAlign:"right",color:"#4a9eff"}}>{fmtS(selShMine)}</span>
+                  <span style={{textAlign:"right",color:"#c84aff"}}>{fmtS(selShThem)}</span>
                   <span></span>
                 </div>
                 <div style={{display:"flex",gap:8,marginTop:10}}>
@@ -3681,14 +3665,14 @@ const calcTimesheetTotals = days => {
                     </div>
                   </div>
                 )}
-                {activeSchedPersonal.length>0&&(
+                {selSchedPersonal.length>0&&(
                   <div style={{border:"1px solid #2a3a55",borderTop:"none"}}>
-                    <div style={{padding:"8px 10px",background:"#0e1726"}}><span style={{fontSize:10,fontWeight:700,color:"#8ec5ff",textTransform:"uppercase",letterSpacing:1}}>📅 Due this month</span></div>
-                    {activeSchedPersonal.map(b=>(
-                      <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});setSchedOpen(true);}}
+                    <div style={{padding:"8px 10px",background:"#0e1726"}}><span style={{fontSize:10,fontWeight:700,color:"#8ec5ff",textTransform:"uppercase",letterSpacing:1}}>📅 Due {selIsNow?"this month":selLabel}</span></div>
+                    {selSchedPersonal.map(b=>(
+                      <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||(laSel?laSel.yr:schedNowYear)});setSchedOpen(true);}}
                         style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",alignItems:"center",padding:"10px",fontSize:12,borderTop:"1px solid #141824",background:"#0c1320",cursor:"pointer"}}>
-                        <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(schedNowMonth)}</span></span>
-                        <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(b.total)}</span>
+                        <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><span style={{color:Number(b.total)<0?"#4ad07a":"#e8eaf0",fontWeight:600}}>{b.name}</span><span style={{display:"block",fontSize:9,color:"#5a6480"}}>ends {lastDayLabel(laSel?laSel.m:schedNowMonth)}</span></span>
+                        <span style={{textAlign:"right",color:Number(b.total)<0?"#4ad07a":"#ff8c4a"}}>{fmtS(b.total)}</span>
                         <span style={{textAlign:"center",color:"#3a4460",fontSize:13}}>›</span>
                       </div>
                     ))}
@@ -3696,7 +3680,7 @@ const calcTimesheetTotals = days => {
                 )}
                 <div style={{display:"grid",gridTemplateColumns:"1fr 80px 26px",padding:"10px 10px",fontSize:11,fontWeight:700,background:"#141824",border:"1px solid #ff8c4a",borderTop:"1px solid #2a3050"}}>
                   <span style={{color:"#5a6480"}}>TOTAL</span>
-                  <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmt(glOnly)}</span>
+                  <span style={{textAlign:"right",color:"#ff8c4a"}}>{fmtS(selPersonal)}</span>
                   <span></span>
                 </div>
                 <div style={{display:"flex",gap:8,marginTop:10}}>
@@ -5280,6 +5264,7 @@ const calcTimesheetTotals = days => {
           const f=schedForm;
           const setF=(patch)=>setSchedForm(p=>({...p,...patch}));
           const editing=!!f.id;
+          const negAmt=(parseFloat(f.total)||0)<0;
           const valid=(f.name||"").trim().length>0 && f.months.length>0 && (f.freq!=="once"||!!f.year);
           const seg=(active)=>({flex:1,background:active?"#1a3a5a":"transparent",border:active?"1px solid #2a5a8a":"1px solid #2a3050",borderRadius:8,color:active?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"});
           return (
@@ -5296,7 +5281,7 @@ const calcTimesheetTotals = days => {
                   style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
 
                 <div style={{...hdr,marginBottom:6}}>Amount (£)</div>
-                <input value={f.total} onChange={e=>setF({total:e.target.value.replace(/[^0-9.]/g,"")})} inputMode="decimal" placeholder="0.00"
+                <input value={f.total} onChange={e=>setF({total:e.target.value.replace(/[^0-9.\-]/g,"").replace(/(?!^)-/g,"")})} inputMode="decimal" placeholder="0.00"
                   style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
 
                 <div style={{...hdr,marginBottom:6}}>Show under</div>
@@ -5310,7 +5295,7 @@ const calcTimesheetTotals = days => {
                     <div style={{display:"flex",gap:8,marginBottom:f.splitMode?8:14}}>
                       <button onClick={()=>setF({splitMode:null,splitValue:""})} style={seg(!f.splitMode)}>50/50</button>
                       <button onClick={()=>setF({splitMode:"pct",splitValue:""})} style={seg(f.splitMode==="pct")}>% split</button>
-                      <button onClick={()=>setF({splitMode:"fixed",splitValue:""})} style={seg(f.splitMode==="fixed")}>£ fixed</button>
+                      {!negAmt&&<button onClick={()=>setF({splitMode:"fixed",splitValue:""})} style={seg(f.splitMode==="fixed")}>£ fixed</button>}
                     </div>
                     {f.splitMode&&(
                       <input value={f.splitValue||""} onChange={e=>setF({splitValue:e.target.value.replace(/[^0-9.]/g,"")})} inputMode="decimal"
