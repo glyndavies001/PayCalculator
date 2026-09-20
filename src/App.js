@@ -660,7 +660,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.58";
+const APP_VERSION = "1.13.59";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -2440,8 +2440,19 @@ export default function App() {
       const shared=baseShared+shHits.reduce((a,b)=>a+b.mine,0);
       const personal=basePersonal+peHits.reduce((a,b)=>a+b.mine,0);
       const extra=shHits.reduce((a,b)=>a+b.mine,0)+peHits.reduce((a,b)=>a+b.mine,0);
+      // Full bill list for this month: the standing monthly bills plus that
+      // month's scheduled ones, so expanding a month shows everything due.
+      const sharedList=[
+        ...sharedBills.map(b=>({id:b.id,name:b.name,mine:myShareOf(b),sched:null})),
+        ...shHits.map(b=>({id:"s"+b.id,name:b.name,mine:b.mine,sched:b})),
+      ];
+      const personalList=[
+        ...glynBills.map(b=>({id:b.id,name:b.name,mine:Number(b.total)||0,sched:null})),
+        ...peHits.map(b=>({id:"s"+b.id,name:b.name,mine:b.mine,sched:b})),
+      ];
       out.push({key:yr+"-"+m,m,yr,shared,personal,extra,total:shared+personal,
-        surplus:cr.net-(shared+personal),hits:[...shHits,...peHits],isNow:i===0});
+        surplus:cr.net-(shared+personal),hits:[...shHits,...peHits],
+        sharedList,personalList,isNow:i===0});
     }
     return out;
   },[sharedBills,glynBills,scheduledBills,myId,isOwner,schedNowMonth,schedNowYear,cr.net]);
@@ -3493,26 +3504,42 @@ const calcTimesheetTotals = days => {
                           <span style={{textAlign:"right",color:"#ff8c4a",fontWeight:600}}>{fmt(r.personal)}</span>
                           {isOwner&&<span style={{textAlign:"right",fontWeight:700,color:r.surplus>=0?"#00c88c":"#ff4a6a"}}>{r.surplus<0?"−":""}{fmt(r.surplus)}</span>}
                         </div>
-                        {open&&(
-                          <div style={{padding:"4px 8px 9px",background:"#0d1117",borderTop:"1px solid #1e2535"}}>
-                            {r.hits.length>0&&(<>
-                              <div style={{fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase",padding:"5px 2px"}}>Scheduled this month · tap to edit</div>
-                              {r.hits.map(h=>(
-                                <div key={h.id} onClick={e=>{e.stopPropagation();haptic();setSchedForm({id:h.id,name:h.name,total:h.total!=null?String(h.total):"",splitMode:h.split_mode||null,splitValue:h.split_value!=null?String(h.split_value):"",scope:h.scope,freq:h.freq,months:Array.isArray(h.months)?h.months:[],year:h.year||r.yr});setSchedOpen(true);}}
-                                  style={{display:"flex",justifyContent:"space-between",gap:8,padding:"6px 2px",fontSize:12,cursor:"pointer"}}>
-                                  <span style={{color:"#a8b0c4",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                                    {h.name}<span style={{color:"#3a4460",fontSize:10,marginLeft:5}}>{h.scope==="shared"?"shared":"mine"}</span>
+                        {open&&(()=>{
+                          const grp=(title,list,total,accent)=>(
+                            <div style={{marginBottom:8}}>
+                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"6px 2px 4px",borderBottom:"1px solid #1a2030"}}>
+                                <span style={{fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase"}}>{title}</span>
+                                <span style={{fontSize:11.5,fontWeight:800,color:accent}}>{fmt(total)}</span>
+                              </div>
+                              {list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"6px 2px"}}>None</div>}
+                              {list.map(it=>(
+                                <div key={it.id}
+                                  onClick={it.sched?(e=>{e.stopPropagation();haptic();const h=it.sched;setSchedForm({id:h.id,name:h.name,total:h.total!=null?String(h.total):"",splitMode:h.split_mode||null,splitValue:h.split_value!=null?String(h.split_value):"",scope:h.scope,freq:h.freq,months:Array.isArray(h.months)?h.months:[],year:h.year||r.yr});setSchedOpen(true);}):undefined}
+                                  style={{display:"flex",justifyContent:"space-between",gap:8,padding:"5px 2px",fontSize:11.5,cursor:it.sched?"pointer":"default"}}>
+                                  <span style={{color:it.sched?"#c8cee0":"#8892b0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                    {it.name}
+                                    {it.sched&&<span style={{color:"#ffb84a",fontSize:9,fontWeight:700,marginLeft:5}}>{it.sched.freq==="once"?"one-off":"annual"}</span>}
                                   </span>
-                                  <span style={{color:h.scope==="shared"?"#4a9eff":"#ff8c4a",fontWeight:700,whiteSpace:"nowrap"}}>{fmt(h.mine)} ›</span>
+                                  <span style={{color:it.sched?accent:"#7a8499",fontWeight:it.sched?700:600,whiteSpace:"nowrap"}}>{fmt(it.mine)}{it.sched?" ›":""}</span>
                                 </div>
                               ))}
-                            </>)}
+                            </div>
+                          );
+                          return (
+                          <div style={{padding:"4px 8px 9px",background:"#0d1117",borderTop:"1px solid #1e2535"}}>
+                            {grp("Shared · my share",r.sharedList,r.shared,"#4a9eff")}
+                            {grp("Mine",r.personalList,r.personal,"#ff8c4a")}
+                            <div style={{display:"flex",justifyContent:"space-between",padding:"7px 2px",borderTop:"1px solid #1e2535",fontSize:12}}>
+                              <span style={{color:"#8892b0",fontWeight:700}}>Total out</span>
+                              <span style={{color:"#e8eaf0",fontWeight:800}}>{fmt(r.total)}</span>
+                            </div>
                             <button onClick={e=>{e.stopPropagation();haptic();setSchedForm({id:null,name:"",total:"",splitMode:null,splitValue:"",scope:budTab==="glyn"?"personal":"shared",freq:"once",months:[r.m],year:r.yr});setSchedOpen(true);}}
-                              style={{width:"100%",marginTop:r.hits.length?7:3,background:"#161b28",border:"1px dashed #2a3a55",borderRadius:7,color:"#8ec5ff",fontSize:11.5,fontWeight:600,padding:"9px",cursor:"pointer"}}>
+                              style={{width:"100%",marginTop:5,background:"#161b28",border:"1px dashed #2a3a55",borderRadius:7,color:"#8ec5ff",fontSize:11.5,fontWeight:600,padding:"9px",cursor:"pointer"}}>
                               ＋ Add bill to {MONTH_ABBR[r.m-1]} {String(r.yr).slice(2)} · {budTab==="glyn"?"mine":"shared"}
                             </button>
                           </div>
-                        )}
+                          );
+                        })()}
                       </div>
                     );
                   })}
