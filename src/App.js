@@ -660,7 +660,7 @@ const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION = "1.13.56";
+const APP_VERSION = "1.13.57";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1232,6 +1232,8 @@ export default function App() {
   const [newCat,setNewCat]=useState("");
   const [dragOver,setDragOver]=useState(null);
   const [budTab,setBudTab]=useState("shared");
+  const [laOpen,setLaOpen]=useState(false);        // 12-month look-ahead panel
+  const [laMonth,setLaMonth]=useState(null);       // expanded month key
   const [billSnapshot,setBillSnapshot]=useState(()=>{
     try { return JSON.parse(localStorage.getItem("vaulted_bill_snapshot")||"null"); } catch { return null; }
   });
@@ -2411,6 +2413,39 @@ export default function App() {
   const cr=useMemo(()=>calcPay({...ci,stdHrs:effHrs.stdHrs,otHrs:effHrs.otHrs,weekendOtHrs:effHrs.weekendOtHrs,_allowanceOverride:effectiveAllowance}),[ci,effectiveAllowance,effHrs]);
   const surplus=cr.net-totalOut;
 
+  // 12-month look-ahead. Monthly bills are constant; what varies is which
+  // scheduled bills land in each month. Surplus assumes pay stays at the
+  // current estimate (no OT/holiday variation), so it is indicative only.
+  const lookAheadMonths=useMemo(()=>{
+    const myShareOf=(b)=>isOwner?billShares(b).glyn:billShares(b).hollie;
+    const baseShared=sharedBills.reduce((a,b)=>a+myShareOf(b),0);
+    const basePersonal=glynBills.reduce((a,b)=>a+(Number(b.total)||0),0);
+    const out=[];
+    for(let i=0;i<12;i++){
+      const idx=(schedNowMonth-1)+i;
+      const m=(idx%12)+1;
+      const yr=schedNowYear+Math.floor(idx/12);
+      const hits=scheduledBills.filter(b=>{
+        const ms=Array.isArray(b.months)?b.months:[];
+        if(!ms.includes(m))return false;
+        if(b.freq==="once")return (b.year||0)===yr;
+        return true;
+      });
+      const shHits=hits.filter(b=>b.scope==="shared").map(b=>({
+        ...b,mine:myShareOf({total:Number(b.total)||0,splitMode:b.split_mode,splitValue:b.split_value}),
+      }));
+      const peHits=hits.filter(b=>b.scope==="personal"&&b.owner===myId).map(b=>({
+        ...b,mine:Number(b.total)||0,
+      }));
+      const shared=baseShared+shHits.reduce((a,b)=>a+b.mine,0);
+      const personal=basePersonal+peHits.reduce((a,b)=>a+b.mine,0);
+      const extra=shHits.reduce((a,b)=>a+b.mine,0)+peHits.reduce((a,b)=>a+b.mine,0);
+      out.push({key:yr+"-"+m,m,yr,shared,personal,extra,total:shared+personal,
+        surplus:cr.net-(shared+personal),hits:[...shHits,...peHits],isNow:i===0});
+    }
+    return out;
+  },[sharedBills,glynBills,scheduledBills,myId,isOwner,schedNowMonth,schedNowYear,cr.net]);
+
   // Hollie's pay calc (partner view). OT is paid a month in ARREARS: hours are logged
   // against the month they're worked (stored as a per-month map in calc_inputs, so nothing
   // is lost and it shifts forward on its own) and pay out in the FOLLOWING month.
@@ -3426,6 +3461,62 @@ const calcTimesheetTotals = days => {
                 </button>
               );
             })()}
+
+            {/* ── 12-month look-ahead ── */}
+            <div style={{...card,marginBottom:12,padding:0}}>
+              <div onClick={()=>{haptic();setLaOpen(v=>!v);}} style={{padding:"11px 12px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div style={{fontSize:12,fontWeight:600,color:"#8ec5ff"}}>📆 Look ahead · 12 months</div>
+                <span style={{color:"#3a4460",fontSize:12}}>{laOpen?"⌃":"⌄"}</span>
+              </div>
+              {laOpen&&(
+                <div style={{padding:"0 10px 10px"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 68px 62px"+(isOwner?" 66px":""),padding:"6px 6px 8px",fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase"}}>
+                    <span>Month</span>
+                    <span style={{textAlign:"right",color:"#4a9eff"}}>Shared</span>
+                    <span style={{textAlign:"right",color:"#ff8c4a"}}>Mine</span>
+                    {isOwner&&<span style={{textAlign:"right",color:"#00c88c"}}>Left</span>}
+                  </div>
+                  {lookAheadMonths.map(r=>{
+                    const open=laMonth===r.key;
+                    return (
+                      <div key={r.key}>
+                        <div onClick={()=>{if(r.hits.length){haptic();setLaMonth(open?null:r.key);}}}
+                          style={{display:"grid",gridTemplateColumns:"1fr 68px 62px"+(isOwner?" 66px":""),alignItems:"center",
+                            padding:"9px 6px",fontSize:12.5,borderTop:"1px solid #1e2535",
+                            background:r.isNow?"#15203a":(open?"#11151f":"transparent"),
+                            cursor:r.hits.length?"pointer":"default"}}>
+                          <span style={{color:r.isNow?"#8ec5ff":"#d8dcea",fontWeight:r.isNow?700:500}}>
+                            {MONTH_ABBR[r.m-1]} {String(r.yr).slice(2)}
+                            {r.extra>0&&<span style={{color:"#ffb84a",fontSize:10.5,fontWeight:700,marginLeft:5}}>+{fmt(r.extra)}</span>}
+                          </span>
+                          <span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(r.shared)}</span>
+                          <span style={{textAlign:"right",color:"#ff8c4a",fontWeight:600}}>{fmt(r.personal)}</span>
+                          {isOwner&&<span style={{textAlign:"right",fontWeight:700,color:r.surplus>=0?"#00c88c":"#ff4a6a"}}>{r.surplus<0?"−":""}{fmt(r.surplus)}</span>}
+                        </div>
+                        {open&&r.hits.length>0&&(
+                          <div style={{padding:"4px 8px 8px",background:"#0d1117",borderTop:"1px solid #1e2535"}}>
+                            <div style={{fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase",padding:"5px 2px"}}>Scheduled this month</div>
+                            {r.hits.map(h=>(
+                              <div key={h.id} style={{display:"flex",justifyContent:"space-between",gap:8,padding:"4px 2px",fontSize:12}}>
+                                <span style={{color:"#a8b0c4",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                  {h.name}<span style={{color:"#3a4460",fontSize:10,marginLeft:5}}>{h.scope==="shared"?"shared":"mine"}</span>
+                                </span>
+                                <span style={{color:h.scope==="shared"?"#4a9eff":"#ff8c4a",fontWeight:700,whiteSpace:"nowrap"}}>{fmt(h.mine)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {isOwner&&(
+                    <div style={{fontSize:10,color:"#3a4460",padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
+                      "Left" assumes pay stays at your current estimate ({fmt(cr.net)} net) — no overtime or holiday variation.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             {budTab==="shared"&&(
               <div>
