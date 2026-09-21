@@ -717,7 +717,8 @@ const monthKeyOf = (yr, m) => yr + "-" + String(m).padStart(2, "0");
 const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
 const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
 const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
-const APP_VERSION = "1.13.70";
+const notSetFor = (b, mk) => isVariable(b) && !(mk in b.amounts);
+const APP_VERSION = "1.13.71";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -1294,6 +1295,9 @@ export default function App() {
   const [uploading,setUploading]=useState(false);
   const [lastPickerEvent,setLastPickerEvent]=useState(null);
   const [pickerDeath,setPickerDeath]=useState(false);
+  const [pickerStalled,setPickerStalled]=useState(false);  // tap, then nothing at all
+  const payslipInput=useRef(null);
+  const lastBatchSig=useRef("");    // guards against handling the same files twice
   // Picker-death detection: if the app (re)loads while a recent upload-box tap has no
   // matching change event, Android killed the page while the document picker was open.
   useEffect(()=>{
@@ -1303,6 +1307,18 @@ export default function App() {
     const evt=parseInt(localStorage.getItem(SK.pickerEvent))||0;
     if(tap && Date.now()-tap<3*60*1000 && evt<tap) setPickerDeath(true);
   },[]);
+  // A tap that produces neither an event nor a rescued file within 60s means the
+  // picker route has failed on this device - point at Share -> Vaulted instead.
+  useEffect(()=>{
+    const t=setInterval(()=>{
+      const tap=parseInt(localStorage.getItem(SK.pickerTap))||0;
+      const evt=parseInt(localStorage.getItem(SK.pickerEvent))||0;
+      const age=Date.now()-tap;
+      if(tap&&evt<tap&&age>60*1000&&age<10*60*1000&&!document.hidden)setPickerStalled(true);
+    },5000);
+    return ()=>clearInterval(t);
+  },[]);
+
   const [pending,setPending]=useState(null);
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
@@ -2709,19 +2725,50 @@ export default function App() {
     }
   };
 
-  const handleUpload=async e=>{
+  // Android Chrome sometimes populates input.files without ever firing change, so
+  // files can arrive from the event OR from us reading the input on return. Both
+  // routes come through here, and the signature stops a file being handled twice.
+  const intakePayslipFiles=async(files,input,{silent}={})=>{
     setLastPickerEvent(new Date());
     localStorage.setItem(SK.pickerEvent,String(Date.now()));
     setPickerDeath(false);
-    const files=Array.from(e.target.files||[]);
+    setPickerStalled(false);
     if(!files.length){
-      setMultiResults([{ok:false,name:"(no file)",err:"Picker returned no file — try selecting again"}]);
-      e.target.value="";
+      if(!silent)setMultiResults([{ok:false,name:"(no file)",err:"Picker returned no file — try selecting again"}]);
+      if(input)input.value="";
       return;
     }
+    const sig=files.map(f=>f.name+":"+f.size+":"+(f.lastModified||0)).join("|");
+    if(sig===lastBatchSig.current){ if(input)input.value=""; return; }
+    lastBatchSig.current=sig;
     try { await processPayslipFiles(files); }
-    finally { e.target.value=""; }
+    finally { if(input)input.value=""; }
   };
+  const handleUpload=async e=>{
+    await intakePayslipFiles(Array.from(e.target.files||[]),e.target);
+  };
+  // Returning to the app after a tap: read the input directly in case the event
+  // never came. Silent when empty - the user may simply have cancelled.
+  const rescuePayslipFiles=useCallback(async()=>{
+    const el=payslipInput.current;
+    if(!el)return;
+    const tap=parseInt(localStorage.getItem(SK.pickerTap))||0;
+    if(!tap||Date.now()-tap>3*60*1000)return;
+    const evt=parseInt(localStorage.getItem(SK.pickerEvent))||0;
+    if(evt>=tap)return;                       // the change event already handled it
+    const files=Array.from(el.files||[]);
+    if(!files.length)return;
+    await intakePayslipFiles(files,el,{silent:true});
+  },[]);
+
+  // Re-check the input every time the app comes back to the foreground.
+  useEffect(()=>{
+    const onVisible=()=>{ if(!document.hidden) setTimeout(rescuePayslipFiles,180); };
+    const onFocus=()=>setTimeout(rescuePayslipFiles,180);
+    document.addEventListener("visibilitychange",onVisible);
+    window.addEventListener("focus",onFocus);
+    return ()=>{ document.removeEventListener("visibilitychange",onVisible); window.removeEventListener("focus",onFocus); };
+  },[rescuePayslipFiles]);
 
   // Android share-target intake: sw.js stashes shared PDFs in the "vaulted-share"
   // cache and redirects here. Once the user is signed in, pull them out, process
@@ -3711,6 +3758,21 @@ const calcTimesheetTotals = days => {
                   );
                 })}
               </div>
+
+              {(()=>{
+                if(!selIsNow)return null;
+                const pend=[...sharedBills,...glynBills].filter(b=>notSetFor(b,selKey));
+                if(!pend.length)return null;
+                const names=pend.map(b=>b.name);
+                const label=names.length<=3?names.join(", ")
+                  :names.slice(0,2).join(", ")+" and "+(names.length-2)+" more";
+                return (
+                  <div style={{background:"#1d160833",border:"1px solid #4a3a1a",borderRadius:8,padding:"8px 10px",
+                    fontSize:11,color:"#ffb84a",lineHeight:1.5}}>
+                    <b>{label}</b> {names.length===1?"hasn't":"haven't"} been set for {selLabel} — counted as £0 until you do.
+                  </div>
+                );
+              })()}
 
               <div style={{display:"flex",alignItems:"flex-end",gap:14}}>
                 <div style={{flex:1}}>
@@ -5087,6 +5149,16 @@ const calcTimesheetTotals = days => {
               </div>
               {showPayslipUpload&&(<div style={{padding:"0 14px 14px",textAlign:"center"}}>
                 <p style={{fontSize:12,color:"#5a6480",marginBottom:16}}>Select one or more payslip PDFs. They will be read and added to your history automatically.</p>
+                {pickerStalled&&!uploading&&(
+                  <div style={{background:"#0e1726",border:"1px solid #2a5a8a",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
+                    <div style={{fontSize:12,fontWeight:700,color:"#8ec5ff",marginBottom:4}}>Picker didn't hand the file back</div>
+                    <div style={{fontSize:11,color:"#7a93b8",lineHeight:1.5}}>
+                      Android opened the picker but never returned the file, and it wasn't sitting on the input either.
+                      Open the PDF in your Files app and use <b>Share → Vaulted</b> instead — that route bypasses the picker entirely and works reliably.
+                    </div>
+                    <button onClick={()=>{haptic();localStorage.removeItem(SK.pickerTap);setPickerStalled(false);}} style={{marginTop:8,background:"#4a9eff22",border:"1px solid #2a5a8a",borderRadius:6,color:"#8ec5ff",fontSize:11,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>Dismiss</button>
+                  </div>
+                )}
                 {pickerDeath&&(
                   <div style={{background:"#2a1500",border:"1px solid #ffb84a",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
                     <div style={{fontSize:12,fontWeight:700,color:"#ffb84a",marginBottom:4}}>⚠ Android reloaded the app while the file picker was open</div>
@@ -5095,7 +5167,7 @@ const calcTimesheetTotals = days => {
                   </div>
                 )}
                 <label onClick={()=>{localStorage.setItem(SK.pickerTap,String(Date.now()));}} style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer"}}>
-                  <input type="file" accept="application/pdf" multiple onChange={handleUpload} disabled={uploading} style={{display:"none"}}/>
+                  <input ref={payslipInput} type="file" accept="application/pdf" multiple onChange={handleUpload} onInput={handleUpload} disabled={uploading} style={{display:"none"}}/>
                   {uploading
                     ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing..."}</div></div>
                     :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
