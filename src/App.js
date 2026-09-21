@@ -347,6 +347,12 @@ const SK = {
 // Supabase DB helpers
 // Retry a read once after a short delay when Supabase rejects a freshly-
 // refreshed token ("JWT issued at future" -- transient clock skew on app wake).
+const missingColumn = (error, col) => {
+  const msg = (error && (error.message || error.details)) || "";
+  return typeof msg === "string" && msg.includes("'" + col + "'") &&
+    /could not find|schema cache|does not exist/i.test(msg);
+};
+
 const jwtRetry = async (run) => {
   let res = await run();
   const msg = (res.error && res.error.message) || "";
@@ -381,7 +387,11 @@ const db = {
   async upsertSharedBill(b) {
     const row = { bill_id: b.id, name: b.name, total: b.total, is_car_glyn: false, split_mode: b.splitMode || null, split_value: b.splitValue != null ? b.splitValue : null };
     if (b.amounts !== undefined) row.amounts = b.amounts;   // untouched bills never write this column
-    const { error } = await supabase.from("shared_bills").upsert(row, { onConflict: "bill_id" });
+    let { error } = await supabase.from("shared_bills").upsert(row, { onConflict: "bill_id" });
+    if (missingColumn(error, "amounts")) {
+      delete row.amounts;
+      ({ error } = await supabase.from("shared_bills").upsert(row, { onConflict: "bill_id" }));
+    }
     reportDbError("upsertSharedBill", error);
   },
   async deleteSharedBill(billId) {
@@ -397,7 +407,11 @@ const db = {
   async upsertGlynBill(userId, b) {
     const row = { user_id: userId, bill_id: b.id, name: b.name, total: b.total };
     if (b.amounts !== undefined) row.amounts = b.amounts;   // untouched bills never write this column
-    const { error } = await supabase.from("glyn_bills").upsert(row, { onConflict: "user_id,bill_id" });
+    let { error } = await supabase.from("glyn_bills").upsert(row, { onConflict: "user_id,bill_id" });
+    if (missingColumn(error, "amounts")) {
+      delete row.amounts;
+      ({ error } = await supabase.from("glyn_bills").upsert(row, { onConflict: "user_id,bill_id" }));
+    }
     reportDbError("upsertGlynBill", error);
   },
   async deleteGlynBill(userId, billId) {
@@ -419,7 +433,12 @@ const db = {
   async saveSharedSettings(cats, billCats, billTags) {
     const row = { id: 1, cats, bill_cats: billCats, updated_at: new Date().toISOString() };
     if (billTags !== undefined) row.bill_tags = billTags;
-    const { error } = await supabase.from("shared_settings").upsert(row, { onConflict: "id" });
+    let { error } = await supabase.from("shared_settings").upsert(row, { onConflict: "id" });
+    if (missingColumn(error, "bill_tags")) {
+      // Migration not run yet: keep categories saving, just without the tags.
+      delete row.bill_tags;
+      ({ error } = await supabase.from("shared_settings").upsert(row, { onConflict: "id" }));
+    }
     reportDbError("saveSharedSettings", error);
   },
   async getSettlements() {
@@ -698,7 +717,7 @@ const monthKeyOf = (yr, m) => yr + "-" + String(m).padStart(2, "0");
 const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
 const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
 const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
-const APP_VERSION = "1.13.69";
+const APP_VERSION = "1.13.70";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
