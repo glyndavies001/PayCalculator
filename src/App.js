@@ -336,6 +336,8 @@ const SK = {
   pickerEvent:  "vaulted_picker_event",  // ms timestamp of last change event received
   loadCount:    "vaulted_load_count",    // app load counter (picker-death diagnostics)
   // Below kept for backward compat - falls back to defaults if missing
+  collapsed:    "vaulted_cat_collapsed", // which category cards are folded (device-local)
+  billSort:     "vaulted_bill_sort",      // how bills are ordered inside a category
   cats:         "vaulted_cats",
   billCats:     "vaulted_billcats",
   glynCats:     "vaulted_gcats",
@@ -377,7 +379,9 @@ const db = {
     return data || [];
   },
   async upsertSharedBill(b) {
-    const { error } = await supabase.from("shared_bills").upsert({ bill_id: b.id, name: b.name, total: b.total, is_car_glyn: false, split_mode: b.splitMode || null, split_value: b.splitValue != null ? b.splitValue : null }, { onConflict: "bill_id" });
+    const row = { bill_id: b.id, name: b.name, total: b.total, is_car_glyn: false, split_mode: b.splitMode || null, split_value: b.splitValue != null ? b.splitValue : null };
+    if (b.amounts !== undefined) row.amounts = b.amounts;   // untouched bills never write this column
+    const { error } = await supabase.from("shared_bills").upsert(row, { onConflict: "bill_id" });
     reportDbError("upsertSharedBill", error);
   },
   async deleteSharedBill(billId) {
@@ -391,7 +395,9 @@ const db = {
     return data || [];
   },
   async upsertGlynBill(userId, b) {
-    const { error } = await supabase.from("glyn_bills").upsert({ user_id: userId, bill_id: b.id, name: b.name, total: b.total }, { onConflict: "user_id,bill_id" });
+    const row = { user_id: userId, bill_id: b.id, name: b.name, total: b.total };
+    if (b.amounts !== undefined) row.amounts = b.amounts;   // untouched bills never write this column
+    const { error } = await supabase.from("glyn_bills").upsert(row, { onConflict: "user_id,bill_id" });
     reportDbError("upsertGlynBill", error);
   },
   async deleteGlynBill(userId, billId) {
@@ -410,8 +416,10 @@ const db = {
     if (error && error.code !== "PGRST116") { reportDbError("getSharedSettings", error); throw error; }
     return data;
   },
-  async saveSharedSettings(cats, billCats) {
-    const { error } = await supabase.from("shared_settings").upsert({ id: 1, cats, bill_cats: billCats, updated_at: new Date().toISOString() }, { onConflict: "id" });
+  async saveSharedSettings(cats, billCats, billTags) {
+    const row = { id: 1, cats, bill_cats: billCats, updated_at: new Date().toISOString() };
+    if (billTags !== undefined) row.bill_tags = billTags;
+    const { error } = await supabase.from("shared_settings").upsert(row, { onConflict: "id" });
     reportDbError("saveSharedSettings", error);
   },
   async getSettlements() {
@@ -682,7 +690,15 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 // so no migration); categories saved before this default by position.
 const CAT_COLORS = ["#4a9eff","#00c88c","#ff8c4a","#c84aff","#ffb84a","#4ad0c0","#ff6b8a","#8ec5ff"];
 const catColor = (cat, idx) => (cat && cat.color) || CAT_COLORS[(idx>=0?idx:0) % CAT_COLORS.length];
-const APP_VERSION = "1.13.67";
+
+// Variable bills (credit cards, say) appear every month but carry their own amount
+// per pay month, held in `amounts` keyed "YYYY-MM". A month with nothing recorded
+// is 0, so next month's balance is never assumed from this month's.
+const monthKeyOf = (yr, m) => yr + "-" + String(m).padStart(2, "0");
+const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
+const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
+const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
+const APP_VERSION = "1.13.69";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
 const RANGES = ["3M","6M","12M","2Y","All"];
@@ -803,6 +819,36 @@ function CollapsibleChart({title,data,dataKey,color}) {
 // BillRow / CatSection were retired in v1.13.63: the Budget tab now renders its
 // own rows and category sections inline, in the restructured card layout.
 
+
+// Sheet grabber. Dragging it down past a threshold closes the sheet, which is
+// what the handle looks like it should do; tapping the backdrop still works too.
+function SheetGrab({ onClose }) {
+  const startY = useRef(null);
+  const sheet = useRef(null);
+  const shift = (el, y) => { if (el) el.style.transform = y ? "translateY(" + y + "px)" : ""; };
+  const finish = (dy) => {
+    const el = sheet.current;
+    startY.current = null;
+    if (el) el.style.transition = "transform .18s ease-out";
+    if (dy > 70) {
+      shift(el, 600);
+      setTimeout(() => { shift(el, 0); if (el) el.style.transition = ""; if (onClose) onClose(); }, 150);
+    } else {
+      shift(el, 0);
+      setTimeout(() => { if (el) el.style.transition = ""; }, 200);
+    }
+  };
+  return (
+    <div
+      onTouchStart={e => { startY.current = e.touches[0].clientY; sheet.current = e.currentTarget.parentElement; if (sheet.current) sheet.current.style.transition = "none"; }}
+      onTouchMove={e => { if (startY.current == null) return; const dy = e.touches[0].clientY - startY.current; if (dy > 0) shift(sheet.current, dy); }}
+      onTouchEnd={e => { if (startY.current == null) return; finish(e.changedTouches[0].clientY - startY.current); }}
+      onTouchCancel={() => { if (startY.current != null) finish(0); }}
+      style={{ padding: "9px 0 9px", touchAction: "none", cursor: "grab" }}>
+      <div style={{ width: 40, height: 4, background: "#2a3050", borderRadius: 2, margin: "0 auto" }}/>
+    </div>
+  );
+}
 
 // -- Haptic feedback ----------------------------------------------------------
 function haptic(style = "light") {
@@ -1153,6 +1199,8 @@ export default function App() {
   const [glynBills,setGlynBills]=useState(INITIAL_GLYN_BILLS);
   const [cats,setCats]=useState(()=>load(SK.cats,[]));
   const [billCats,setBillCats]=useState(()=>load(SK.billCats,{}));
+  const [billTags,setBillTags]=useState({});        // {billId:[tag,...]} shared bills
+  const [glynBillTags,setGlynBillTags]=useState({}); // {billId:[tag,...]} personal bills
   const [glynCats,setGlynCats]=useState(()=>load(SK.glynCats,[]));
   const [glynBillCats,setGlynBillCats]=useState(()=>load(SK.glynBillCats,{}));
   const defCalc={stdHrs:getCurrentMonthHours(),otHrs:0,weekendOtHrs:0,holidayHrs:0,bonus:240,perfAllowance:true,period:getCurrentPayPeriodKey()};
@@ -1161,8 +1209,11 @@ export default function App() {
   const [editGl,setEditGl]=useState(null);
   const [addSh,setAddSh]=useState(false);
   const [addGl,setAddGl]=useState(false);
-  const [newSh,setNewSh]=useState({name:"",total:"",splitMode:null,splitValue:"",freq:"month",months:[]});
-  const [newGl,setNewGl]=useState({name:"",total:"",freq:"month",months:[]});
+  const [newSh,setNewSh]=useState({name:"",total:"",splitMode:null,splitValue:"",freq:"month",months:[],varies:false});
+  const [newGl,setNewGl]=useState({name:"",total:"",freq:"month",months:[],varies:false});
+  const [collapsed,setCollapsed]=useState(()=>load(SK.collapsed,{}));   // {catId:true}
+  const [billSort,setBillSort]=useState(()=>load(SK.billSort,"manual")); // manual|az|high|low
+  const [tagDraft,setTagDraft]=useState("");       // tag being typed in the bill sheet
   const [catsOpen,setCatsOpen]=useState(false);    // categories manager sheet
   const [addingCat,setAddingCat]=useState(null);
   const [newCat,setNewCat]=useState("");
@@ -1352,12 +1403,12 @@ export default function App() {
 
         // Bills -- merge with defaults if DB empty
         if (sBills && sBills.length > 0) {
-          setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), splitMode: b.split_mode || null, splitValue: b.split_value != null ? parseFloat(b.split_value) : null })));
+          setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), splitMode: b.split_mode || null, splitValue: b.split_value != null ? parseFloat(b.split_value) : null, amounts: b.amounts || undefined })));
         } else if (sBills) {
           for (const b of INITIAL_SHARED_BILLS) await trackSave(() => db.upsertSharedBill(b));
         } // sBills === null -> fetch failed; keep current state, never seed
         if (gBills && gBills.length > 0) {
-          setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
+          setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), amounts: b.amounts || undefined })));
         } else if (gBills && owner) {
           for (const b of INITIAL_GLYN_BILLS) await trackSave(() => db.upsertGlynBill(user.id, b));
         } else if (gBills) {
@@ -1385,6 +1436,8 @@ export default function App() {
             if (cd.billCats) setBillCats(cd.billCats);
             if (cd.glynCats) setGlynCats(cd.glynCats);
             if (cd.glynBillCats) setGlynBillCats(cd.glynBillCats);
+            if (cd.billTags) setBillTags(cd.billTags);
+            if (cd.glynBillTags) setGlynBillTags(cd.glynBillTags);
           }
         }
 
@@ -1394,6 +1447,7 @@ export default function App() {
           if (ss && (ss.cats || ss.bill_cats)) {
             setCats(ss.cats || []);
             setBillCats(ss.bill_cats || {});
+            if (ss.bill_tags) setBillTags(ss.bill_tags);
           } else if (owner) {
             const cd = appSettings?.cats_data || {};
             if ((cd.cats && cd.cats.length) || (cd.billCats && Object.keys(cd.billCats).length)) {
@@ -1465,10 +1519,10 @@ export default function App() {
         db.getPayslips(user.id).then(p => p && setHistory(p.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);})))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_bills" }, () =>
-        db.getSharedBills().then(b => b && setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), splitMode: r.split_mode || null, splitValue: r.split_value != null ? parseFloat(r.split_value) : null }))))
+        db.getSharedBills().then(b => b && setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), splitMode: r.split_mode || null, splitValue: r.split_value != null ? parseFloat(r.split_value) : null, amounts: r.amounts || undefined }))))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "glyn_bills", filter: "user_id=eq."+user.id }, () =>
-        db.getGlynBills(user.id).then(b => b && setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total) }))))
+        db.getGlynBills(user.id).then(b => b && setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), amounts: r.amounts || undefined }))))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_logs" }, () =>
         db.getLeaveLogs(user.id).then(l => l && setLeaveLogs(l))
@@ -1486,7 +1540,7 @@ export default function App() {
         });
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_settings" }, () =>
-        db.getSharedSettings().then(ss => { if (ss) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); } }).catch(() => {})
+        db.getSharedSettings().then(ss => { if (ss) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); if (ss.bill_tags) setBillTags(ss.bill_tags); } }).catch(() => {})
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "settlements" }, () =>
         db.getSettlements().then(st => st && setSettlements(st))
@@ -1615,8 +1669,8 @@ export default function App() {
         db.getAccumulator(user.id),
       ]);
       if (payslips && payslips.length > 0) setHistory(payslips.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);}));
-      if (sBills && sBills.length > 0) setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), splitMode: b.split_mode || null, splitValue: b.split_value != null ? parseFloat(b.split_value) : null })));
-      if (gBills && gBills.length > 0) setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total) })));
+      if (sBills && sBills.length > 0) setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), splitMode: b.split_mode || null, splitValue: b.split_value != null ? parseFloat(b.split_value) : null, amounts: b.amounts || undefined })));
+      if (gBills && gBills.length > 0) setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), amounts: b.amounts || undefined })));
       if (lLogs) setLeaveLogs(lLogs);
       if (lSettings) setLeaveSettings(lSettings);
       if (mTs) setMonthlyTs(mTs);
@@ -1638,6 +1692,8 @@ export default function App() {
           if (cd.billCats) setBillCats(cd.billCats);
           if (cd.glynCats) setGlynCats(cd.glynCats);
           if (cd.glynBillCats) setGlynBillCats(cd.glynBillCats);
+          if (cd.billTags) setBillTags(cd.billTags);
+          if (cd.glynBillTags) setGlynBillTags(cd.glynBillTags);
         }
       }
 
@@ -1647,6 +1703,7 @@ export default function App() {
         if (ss && (ss.cats || ss.bill_cats)) {
           setCats(ss.cats || []);
           setBillCats(ss.bill_cats || {});
+          if (ss.bill_tags) setBillTags(ss.bill_tags);
         } else if (isOwner) {
           const cd = appSettings?.cats_data || {};
           if ((cd.cats && cd.cats.length) || (cd.billCats && Object.keys(cd.billCats).length)) {
@@ -2353,8 +2410,6 @@ export default function App() {
   // current estimate (no OT/holiday variation), so it is indicative only.
   const lookAheadMonths=useMemo(()=>{
     const myShareOf=(b)=>isOwner?billShares(b).glyn:billShares(b).hollie;
-    const baseShared=sharedBills.reduce((a,b)=>a+myShareOf(b),0);
-    const basePersonal=glynBills.reduce((a,b)=>a+(Number(b.total)||0),0);
     const out=[];
     for(let i=0;i<12;i++){
       const idx=(schedNowMonth-1)+i;
@@ -2372,11 +2427,21 @@ export default function App() {
       const peHits=hits.filter(b=>b.scope==="personal"&&b.owner===myId).map(b=>({
         ...b,mine:Number(b.total)||0,
       }));
+      // Income lands in the same table with scope "income" - it adds to what's left,
+      // rather than counting as an outgoing.
+      const inHits=hits.filter(b=>b.scope==="income"&&b.owner===myId).map(b=>({
+        ...b,mine:Number(b.total)||0,
+      }));
+      const income=inHits.reduce((a,b)=>a+b.mine,0);
+      // Variable bills resolve to this month's own figure (0 when nothing is set).
+      const mk=monthKeyOf(yr,m);
+      const baseShared=sharedBills.reduce((a,b)=>a+myShareOf(withAmount(b,mk)),0);
+      const basePersonal=glynBills.reduce((a,b)=>a+amountOf(b,mk),0);
       const shared=baseShared+shHits.reduce((a,b)=>a+b.mine,0);
       const personal=basePersonal+peHits.reduce((a,b)=>a+b.mine,0);
       const extra=shHits.reduce((a,b)=>a+b.mine,0)+peHits.reduce((a,b)=>a+b.mine,0);
-      out.push({key:yr+"-"+m,m,yr,shared,personal,extra,total:shared+personal,
-        surplus:cr.net-(shared+personal),hits:[...shHits,...peHits],isNow:i===0});
+      out.push({key:yr+"-"+m,m,yr,shared,personal,extra,total:shared+personal,income,
+        surplus:cr.net+income-(shared+personal),hits:[...shHits,...peHits],incomeRows:inHits,isNow:i===0});
     }
     return out;
   },[sharedBills,glynBills,scheduledBills,myId,isOwner,schedNowMonth,schedNowYear,cr.net]);
@@ -2388,9 +2453,10 @@ export default function App() {
   const selSchedShared=(laSel?laSel.hits:[]).filter(b=>b.scope==="shared");
   const selSchedPersonal=(laSel?laSel.hits:[]).filter(b=>b.scope==="personal");
   const selSchedShTotal=selSchedShared.reduce((a,b)=>a+(Number(b.total)||0),0);
-  const selShGlyn=sharedBills.reduce((a,b)=>a+billShares(b).glyn,0)
+  const selKey=laSel?monthKeyOf(laSel.yr,laSel.m):monthKeyOf(schedNowYear,schedNowMonth);
+  const selShGlyn=sharedBills.reduce((a,b)=>a+billShares(withAmount(b,selKey)).glyn,0)
     +selSchedShared.reduce((a,b)=>a+schedShares(b).glyn,0);
-  const selShHollie=sharedBills.reduce((a,b)=>a+billShares(b).hollie,0)
+  const selShHollie=sharedBills.reduce((a,b)=>a+billShares(withAmount(b,selKey)).hollie,0)
     +selSchedShared.reduce((a,b)=>a+schedShares(b).hollie,0);
   const selShMine=isOwner?selShGlyn:selShHollie;
   const selPersonal=laSel?laSel.personal:glOnly;
@@ -2440,7 +2506,9 @@ export default function App() {
     return r?baselineNetFor(r.yr,r.m):viewerNet;
   };
   const selNet=netForIdx(selIdx);
-  const selSurplus=selNet-(selShMine+selPersonal);
+  const selIncomeRows=laSel?laSel.incomeRows:[];
+  const selIncome=laSel?laSel.income:0;
+  const selSurplus=selNet+selIncome-(selShMine+selPersonal);
 
   const chartData=useMemo(()=>{
     const s=sortH(history);
@@ -2478,7 +2546,7 @@ export default function App() {
     }
   };
   // Categories - store in app_settings (shared per user account)
-  const saveSharedCats=(nextCats,nextBillCats)=>{ if (user) trackSave(db.saveSharedSettings(nextCats, nextBillCats)); };
+  const saveSharedCats=(nextCats,nextBillCats,nextTags)=>{ if (user) trackSave(db.saveSharedSettings(nextCats, nextBillCats, nextTags!==undefined?nextTags:billTags)); };
   const updC=c=>{
     setCats(c);
     saveSharedCats(c, billCats);
@@ -2495,7 +2563,25 @@ export default function App() {
   };
   const updGBC=bc=>{
     setGlynBillCats(bc);
-    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats, glynCats, glynBillCats: bc } }));
+    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats, glynCats, glynBillCats: bc, billTags, glynBillTags } }));
+  };
+  // Tags live in this user's own settings blob, so they need no schema change.
+  const updTags=(billId,tags,isGlyn)=>{
+    const clean=tags.filter(Boolean);
+    if(isGlyn){
+      const n={...glynBillTags};clean.length?(n[billId]=clean):delete n[billId];
+      setGlynBillTags(n);
+      if(user)trackSave(db.saveAppSettings(user.id,{cats_data:{cats,billCats,glynCats,glynBillCats,billTags,glynBillTags:n}}));
+    }else{
+      const n={...billTags};clean.length?(n[billId]=clean):delete n[billId];
+      setBillTags(n);
+      saveSharedCats(cats,billCats,n);
+      if(user)trackSave(db.saveAppSettings(user.id,{cats_data:{cats,billCats,glynCats,glynBillCats,billTags:n,glynBillTags}}));
+    }
+  };
+  const allTags=(isGlyn)=>{
+    const src=isGlyn?glynBillTags:billTags;
+    return [...new Set(Object.values(src).flat())].sort((a,b)=>a.localeCompare(b));
   };
   // Restore all four category maps from a backup in ONE write, so the saves
   // can't race and overwrite each other (that race stopped restores sticking).
@@ -2655,8 +2741,24 @@ export default function App() {
   },[user]);
 
   const hSplit=(id,mode,value)=>{updSB(sharedBills.map(b=>b.id===id?{...b,splitMode:mode||null,splitValue:mode&&value!=null?value:null}:b));};
-  const hSB=(id,v)=>{const n=parseFloat(v);updSB(sharedBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditSh(null);};
-  const hGB=(id,v)=>{const n=parseFloat(v);updGB(glynBills.map(b=>b.id===id?{...b,total:isNaN(n)?b.total:n}:b));setEditGl(null);};
+  const hSB=(id,v)=>{
+    const n=parseFloat(v);
+    updSB(sharedBills.map(b=>{
+      if(b.id!==id)return b;
+      if(isNaN(n))return b;
+      return isVariable(b)?{...b,amounts:{...b.amounts,[selKey]:n}}:{...b,total:n};
+    }));
+    setEditSh(null);
+  };
+  const hGB=(id,v)=>{
+    const n=parseFloat(v);
+    updGB(glynBills.map(b=>{
+      if(b.id!==id)return b;
+      if(isNaN(n))return b;
+      return isVariable(b)?{...b,amounts:{...b.amounts,[selKey]:n}}:{...b,total:n};
+    }));
+    setEditGl(null);
+  };
   const delSh=id=>{const bill=sharedBills.find(b=>b.id===id);const prevBills=sharedBills;const prevCats=billCats;updSB(sharedBills.filter(b=>b.id!==id));const bc={...billCats};delete bc[id];updBC(bc);showUndoToast((bill?bill.name:"Bill")+" deleted",()=>{updSB(prevBills);updBC(prevCats);});};
   const delGl=id=>{const bill=glynBills.find(b=>b.id===id);const prevBills=glynBills;const prevCats=glynBillCats;updGB(glynBills.filter(b=>b.id!==id));const bc={...glynBillCats};delete bc[id];updGBC(bc);showUndoToast((bill?bill.name:"Bill")+" deleted",()=>{updGB(prevBills);updGBC(prevCats);});};
   // A bill is either "fixed" (a standing monthly bill) or lives in scheduled_bills
@@ -2688,25 +2790,29 @@ export default function App() {
     const total=parseFloat(newSh.total)||0;
     const splitMode=newSh.splitMode&&!(total<0&&newSh.splitMode==="fixed")?newSh.splitMode:null;
     if(newSh.freq==="month"){
-      updSB([...sharedBills,{id:Date.now(),name:newSh.name.trim(),total,splitMode,splitValue:splitMode&&isFinite(sv)?sv:null}]);
+      const b={id:Date.now(),name:newSh.name.trim(),total:newSh.varies?0:total,splitMode,splitValue:splitMode&&isFinite(sv)?sv:null};
+      if(newSh.varies)b.amounts={[selKey]:total};
+      updSB([...sharedBills,b]);
     }else{
       const ms=newSh.freq==="once"?[laSel?laSel.m:schedNowMonth]:(newSh.months.length?newSh.months.slice().sort((a,b)=>a-b):[laSel?laSel.m:schedNowMonth]);
       addSchedRow({id:Date.now(),name:newSh.name.trim(),total,split_mode:splitMode,split_value:splitMode&&isFinite(sv)?sv:null,
         scope:"shared",owner:myId,freq:newSh.freq,months:ms,year:newSh.freq==="once"?(laSel?laSel.yr:schedNowYear):null});
     }
-    setNewSh({name:"",total:"",splitMode:null,splitValue:"",freq:"month",months:[]});setAddSh(false);
+    setNewSh({name:"",total:"",splitMode:null,splitValue:"",freq:"month",months:[],varies:false});setAddSh(false);
   };
   const addGlBill=()=>{
     if(!newGl.name.trim())return;
     const total=parseFloat(newGl.total)||0;
     if(newGl.freq==="month"){
-      updGB([...glynBills,{id:Date.now(),name:newGl.name.trim(),total}]);
+      const b={id:Date.now(),name:newGl.name.trim(),total:newGl.varies?0:total};
+      if(newGl.varies)b.amounts={[selKey]:total};
+      updGB([...glynBills,b]);
     }else{
       const ms=newGl.freq==="once"?[laSel?laSel.m:schedNowMonth]:(newGl.months.length?newGl.months.slice().sort((a,b)=>a-b):[laSel?laSel.m:schedNowMonth]);
       addSchedRow({id:Date.now(),name:newGl.name.trim(),total,split_mode:null,split_value:null,
         scope:"personal",owner:myId,freq:newGl.freq,months:ms,year:newGl.freq==="once"?(laSel?laSel.yr:schedNowYear):null});
     }
-    setNewGl({name:"",total:"",freq:"month",months:[]});setAddGl(false);
+    setNewGl({name:"",total:"",freq:"month",months:[],varies:false});setAddGl(false);
   };
   const addCategory=(isGlyn)=>{
     if(!newCat.trim())return;
@@ -2738,6 +2844,17 @@ export default function App() {
   // Colour lives on the category object; cats are stored as JSON so this needs no migration.
   const setCatColor=(id,color,isGlyn)=>{
     isGlyn?updGC(glynCats.map(c=>c.id===id?{...c,color}:c)):updC(cats.map(c=>c.id===id?{...c,color}:c));
+  };
+  // Flip a standing bill between one fixed amount and a per-month amount.
+  const setVariable=(billId,on,isGlyn)=>{
+    const apply=b=>{
+      if(b.id!==billId)return b;
+      if(on)return {...b,total:0,amounts:{...(b.amounts||{}),[selKey]:isVariable(b)?amountOf(b,selKey):(Number(b.total)||0)}};
+      const {amounts,...rest}=b;
+      return {...rest,total:amountOf(b,selKey),amounts:null};
+    };
+    isGlyn?updGB(glynBills.map(apply)):updSB(sharedBills.map(apply));
+    haptic();
   };
   const renCat=(id,name,isGlyn)=>{isGlyn?updGC(glynCats.map(c=>c.id===id?{...c,name}:c)):updC(cats.map(c=>c.id===id?{...c,name}:c));};
   const drop=(catId,isGlyn)=>{
@@ -2842,7 +2959,7 @@ export default function App() {
     if(!name)return;
     // "Every month" turns a scheduled bill into a standing one: add it to the
     // monthly list and drop the scheduled record.
-    if(schedForm.freq==="month"){
+    if(schedForm.freq==="month"&&schedForm.scope!=="income"){
       const total=parseFloat(schedForm.total)||0;
       const sv=parseFloat(schedForm.splitValue);
       const splitMode=schedForm.scope==="shared"&&schedForm.splitMode&&!(total<0&&schedForm.splitMode==="fixed")?schedForm.splitMode:null;
@@ -3428,19 +3545,23 @@ const calcTimesheetTotals = days => {
           const accent=isG?"#ff8c4a":"#4a9eff";
           const listTotal=isG?selPersonal:selShMine;
           const themName=isOwner?"Hollie":"Glyn";
-          const mineOf=b=>isOwner?billShares(b).glyn:billShares(b).hollie;
-          const themOf=b=>isOwner?billShares(b).hollie:billShares(b).glyn;
+          const amt1=b=>amountOf(b,selKey);
+          const res=b=>withAmount(b,selKey);
+          const mineOf=b=>isOwner?billShares(res(b)).glyn:billShares(res(b)).hollie;
+          const themOf=b=>isOwner?billShares(res(b)).hollie:billShares(res(b)).glyn;
           const rate=selNet>0?Math.round(selSurplus/selNet*100):0;
           const rateCol=rate>=20?"#00c88c":rate>=10?"#ffb84a":"#ff4a6a";
 
           const splitNote=b=>{
-            if(b.splitMode==="pct"&&b.splitValue!=null)return fmt(b.total)+" · "+b.splitValue+"% mine";
-            if(b.splitMode==="fixed"&&b.splitValue!=null)return fmt(b.total)+" · "+themName+" "+fmt(b.splitValue);
-            return fmt(b.total)+" · 50/50";
+            const t=amt1(b);
+            const pre=isVariable(b)?"Varies · "+fmt(t):fmt(t);
+            if(b.splitMode==="pct"&&b.splitValue!=null)return pre+" · "+b.splitValue+"% mine";
+            if(b.splitMode==="fixed"&&b.splitValue!=null)return pre+" · "+themName+" "+fmt(b.splitValue);
+            return pre+" · 50/50";
           };
 
           // One row, used for standing bills and for this month's scheduled ones.
-          const row=(key,{name,sub,amt,her,onName,onAmount,drag,tag,neg,first})=>(
+          const row=(key,{name,sub,amt,her,onName,onAmount,drag,tag,neg,first,tags})=>(
             <div key={key} draggable={!!drag} onDragStart={drag}
               style={{display:"flex",alignItems:"center",gap:10,padding:"11px 13px",borderTop:"1px solid #171d2b",
                 ...(first?{borderTop:"none"}:{})}}>
@@ -3450,6 +3571,14 @@ const calcTimesheetTotals = days => {
                   {tag&&<span style={{display:"inline-block",fontSize:9,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#1d1608",color:"#ffb84a",marginLeft:6,verticalAlign:1}}>{tag}</span>}
                 </div>
                 {sub&&<div style={{fontSize:10.5,color:"#3a4460",marginTop:2}}>{sub}</div>}
+                {tags&&tags.length>0&&(
+                  <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:4}}>
+                    {tags.map(t=>(
+                      <span key={t} style={{fontSize:9.5,fontWeight:600,color:"#8892b0",background:"#1a1f2e",
+                        border:"1px solid #232a3d",borderRadius:4,padding:"2px 6px"}}>{t}</span>
+                    ))}
+                  </div>
+                )}
               </div>
               <div onClick={onAmount} style={{textAlign:"right",cursor:onAmount?"pointer":"default"}}>
                 <div style={{fontSize:13.5,fontWeight:700,color:neg?"#4ad07a":"#e8eaf0"}}>{fmtS(amt)}</div>
@@ -3460,19 +3589,21 @@ const calcTimesheetTotals = days => {
 
           const editRow=(b,first)=>(
             <div key={b.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 13px",borderTop:first?"none":"1px solid #171d2b",background:"#0f141f"}}>
-              <span style={{flex:1,fontSize:12,color:"#5a6480"}}>Total for {b.name}</span>
-              <input autoFocus type="number" defaultValue={String(b.total)}
+              <span style={{flex:1,fontSize:12,color:"#5a6480"}}>{isVariable(b)?b.name+" in "+selLabel:"Total for "+b.name}</span>
+              <input autoFocus type="number" defaultValue={String(amt1(b))}
                 onBlur={e=>onAmt(b.id,e.target.value)}
                 onKeyDown={e=>{if(e.key==="Enter")onAmt(b.id,e.target.value);}}
                 style={{width:96,background:"#1e2535",border:"1px solid "+accent,borderRadius:6,color:"#e8eaf0",fontSize:13,padding:"7px 8px",textAlign:"right"}}/>
             </div>
           );
 
+          const tagsFor=b=>(isG?glynBillTags:billTags)[b.id]||[];
           const billRows=list=>list.map((b,bi)=>editingId===b.id?editRow(b,bi===0):row(b.id,{
             first:bi===0,
+            tags:tagsFor(b),
             name:b.name,
-            sub:isG?null:splitNote(b),
-            amt:isG?b.total:mineOf(b),
+            sub:isG?(isVariable(b)?"Varies each month":null):splitNote(b),
+            amt:isG?amt1(b):mineOf(b),
             her:isG?null:themOf(b),
             onName:()=>{haptic();setMoveBill({id:b.id,isGlyn:isG});},
             onAmount:()=>{haptic();setEditing(b.id);},
@@ -3482,38 +3613,58 @@ const calcTimesheetTotals = days => {
           // Each category is a banded block inside the card, so the list reads as
           // groups rather than one run of rows.
           // Each category is its own card, so the groups can't run together.
-          const band=(name,value,count,tint)=>(
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-              padding:"10px 13px",background:tint?tint+"1c":"#10151f",
-              borderBottom:"1px solid "+(tint?tint+"33":"#1e2535")}}>
+          const band=(name,value,count,tint,onToggle,isShut)=>(
+            <div onClick={onToggle} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+              padding:"10px 13px",background:tint?tint+"1c":"#10151f",cursor:onToggle?"pointer":"default",
+              borderBottom:isShut?"none":"1px solid "+(tint?tint+"33":"#1e2535")}}>
               <span style={{display:"flex",alignItems:"center",gap:7,minWidth:0}}>
                 {tint&&<span style={{flex:"0 0 auto",width:7,height:7,borderRadius:4,background:tint}}/>}
                 <span style={{fontSize:12,fontWeight:700,color:tint||"#c8cee0",letterSpacing:.2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
                 {count!=null&&<span style={{flex:"0 0 auto",fontSize:11,color:"#3a4460",fontWeight:600}}>{count}</span>}
               </span>
-              <span style={{flex:"0 0 auto",fontSize:12.5,fontWeight:700,color:"#7a8499"}}>{fmtS(value)}</span>
+              <span style={{flex:"0 0 auto",display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:12.5,fontWeight:700,color:"#7a8499"}}>{fmtS(value)}</span>
+                {onToggle&&<span style={{fontSize:11,color:tint||"#5a6480",width:9,textAlign:"center"}}>{isShut?"▸":"▾"}</span>}
+              </span>
             </div>
           );
           const groupCard=(key,inner,active,tint)=>(
             <div key={key} style={{background:"#141824",borderRadius:12,overflow:"hidden",
               border:"1px solid "+(active?"#4a9eff":(tint?tint+"3d":"#1e2535"))}}>{inner}</div>
           );
+          const ckey=(catId)=>(isG?"g":"s")+(catId==null?"un":catId);
+          const toggleCat=(catId)=>{
+            const k=ckey(catId);
+            setCollapsed(prev=>{const n={...prev};n[k]?delete n[k]:(n[k]=true);save(SK.collapsed,n);return n;});
+            haptic();
+          };
           const section=(label,value,list,catId,tint)=>{
             const on=dragOver===catId&&catId!==undefined;
+            const shut=!!collapsed[ckey(catId)];
             return (
               <div key={label+(catId||"")}
                 onDragOver={catId!==undefined?(e=>{e.preventDefault();setDragOver(catId);}):undefined}
                 onDragLeave={catId!==undefined?(()=>setDragOver(null)):undefined}
                 onDrop={catId!==undefined?(()=>drop(catId,isG)):undefined}>
                 {groupCard(label+(catId||""),<>
-                  {band(label,value,list.length,tint)}
-                  {list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"11px 13px"}}>Drop bills here</div>}
-                  {billRows(list)}
+                  {band(label,value,list.length,tint,()=>toggleCat(catId),shut)}
+                  {!shut&&list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"11px 13px"}}>Drop bills here</div>}
+                  {!shut&&billRows(sortBills(list))}
                 </>,on,tint)}
               </div>
             );
           };
 
+          // Sorting is a view over the manual order, so dragging still decides "manual".
+          const sortBills=(list)=>{
+            if(billSort==="manual")return list;
+            const amt=b=>isG?amt1(b):mineOf(b);
+            const c=[...list];
+            if(billSort==="az")c.sort((a,b)=>a.name.localeCompare(b.name,"en",{sensitivity:"base"}));
+            if(billSort==="high")c.sort((a,b)=>amt(b)-amt(a));
+            if(billSort==="low")c.sort((a,b)=>amt(a)-amt(b));
+            return c;
+          };
           const uncat=bills.filter(b=>!bmap[b.id]);
 
           return (
@@ -3546,6 +3697,7 @@ const calcTimesheetTotals = days => {
                 <div style={{flex:1}}>
                   <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Left over</div>
                   <div style={{fontSize:21,fontWeight:800,color:selSurplus>=0?"#00c88c":"#ff4a6a"}}>{fmtS(selSurplus)}</div>
+                  {selIncome>0&&<div style={{fontSize:10,color:"#4ad07a",marginTop:2}}>incl. {fmt(selIncome)} income</div>}
                 </div>
                 <div style={{flex:1}}>
                   <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Shared</div>
@@ -3558,7 +3710,7 @@ const calcTimesheetTotals = days => {
               </div>
             </div>
 
-            {/* ── which list ── */}
+            {/* ── which list, and how it's ordered ── */}
             <div style={{display:"flex",gap:4}}>
               {[["shared","Shared"],["glyn","Mine"]].map(([v,l])=>(
                 <button key={v} onClick={()=>setBudTab(v)} style={{
@@ -3567,14 +3719,44 @@ const calcTimesheetTotals = days => {
                 }}>{l}</button>
               ))}
             </div>
+            <div style={{display:"flex",gap:4,alignItems:"center",marginTop:-4}}>
+              <span style={{fontSize:9.5,color:"#3a4460",fontWeight:700,letterSpacing:1,textTransform:"uppercase",paddingLeft:2,marginRight:2}}>Sort</span>
+              {[["manual","Manual"],["az","A–Z"],["high","High"],["low","Low"]].map(([v,l])=>(
+                <button key={v} onClick={()=>{haptic();setBillSort(v);save(SK.billSort,v);}} style={{
+                  flex:1,background:billSort===v?"#1a2535":"transparent",color:billSort===v?"#8ec5ff":"#5a6480",
+                  border:"1px solid "+(billSort===v?"#2a5a8a":"#1e2535"),borderRadius:7,padding:"6px 2px",fontSize:10.5,fontWeight:700,cursor:"pointer"
+                }}>{l}</button>
+              ))}
+              <button onClick={()=>{
+                haptic();
+                const keys=[...bcats.map(c=>ckey(c.id)),...(uncat.length?[ckey(null)]:[])];
+                const anyOpen=keys.some(k=>!collapsed[k]);
+                const n={...collapsed};
+                keys.forEach(k=>{anyOpen?n[k]=true:delete n[k];});
+                setCollapsed(n);save(SK.collapsed,n);
+              }} style={{flex:"0 0 auto",background:"transparent",border:"1px solid #1e2535",borderRadius:7,color:"#5a6480",fontSize:11,fontWeight:700,padding:"6px 9px",cursor:"pointer"}}>⇕</button>
+            </div>
 
             {/* ── the bills ── */}
             <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {isG&&selIncomeRows.length>0&&groupCard("income",<>
+                {band("Income · "+selLabel,selIncome,selIncomeRows.length,"#00c88c")}
+                {selIncomeRows.map((b,ii)=>row("i"+b.id,{
+                  first:ii===0,
+                  name:b.name,
+                  sub:(b.freq==="once"?"One-off":"Every year")+" · adds to what's left",
+                  amt:b.mine,
+                  neg:true,
+                  tag:"INCOME",
+                  onName:()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:null,splitValue:"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||(laSel?laSel.yr:schedNowYear)});setSchedOpen(true);},
+                  onAmount:()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:null,splitValue:"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||(laSel?laSel.yr:schedNowYear)});setSchedOpen(true);},
+                }))}
+              </>,false,"#00c88c")}
               {bcats.map((c,ci)=>section(c.name,
-                bills.filter(b=>bmap[b.id]===c.id).reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),
+                bills.filter(b=>bmap[b.id]===c.id).reduce((s,b)=>s+(isG?amt1(b):mineOf(b)),0),
                 bills.filter(b=>bmap[b.id]===c.id),c.id,catColor(c,ci)))}
               {uncat.length>0&&section("Uncategorised",
-                uncat.reduce((s,b)=>s+(isG?b.total:mineOf(b)),0),uncat,null)}
+                uncat.reduce((s,b)=>s+(isG?amt1(b):mineOf(b)),0),uncat,null)}
               {bills.length===0&&groupCard("empty",<div style={{fontSize:12,color:"#3a4460",textAlign:"center",padding:"18px 12px"}}>No bills yet — add your first below.</div>)}
 
               {schedRows.length>0&&groupCard("sched",<>
@@ -3607,10 +3789,16 @@ const calcTimesheetTotals = days => {
 
             {/* ── add ── */}
             {!(isG?addGl:addSh)&&(
-              <button onClick={()=>{haptic();isG?setAddGl(true):setAddSh(true);}}
-                style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:10,color:"#06101c",fontSize:13.5,fontWeight:700,padding:"13px",cursor:"pointer"}}>
-                + Add bill
-              </button>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>{haptic();isG?setAddGl(true):setAddSh(true);}}
+                  style={{flex:1,background:"#4a9eff",border:"none",borderRadius:10,color:"#06101c",fontSize:13.5,fontWeight:700,padding:"13px",cursor:"pointer"}}>
+                  + Add bill
+                </button>
+                <button onClick={()=>{haptic();setSchedForm({id:null,name:"",total:"",splitMode:null,splitValue:"",scope:"income",freq:"once",months:[laSel?laSel.m:schedNowMonth],year:laSel?laSel.yr:schedNowYear});setSchedOpen(true);}}
+                  style={{flex:"0 0 auto",background:"transparent",border:"1px solid #17553f",borderRadius:10,color:"#00c88c",fontSize:12.5,fontWeight:700,padding:"13px 14px",cursor:"pointer"}}>
+                  + Income
+                </button>
+              </div>
             )}
 
             {addSh&&!isG&&(
@@ -3633,6 +3821,12 @@ const calcTimesheetTotals = days => {
                         style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":"#5a6480",fontSize:10,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
                     );})}
                   </div>
+                )}
+                {newSh.freq==="month"&&(
+                  <label style={{display:"flex",alignItems:"center",gap:8,fontSize:11.5,color:"#8892b0",marginBottom:8,cursor:"pointer"}}>
+                    <input type="checkbox" checked={newSh.varies} onChange={e=>setNewSh(r=>({...r,varies:e.target.checked}))}/>
+                    Amount changes each month (upcoming months start at £0)
+                  </label>
                 )}
                 <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>Split</div>
                 <div style={{display:"flex",gap:6,marginBottom:8}}>
@@ -3674,6 +3868,12 @@ const calcTimesheetTotals = days => {
                     );})}
                   </div>
                 )}
+                {newGl.freq==="month"&&(
+                  <label style={{display:"flex",alignItems:"center",gap:8,fontSize:11.5,color:"#8892b0",marginBottom:8,cursor:"pointer"}}>
+                    <input type="checkbox" checked={newGl.varies} onChange={e=>setNewGl(r=>({...r,varies:e.target.checked}))}/>
+                    Amount changes each month (upcoming months start at £0)
+                  </label>
+                )}
                 <div style={{display:"flex",gap:6}}>
                   <button onClick={addGlBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:7,color:"#000",fontWeight:700,fontSize:12.5,padding:"10px",cursor:"pointer"}}>Add bill</button>
                   <button onClick={()=>setAddGl(false)} style={{background:"#1e2535",border:"none",borderRadius:7,color:"#5a6480",fontSize:12.5,padding:"10px 14px",cursor:"pointer"}}>Cancel</button>
@@ -3697,7 +3897,7 @@ const calcTimesheetTotals = days => {
                   <span style={{textAlign:"right",color:"#00c88c"}}>Left</span>
                 </div>
                 {lookAheadMonths.map((r,i)=>{
-                  const vs=netForIdx(i)-r.total;
+                  const vs=netForIdx(i)+r.income-r.total;
                   return (
                     <div key={r.key} onClick={()=>{haptic();setSelIdx(i);setLaOpen(false);}}
                       style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",alignItems:"center",
@@ -5248,7 +5448,7 @@ const calcTimesheetTotals = days => {
       {showMore&&(
         <div onClick={()=>setShowMore(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
           <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))"}}>
-            <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 10px"}}/>
+            <SheetGrab onClose={()=>setShowMore(false)}/>
             <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 6px"}}>More</div>
             {secondaryTabs.map(t=>(
               <button key={t} onClick={()=>{haptic();setTab(t);setShowMore(false);window.scrollTo(0,0);}} style={{
@@ -5269,7 +5469,7 @@ const calcTimesheetTotals = days => {
         return(
           <div onClick={()=>{setCatsOpen(false);setAddingCat(null);setNewCat("");}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"78vh",overflowY:"auto"}}>
-              <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 10px"}}/>
+              <SheetGrab onClose={()=>{setCatsOpen(false);setAddingCat(null);setNewCat("");}}/>
               <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 10px"}}>Categories · {isG?"my bills":"shared bills"}</div>
               {list.length===0&&<div style={{fontSize:12,color:"#5a6480",padding:"6px 4px 12px"}}>No categories yet. Bills sit under "Uncategorised" until you add one.</div>}
               {list.map((c,ci)=>{
@@ -5319,11 +5519,63 @@ const calcTimesheetTotals = days => {
         return(
           <div onClick={()=>setMoveBill(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"72vh",overflowY:"auto"}}>
-              <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 10px"}}/>
+              <SheetGrab onClose={()=>{setMoveBill(null);setTagDraft("");}}/>
               <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 8px"}}>Edit bill</div>
               <input key={moveBill.id} defaultValue={bill?bill.name:""} placeholder="Bill name"
                 onBlur={e=>{const v=e.target.value.trim();if(v&&bill&&v!==bill.name)renameBill(moveBill.id,v,isG);}}
                 style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
+              {bill&&(()=>{
+                const varies=isVariable(bill);
+                return (
+                  <>
+                    <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Amount</div>
+                    <div style={{display:"flex",gap:6,marginBottom:8}}>
+                      <button onClick={()=>{if(varies)setVariable(moveBill.id,false,isG);}}
+                        style={{flex:1,background:!varies?"#15203a":"#1e2535",border:"1px solid "+(!varies?"#4a9eff":"#2a3050"),borderRadius:7,color:!varies?"#4a9eff":"#8892b0",fontSize:11.5,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Same every month</button>
+                      <button onClick={()=>{if(!varies)setVariable(moveBill.id,true,isG);}}
+                        style={{flex:1,background:varies?"#15203a":"#1e2535",border:"1px solid "+(varies?"#4a9eff":"#2a3050"),borderRadius:7,color:varies?"#4a9eff":"#8892b0",fontSize:11.5,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Changes each month</button>
+                    </div>
+                    <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>
+                      {varies
+                        ? "Set separately for each month — currently "+fmt(amountOf(bill,selKey))+" in "+selLabel+". Months you haven't filled in stay at £0, so upcoming months aren't guessed from this one."
+                        : "One figure that applies to every month, including future ones."}
+                    </div>
+                  </>
+                );
+              })()}
+              {(()=>{
+                const cur=(isG?glynBillTags:billTags)[moveBill.id]||[];
+                const known=allTags(isG).filter(t=>!cur.includes(t));
+                return (
+                  <>
+                    <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Tags</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:6,padding:"0 4px",marginBottom:cur.length?8:0}}>
+                      {cur.map(t=>(
+                        <button key={t} onClick={()=>{haptic();updTags(moveBill.id,cur.filter(x=>x!==t),isG);}}
+                          style={{background:"#1a2535",border:"1px solid #2a3a55",borderRadius:6,color:"#8ec5ff",fontSize:12,fontWeight:600,padding:"7px 10px",cursor:"pointer"}}>
+                          {t} <span style={{color:"#4a5a7a"}}>✕</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{display:"flex",gap:6,marginBottom:known.length?8:14}}>
+                      <input value={tagDraft} onChange={e=>setTagDraft(e.target.value)}
+                        onKeyDown={e=>{if(e.key==="Enter"){const v=tagDraft.trim();if(v&&!cur.includes(v))updTags(moveBill.id,[...cur,v],isG);setTagDraft("");}}}
+                        placeholder="Add a tag"
+                        style={{flex:1,background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px"}}/>
+                      <button onClick={()=>{const v=tagDraft.trim();if(v&&!cur.includes(v)){haptic();updTags(moveBill.id,[...cur,v],isG);}setTagDraft("");}}
+                        style={{background:"#1a2535",border:"1px solid #2a5a8a",borderRadius:8,color:"#8ec5ff",fontSize:13,fontWeight:700,padding:"10px 14px",cursor:"pointer"}}>Add</button>
+                    </div>
+                    {known.length>0&&(
+                      <div style={{display:"flex",flexWrap:"wrap",gap:5,padding:"0 4px",marginBottom:14}}>
+                        {known.slice(0,10).map(t=>(
+                          <button key={t} onClick={()=>{haptic();updTags(moveBill.id,[...cur,t],isG);}}
+                            style={{background:"transparent",border:"1px dashed #2a3050",borderRadius:6,color:"#5a6480",fontSize:11,fontWeight:600,padding:"5px 9px",cursor:"pointer"}}>+ {t}</button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
               <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>How often</div>
               <div style={{display:"flex",gap:6,marginBottom:6}}>
                 <button style={{flex:1,background:"#1a3a2a",border:"1px solid #00c88c",borderRadius:7,color:"#00c88c",fontSize:11,fontWeight:700,padding:"9px 2px",cursor:"default"}}>Every month ✓</button>
@@ -5382,10 +5634,10 @@ const calcTimesheetTotals = days => {
       {schedOpen&&(()=>{
         const themName=isOwner?"Hollie":"Glyn";
         const sheet={position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 14px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"90vh",overflowY:"auto"};
-        const grab=<div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 12px"}}/>;
+        const grab=<SheetGrab onClose={()=>setSchedOpen(false)}/>;
         const mine=scheduledBills.filter(b=>b.scope==="shared"||b.owner===myId);
         const isPast=(b)=>b.freq==="once"&&!schedActive(b)&&(((b.year||0)<schedNowYear)||((b.year||0)===schedNowYear&&Math.max(0,...(Array.isArray(b.months)?b.months:[0]))<schedNowMonth));
-        const tag=(b)=>b.scope==="shared"?"Shared":"Personal";
+        const tag=(b)=>b.scope==="income"?"Income":b.scope==="shared"?"Shared":"Personal";
         if(schedForm){
           const f=schedForm;
           const setF=(patch)=>setSchedForm(p=>({...p,...patch}));
@@ -5410,11 +5662,17 @@ const calcTimesheetTotals = days => {
                 <input value={f.total} onChange={e=>setF({total:e.target.value.replace(/[^0-9.\-]/g,"").replace(/(?!^)-/g,"")})} inputMode="decimal" placeholder="0.00"
                   style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
 
-                <div style={{...hdr,marginBottom:6}}>Show under</div>
+                <div style={{...hdr,marginBottom:6}}>Type</div>
                 <div style={{display:"flex",gap:8,marginBottom:f.scope==="shared"?10:14}}>
-                  <button onClick={()=>setF({scope:"shared"})} style={seg(f.scope==="shared")}>Shared bills</button>
-                  <button onClick={()=>setF({scope:"personal"})} style={seg(f.scope==="personal")}>My bills</button>
+                  <button onClick={()=>setF({scope:"shared"})} style={seg(f.scope==="shared")}>Shared bill</button>
+                  <button onClick={()=>setF({scope:"personal"})} style={seg(f.scope==="personal")}>My bill</button>
+                  <button onClick={()=>setF({scope:"income",splitMode:null,splitValue:"",freq:f.freq==="month"?"once":f.freq,months:f.months.length?f.months:[laSel?laSel.m:schedNowMonth],year:f.year||(laSel?laSel.yr:schedNowYear)})} style={seg(f.scope==="income")}>Income</button>
                 </div>
+                {f.scope==="income"&&(
+                  <div style={{fontSize:11,color:"#4ad07a",marginBottom:14,lineHeight:1.5}}>
+                    Income adds to what's left over in the months it lands, instead of counting as a bill.
+                  </div>
+                )}
                 {f.scope==="shared"&&(
                   <>
                     <div style={{...hdr,marginBottom:6}}>Split</div>
@@ -5433,7 +5691,7 @@ const calcTimesheetTotals = days => {
 
                 <div style={{...hdr,marginBottom:6}}>When</div>
                 <div style={{display:"flex",gap:8,marginBottom:12}}>
-                  <button onClick={()=>setF({freq:"month"})} style={seg(f.freq==="month")}>Every month</button>
+                  {f.scope!=="income"&&<button onClick={()=>setF({freq:"month"})} style={seg(f.freq==="month")}>Every month</button>}
                   <button onClick={()=>setF({freq:"annual"})} style={seg(f.freq==="annual")}>Every year</button>
                   <button onClick={()=>setF({freq:"once",months:f.months.slice(0,1)})} style={seg(f.freq==="once")}>One-off</button>
                 </div>
@@ -5504,7 +5762,7 @@ const calcTimesheetTotals = days => {
         return (
           <div onClick={()=>setGiftOpen(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 14px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"90vh",overflowY:"auto"}}>
-              <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 12px"}}/>
+              <SheetGrab onClose={()=>setGiftOpen(false)}/>
               <div style={{fontSize:14,color:"#e8eaf0",fontWeight:800,marginBottom:12}}>{editing?"Edit person":"Add person"}</div>
 
               <div style={{...hdr,marginBottom:6}}>Name</div>
@@ -5543,7 +5801,7 @@ const calcTimesheetTotals = days => {
         return (
           <div onClick={()=>setSettleOpen(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 14px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"88vh",overflowY:"auto"}}>
-              <div style={{width:40,height:4,background:"#2a3050",borderRadius:2,margin:"6px auto 12px"}}/>
+              <SheetGrab onClose={()=>setSettleOpen(false)}/>
               <div style={{fontSize:14,color:"#e8eaf0",fontWeight:800,marginBottom:12}}>Add entry</div>
 
               <div style={{display:"flex",gap:8,marginBottom:14}}>
