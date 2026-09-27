@@ -741,7 +741,7 @@ const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
 const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
 const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
 const notSetFor = (b, mk) => isVariable(b) && !(mk in b.amounts);
-const APP_VERSION = "1.13.73";
+const APP_VERSION = "1.13.74";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Move","Diag"];
 
@@ -2682,7 +2682,11 @@ export default function App() {
   useEffect(()=>{
     if(!myId||!movePlan||moveMissing||dataLoading||!personalOk.current)return;
     const cur=(movePlan.personal||{})[myId];
-    if(cur&&JSON.stringify(cur)===JSON.stringify(mpMe))return;
+    // Compare field by field: Postgres jsonb reorders keys, so a plain JSON.stringify
+    // never matches and the phone would rewrite the plan in a loop.
+    const same=cur&&cur.who===mpMe.who&&Array.isArray(cur.bills)&&cur.bills.length===mpMe.bills.length
+      &&cur.bills.every((x,i)=>{const y=mpMe.bills[i];return x.id===y.id&&x.name===y.name&&Number(x.amt)===y.amt&&(x.cat==null?null:x.cat)===y.cat;});
+    if(same)return;
     const mine=mpMe,id=myId;
     savePlan(p=>({...p,personal:{...(p.personal||{}),[id]:mine}}));
   });
