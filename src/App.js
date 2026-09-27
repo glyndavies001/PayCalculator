@@ -358,10 +358,13 @@ const movePlanMissing = (error) => {
   return typeof msg === "string" && msg.includes("move_plan") && /could not find|schema cache|does not exist/i.test(msg);
 };
 
+// A dropped connection (typically the phone waking up) comes back as "Failed to fetch".
+const isNetworkError = (error) => /failed to fetch|networkerror|load failed|network request failed|fetch failed/i.test((error && (error.message || String(error))) || "");
+
 const jwtRetry = async (run) => {
   let res = await run();
   const msg = (res.error && res.error.message) || "";
-  if (/issued/i.test(msg) && /future/i.test(msg)) {
+  if ((/issued/i.test(msg) && /future/i.test(msg)) || isNetworkError(res.error)) {
     await new Promise(r => setTimeout(r, 1500));
     res = await run();
   }
@@ -378,6 +381,13 @@ const db = {
   async upsertPayslip(userId, p) {
     const { error } = await supabase.from("payslips").upsert({ user_id: userId, month: p.month, date: p.date, gross: p.gross, net: p.net, tax: p.tax, ni: p.ni, nest: p.nest, sl: p.sl, bonus: p.bonus, ot: p.ot, weekend_ot: p.weekendOt || 0, holiday_pay: p.holidayPay || 0, hourly_allowance: p.hourlyAllowance || 0, regular_pay: p.regularPay || 0, note: p.note || null }, { onConflict: "user_id,month" });
     reportDbError("upsertPayslip", error);
+  },
+  // Many payslips in one request (used by restore).
+  async upsertPayslips(userId, list) {
+    if (!list.length) return;
+    const rows = list.map(p => ({ user_id: userId, month: p.month, date: p.date, gross: p.gross, net: p.net, tax: p.tax, ni: p.ni, nest: p.nest, sl: p.sl, bonus: p.bonus, ot: p.ot, weekend_ot: p.weekendOt || 0, holiday_pay: p.holidayPay || 0, hourly_allowance: p.hourlyAllowance || 0, regular_pay: p.regularPay || 0, note: p.note || null }));
+    const { error } = await supabase.from("payslips").upsert(rows, { onConflict: "user_id,month" });
+    reportDbError("upsertPayslips", error);
   },
   async deletePayslip(userId, month) {
     const { error } = await supabase.from("payslips").delete().eq("user_id", userId).eq("month", month);
@@ -433,7 +443,15 @@ const db = {
   async getSharedSettings() {
     const { data, error } = await jwtRetry(() => supabase.from("shared_settings").select("*").eq("id", 1).maybeSingle());
     if (error && error.code !== "PGRST116") { reportDbError("getSharedSettings", error); throw error; }
+    reportDbError("getSharedSettings", null);
     return data;
+  },
+  // owner = Glyn, partner = Hollie. null = the fetch failed (keep what we had).
+  async getRole(userId) {
+    const { data, error } = await jwtRetry(() => supabase.from("profiles").select("role").eq("id", userId).maybeSingle());
+    reportDbError("getRole", error);
+    if (error) return null;
+    return (data && data.role) || "owner";
   },
   async saveSharedSettings(cats, billCats, billTags) {
     const row = { id: 1, cats, bill_cats: billCats, updated_at: new Date().toISOString() };
@@ -451,7 +469,8 @@ const db = {
   async getMovePlan() {
     const { data, error } = await jwtRetry(() => supabase.from("shared_settings").select("move_plan").eq("id", 1).maybeSingle());
     if (movePlanMissing(error)) return { missing: true };
-    if (error) { reportDbError("getMovePlan", error); return null; }
+    reportDbError("getMovePlan", error);
+    if (error) return null;
     return { plan: (data && data.move_plan) || {} };
   },
   // Read-modify-write against the latest copy, so the two phones don't overwrite each other.
@@ -511,6 +530,11 @@ const db = {
     reportDbError("getLeaveLogs", error);
     if (error) return null; // null = fetch failed
     return (data || []).map(r => ({ id: r.id, date: r.date, hours: r.hours, label: r.label }));
+  },
+  async upsertLeaveLogs(userId, list) {
+    if (!list.length) return;
+    const { error } = await supabase.from("leave_logs").upsert(list.map(e => ({ id: e.id, user_id: userId, date: e.date, hours: e.hours, label: e.label || null })));
+    reportDbError("upsertLeaveLogs", error);
   },
   async upsertLeaveLog(userId, entry) {
     const { error } = await supabase.from("leave_logs").upsert({ id: entry.id, user_id: userId, date: entry.date, hours: entry.hours, label: entry.label || null });
@@ -638,7 +662,15 @@ let lastDbError = null;
 let lastAppSettingsWrite = 0;  // suppress our own app_settings realtime echoes (avoid clobbering live edits)
 const dbErrorListeners = new Set();
 function reportDbError(where, error) {
-  if (!error) return;
+  if (!error) {
+    // A later success for the same call clears its old error (a one-off network
+    // blip on waking the phone, say), so the sync dot goes green again by itself.
+    if (lastDbError && lastDbError.where === where) {
+      lastDbError = null;
+      dbErrorListeners.forEach(fn => fn(null));
+    }
+    return;
+  }
   lastDbError = { where, message: (error && error.message) || String(error), at: Date.now() };
   try { console.error("[Supabase] " + where + ":", error.message || error); } catch (e) {}
   dbErrorListeners.forEach(fn => fn(lastDbError));
@@ -723,6 +755,8 @@ const LEGACY = {
 
 const load = (key, fb) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fb; } catch { return fb; } };
 const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
+// A saved string, whether it was stored as JSON (via save) or as plain text.
+const loadText = (key) => { try { const v = localStorage.getItem(key) || ""; try { const j = JSON.parse(v); return typeof j === "string" ? j : v; } catch { return v; } } catch { return ""; } };
 
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 // Signed variant: adjustments can be negative (a credit in that month).
@@ -741,7 +775,31 @@ const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
 const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
 const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
 const notSetFor = (b, mk) => isVariable(b) && !(mk in b.amounts);
-const APP_VERSION = "1.13.76";
+// Database rows -> the bill objects the app works with.
+const mapSharedBillRow = r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), splitMode: r.split_mode || null, splitValue: r.split_value != null ? parseFloat(r.split_value) : null, amounts: r.amounts || undefined });
+const mapGlynBillRow = r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), amounts: r.amounts || undefined });
+// Same bill contents? (Used to save only the bills that actually changed.)
+const sameBill = (a, b) => a.name === b.name && Number(a.total) === Number(b.total)
+  && (a.splitMode || null) === (b.splitMode || null) && (a.splitValue ?? null) === (b.splitValue ?? null)
+  && JSON.stringify(a.amounts || null) === JSON.stringify(b.amounts || null);
+// Local calendar date as YYYY-MM-DD. toISOString() gives the UTC date, which is a
+// day early for anything made at local midnight during British Summer Time.
+const localISO = (d = new Date()) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+// Payslip months must read "Mon YYYY"; also accept "Sept 2026" or "September 2026".
+function normaliseMonth(str) {
+  const m = String(str || "").trim().match(/^([A-Za-z]{3,})\.?\s+(\d{4})$/);
+  if (!m) return null;
+  const idx = MONTHS.findIndex(x => x.toLowerCase() === m[1].slice(0, 3).toLowerCase());
+  return idx < 0 ? null : MONTHS[idx] + " " + m[2];
+}
+// The Pay Calc tier override is saved with its pay period and only applies to it.
+function parseTierOverride(v) {
+  if (v == null) return null;
+  if (typeof v === "number") return v;
+  if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
+  return null;
+}
+const APP_VERSION = "1.13.77";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -829,12 +887,10 @@ function getMissingMonths(history) {
   for(let i=0;i<sorted.length-1;i++){
     const [ma,ya]=sorted[i].month.split(" ");
     const [mb,yb]=sorted[i+1].month.split(" ");
-    let mo=MONTHS.indexOf(ma), yr=parseInt(ya);
-    while(true){
-      mo++; if(mo>11){mo=0;yr++;}
-      if(yr===parseInt(yb)&&mo===MONTHS.indexOf(mb)) break;
-      missing.push(MONTHS[mo]+" "+yr);
-    }
+    const a=parseInt(ya)*12+MONTHS.indexOf(ma), b=parseInt(yb)*12+MONTHS.indexOf(mb);
+    // Skip a malformed, duplicate or out-of-order pair rather than loop forever.
+    if(MONTHS.indexOf(ma)<0||MONTHS.indexOf(mb)<0||!(b>a)||b-a>120) continue;
+    for(let k=a+1;k<b;k++) missing.push(MONTHS[k%12]+" "+Math.floor(k/12));
   }
   return missing;
 }
@@ -969,19 +1025,25 @@ const STD_DAY_HRS = 8.25; // standard working day in hours
 // Sum the calculator-relevant hours from only the days that fall in the current
 // pay period (29th -> 28th). The accumulator can hold leftover days from a
 // previous period, so the calculator always recomputes from in-period days.
+// Timesheet rows carry "DD/MM" with no year: use this year, except across the
+// Dec -> Jan pay-period wrap.
+function dayDateOf(ddmm, now = new Date()) {
+  const [dd, mm] = String(ddmm || "").split("/").map(Number);
+  if (!dd || !mm) return null;
+  let yr = now.getFullYear();
+  if (now.getMonth() === 0 && mm === 12) yr -= 1;
+  else if (now.getMonth() === 11 && mm === 1) yr += 1;
+  return new Date(yr, mm - 1, dd);
+}
+// True when a timesheet day falls in the current pay period (29th -> 28th).
+function inCurrentPeriod(d, now = new Date()) {
+  const dt = d && dayDateOf(d.date, now);
+  return !!dt && payPeriodKeyForDate(dt) === payPeriodKeyForDate(now);
+}
+
 function currentPeriodTotals(days) {
-  const cur = getCurrentPayPeriodKey();
   const now = new Date();
-  const inPeriod = (days || []).filter(d => {
-    if (!d || !d.date) return false;
-    const [dd, mm] = String(d.date).split("/").map(Number);
-    if (!dd || !mm) return false;
-    // day.date carries no year; infer it, handling the Dec -> Jan pay-period wrap.
-    let yr = now.getFullYear();
-    if (now.getMonth() === 0 && mm === 12) yr -= 1;
-    else if (now.getMonth() === 11 && mm === 1) yr += 1;
-    return payPeriodKeyForDate(new Date(yr, mm - 1, dd)) === cur;
-  });
+  const inPeriod = (days || []).filter(d => inCurrentPeriod(d, now));
   const otHrs = Math.round(inPeriod.reduce((s, d) => s + (d.otHrs || 0), 0) * 100) / 100;
   const weekendOtHrs = Math.round(inPeriod.reduce((s, d) => s + (d.wkOtHrs || 0), 0) * 100) / 100;
   const holidayHrs = Math.round(inPeriod.reduce((s, d) => {
@@ -1037,7 +1099,7 @@ async function requestNotifPermission() {
 }
 
 function sendNotification(title, body, tag) {
-  if (Notification.permission !== "granted") return;
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
   try {
     new Notification(title, {
       body,
@@ -1094,7 +1156,6 @@ class ErrorBoundary extends React.Component {
 function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [isSignUp, setIsSignUp] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
@@ -1105,15 +1166,9 @@ function LoginScreen({ onLogin }) {
   const handleSubmit = async () => {
     setError(""); setLoading(true);
     try {
-      if (isSignUp) {
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        setError("Check your email to confirm your account.");
-      } else {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        onLogin(data.user);
-      }
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      onLogin(data.user);
     } catch(e) { setError(e.message); }
     setLoading(false);
   };
@@ -1128,7 +1183,7 @@ function LoginScreen({ onLogin }) {
     <div style={bg}>
       <div style={{fontSize:48,marginBottom:16}}>🔐</div>
       <h1 style={{margin:"0 0 4px",fontSize:22,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
-      <p style={{color:"#5a6480",fontSize:13,marginBottom:32}}>{isSignUp ? "Create your account" : "Sign in to continue"}</p>
+      <p style={{color:"#5a6480",fontSize:13,marginBottom:32}}>Sign in to continue</p>
       {error && <div style={{color: error.includes("Check") ? "#00c88c" : "#ff6b8a",fontSize:13,marginBottom:14,background: error.includes("Check") ? "#0a1a10" : "#2a0f15",padding:"10px 16px",borderRadius:8,border:"1px solid "+(error.includes("Check")?"#1a4030":"#5a1a2a"),width:"100%",boxSizing:"border-box",textAlign:"center"}}>{error}</div>}
       {resetSent && <div style={{color:"#00c88c",fontSize:13,marginBottom:14,textAlign:"center"}}>Password reset email sent!</div>}
       <div style={{width:"100%",maxWidth:320}}>
@@ -1136,13 +1191,10 @@ function LoginScreen({ onLogin }) {
         {!resetSent && <input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} style={inp} onKeyDown={e=>e.key==="Enter"&&handleSubmit()}/>}
         <button onClick={handleSubmit} disabled={loading}
           style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:10,color:"#000",fontSize:15,fontWeight:700,padding:"14px",cursor:loading?"not-allowed":"pointer",marginBottom:10,opacity:loading?0.7:1}}>
-          {loading ? "Please wait..." : isSignUp ? "Create Account" : "Sign In"}
+          {loading ? "Please wait..." : "Sign In"}
         </button>
-        <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-          <button onClick={()=>{setIsSignUp(!isSignUp);setError("");}} style={{background:"none",border:"none",color:"#4a9eff",cursor:"pointer",fontSize:12}}>
-            {isSignUp ? "Already have an account?" : "Create account"}
-          </button>
-          {!isSignUp && <button onClick={handleReset} style={{background:"none",border:"none",color:"#3a4460",cursor:"pointer",fontSize:12}}>Forgot password?</button>}
+        <div style={{display:"flex",justifyContent:"flex-end",fontSize:12}}>
+          <button onClick={handleReset} style={{background:"none",border:"none",color:"#3a4460",cursor:"pointer",fontSize:12}}>Forgot password?</button>
         </div>
       </div>
     </div>
@@ -1278,10 +1330,10 @@ export default function App() {
   const [isOwner,setIsOwner]=useState(true);   // false = partner (Hollie): restricted view
   const [user,setUser]=useState(null);
   const [authLoading,setAuthLoading]=useState(true);
-  const [dataLoading,setDataLoading]=useState(false);
+  const [dataLoading,setDataLoading]=useState(true);   // cleared once the first load finishes
   const [history,setHistory]=useState([]);
-  const [sharedBills,setSharedBills]=useState(INITIAL_SHARED_BILLS);
-  const [glynBills,setGlynBills]=useState(INITIAL_GLYN_BILLS);
+  const [sharedBills,setSharedBills]=useState([]);
+  const [glynBills,setGlynBills]=useState([]);
   const [cats,setCats]=useState(()=>load(SK.cats,[]));
   const [billCats,setBillCats]=useState(()=>load(SK.billCats,{}));
   const [billTags,setBillTags]=useState({});        // {billId:[tag,...]} shared bills
@@ -1355,14 +1407,6 @@ export default function App() {
   const [moveOpenB,setMoveOpenB]=useState(null);           // Move tab: bucket expanded to show its bills
   const [movePick,setMovePick]=useState(null);             // Move tab: bill whose bucket chips are showing
   const personalOk=useRef(false);                          // personal bills came from the DB
-  const loadMovePlan=async()=>{
-    try {
-      const r=await db.getMovePlan();
-      if(!r)return;                                        // fetch failed: keep what we have
-      if(r.missing){setMoveMissing(true);return;}
-      setMoveMissing(false);setMovePlan(r.plan||{});
-    } catch(e) {}
-  };
   const [scheduledBills,setScheduledBills]=useState([]);   // bills active only in certain months
   const [schedOpen,setSchedOpen]=useState(false);          // manage sheet
   const [schedForm,setSchedForm]=useState(null);           // null=list view, object=add/edit form
@@ -1420,13 +1464,17 @@ export default function App() {
       // so this warning only appears when refresh has actually failed (e.g. offline).
       setSessionWarning(msToExpiry > 0 && msToExpiry < 90 * 1000);
     };
+    // Supabase re-announces the login every time the app comes back to the
+    // foreground. Keep the same user object unless the account actually changed,
+    // otherwise everything reloads from scratch on each return to the app.
+    const keepUser = (next) => setUser(prev => (prev && next && prev.id === next.id) ? prev : (next || null));
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user || null);
+      keepUser(session?.user);
       setAuthLoading(false);
       checkExpiry(session);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      setUser(session?.user || null);
+      keepUser(session?.user);
       checkExpiry(session);
     });
     // Recheck every 30s when we're close to potential expiry territory
@@ -1472,174 +1520,124 @@ export default function App() {
     };
   }, []);
 
-  // Load all data from Supabase when user logs in
+  // Shared categories, shared tags and the Move plan all live in shared_settings.
+  const applySharedSettings = (ss) => {
+    if (ss.cats || ss.bill_cats) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); }
+    if (ss.bill_tags) setBillTags(ss.bill_tags);
+    if ("move_plan" in ss) { setMoveMissing(false); setMovePlan(ss.move_plan || {}); }
+    else setMoveMissing(true);
+  };
+
+  // One loader for the first load and every refresh, fetching everything at once.
+  // The first load shows the loading screen; refreshes (pull down, or coming back
+  // to the app) update in place without it.
+  const loadAllData = async ({ silent = false } = {}) => {
+    if (!user) return;
+    if (!silent) setDataLoading(true);
+    try {
+      const [payslips, sBills, gBills, lLogs, lSettings, mTs, discs, scens, appSettings, role, ss, st, gf, sc, accData] = await Promise.all([
+        db.getPayslips(user.id), db.getSharedBills(), db.getGlynBills(user.id),
+        db.getLeaveLogs(user.id), db.getLeaveSettings(user.id), db.getMonthlyTs(user.id),
+        db.getDiscrepancies(user.id), db.getScenarios(user.id), db.getAppSettings(user.id),
+        db.getRole(user.id),
+        db.getSharedSettings().catch(() => undefined),   // undefined = fetch failed
+        db.getSettlements(), db.getGifts(), db.getScheduledBills(),
+        db.getAccumulator(user.id),
+      ]);
+      // A null from any fetch means it failed: keep what's on screen, never blank it.
+      if (role) setIsOwner(role === "owner");
+      if (payslips) setHistory(sortH(payslips));
+      if (sBills) setSharedBills(sBills.map(mapSharedBillRow));
+      if (gBills) { setGlynBills(gBills.map(mapGlynBillRow)); personalOk.current = true; }
+      if (lLogs) setLeaveLogs(lLogs);
+      if (lSettings) setLeaveSettings(lSettings);
+      if (mTs) setMonthlyTs(mTs);
+      if (discs) setDiscrepancies(discs);
+      if (scens) setScenarios(scens);
+      if (appSettings) {
+        if (appSettings.calc_inputs) {
+          const rolled = applyPeriodRollover(appSettings.calc_inputs);
+          setCi(rolled);
+          // New pay period detected: persist the reset so it sticks across reloads.
+          if (rolled !== appSettings.calc_inputs) db.saveAppSettings(user.id, { calc_inputs: rolled });
+        }
+        setTierOverride(parseTierOverride(appSettings.tier_override));
+        if (appSettings.notes) setNotes(appSettings.notes);
+        if (appSettings.dismissed_discrepancies) setDismissedDiscs(appSettings.dismissed_discrepancies);
+        const cd = appSettings.cats_data || {};
+        if (cd.cats) setCats(cd.cats);
+        if (cd.billCats) setBillCats(cd.billCats);
+        if (cd.glynCats) setGlynCats(cd.glynCats);
+        if (cd.glynBillCats) setGlynBillCats(cd.glynBillCats);
+        if (cd.billTags) setBillTags(cd.billTags);
+        if (cd.glynBillTags) setGlynBillTags(cd.glynBillTags);
+      }
+      if (ss) applySharedSettings(ss);
+      else if (ss === null) { setMoveMissing(false); setMovePlan(p => p || {}); }   // no row yet
+      if (st) setSettlements(st);
+      if (gf) setGifts(gf);
+      if (sc) setScheduledBills(sc);
+
+      // Timesheet hours: start afresh in a new pay period, otherwise keep only this
+      // period's days and feed their hours to the Pay Calc.
+      if (accData && accData.data) {
+        if (shouldResetTimesheet(accData.lastUpload)) {
+          const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+          setAccumulated(empty);
+          setTsLastUpload(null);
+          db.saveAccumulator(user.id, empty, null);
+          setCMany({ otHrs:0, weekendOtHrs:0, holidayHrs:0, stdHrs:getCurrentMonthHours() });
+        } else {
+          const t = currentPeriodTotals(accData.data.days);
+          const cleaned = { ...accData.data, days: t.days, otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs };
+          setAccumulated(cleaned);
+          setTsLastUpload(accData.lastUpload);
+          setCMany({ otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs, holidayHrs: t.holidayHrs });
+          // Persist the cleaned accumulator so a previous period's days don't linger.
+          if (t.days.length !== (accData.data.days || []).length) db.saveAccumulator(user.id, cleaned, accData.lastUpload);
+        }
+      }
+
+      if (!silent) await requestAndSaveNotifPerm();
+    } catch(e) { console.error("Data load error:", e); }
+    if (!silent) setDataLoading(false);
+  };
+  const loadRef = useRef(null);
+  loadRef.current = loadAllData;
+  // Quiet refresh, always using the latest state.
+  const refreshAll = useCallback(() => loadRef.current ? loadRef.current({ silent: true }) : Promise.resolve(), []);
+
+  // Full load when someone signs in.
   React.useEffect(() => {
     if (!user) return;
-    setDataLoading(true);
-    const loadAll = async () => {
-      try {
-        const [payslips, sBills, gBills, lLogs, lSettings, mTs, discs, scens, appSettings] = await Promise.all([
-          db.getPayslips(user.id),
-          db.getSharedBills(),
-          db.getGlynBills(user.id),
-          db.getLeaveLogs(user.id),
-          db.getLeaveSettings(user.id),
-          db.getMonthlyTs(user.id),
-          db.getDiscrepancies(user.id),
-          db.getScenarios(user.id),
-          db.getAppSettings(user.id),
-        ]);
-
-        // Determine this user's role (owner = Glyn; partner = Hollie)
-        let owner = true;
-        try {
-          const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
-          owner = (prof?.role ?? "owner") === "owner";
-        } catch (e) { owner = true; }
-        setIsOwner(owner);
-
-        // Payslips -- merge with INITIAL_HISTORY for months not yet in DB
-        if (payslips && payslips.length > 0) {
-          setHistory(payslips.sort((a,b)=>{
-            const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
-            return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
-          }));
-        } else if (payslips && owner) {
-          // First login (owner) -- seed DB with INITIAL_HISTORY
-          const sorted = [...INITIAL_HISTORY].sort((a,b)=>{
-            const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");
-            return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);
-          });
-          setHistory(sorted);
-          for (const p of sorted) await trackSave(() => db.upsertPayslip(user.id, p));
-        } else if (payslips) {
-          setHistory([]); // partner starts with their own (empty) payslip history
-        } // payslips === null -> fetch failed; keep current state, never seed
-
-        // Bills -- merge with defaults if DB empty
-        if (sBills && sBills.length > 0) {
-          setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), splitMode: b.split_mode || null, splitValue: b.split_value != null ? parseFloat(b.split_value) : null, amounts: b.amounts || undefined })));
-        } else if (sBills) {
-          for (const b of INITIAL_SHARED_BILLS) await trackSave(() => db.upsertSharedBill(b));
-        } // sBills === null -> fetch failed; keep current state, never seed
-        if (gBills && gBills.length > 0) {
-          setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), amounts: b.amounts || undefined })));
-        } else if (gBills && owner) {
-          for (const b of INITIAL_GLYN_BILLS) await trackSave(() => db.upsertGlynBill(user.id, b));
-        } else if (gBills) {
-          setGlynBills([]); // partner has no personal bills (and can't see the owner's)
-        } // gBills === null -> fetch failed; keep current state, never seed
-        if (gBills) personalOk.current = true;
-
-        if (lLogs && lLogs.length > 0) setLeaveLogs(lLogs);
-        if (lSettings) setLeaveSettings(lSettings);
-        if (mTs && mTs.length > 0) setMonthlyTs(mTs);
-        if (discs && discs.length > 0) setDiscrepancies(discs);
-        if (scens && scens.length > 0) setScenarios(scens);
-        if (appSettings) {
-          if (appSettings.calc_inputs) {
-            const rolled = applyPeriodRollover(appSettings.calc_inputs);
-            setCi(rolled);
-            // New pay period detected: persist the reset so it sticks across reloads.
-            if (rolled !== appSettings.calc_inputs) db.saveAppSettings(user.id, { calc_inputs: rolled });
-          }
-          if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
-          if (appSettings.notes) setNotes(appSettings.notes);
-          if (appSettings.dismissed_discrepancies) setDismissedDiscs(appSettings.dismissed_discrepancies);
-          if (appSettings.cats_data) {
-            const cd = appSettings.cats_data;
-            if (cd.cats) setCats(cd.cats);
-            if (cd.billCats) setBillCats(cd.billCats);
-            if (cd.glynCats) setGlynCats(cd.glynCats);
-            if (cd.glynBillCats) setGlynBillCats(cd.glynBillCats);
-            if (cd.billTags) setBillTags(cd.billTags);
-            if (cd.glynBillTags) setGlynBillTags(cd.glynBillTags);
-          }
-        }
-
-        // Shared bill categories (shared across both users)
-        try {
-          const ss = await db.getSharedSettings();
-          if (ss && (ss.cats || ss.bill_cats)) {
-            setCats(ss.cats || []);
-            setBillCats(ss.bill_cats || {});
-            if (ss.bill_tags) setBillTags(ss.bill_tags);
-          } else if (owner) {
-            const cd = appSettings?.cats_data || {};
-            if ((cd.cats && cd.cats.length) || (cd.billCats && Object.keys(cd.billCats).length)) {
-              await db.saveSharedSettings(cd.cats || [], cd.billCats || {});
-            }
-          }
-        } catch (e) {}
-
-        try { const st = await db.getSettlements(); if (st) setSettlements(st); } catch (e) {}
-
-        try { const gf = await db.getGifts(); if (gf) setGifts(gf); } catch (e) {}
-
-        try { const sc = await db.getScheduledBills(); if (sc) setScheduledBills(sc); } catch (e) {}
-        await loadMovePlan();
-
-        // Load accumulator from DB - migrate from localStorage if DB is empty
-        const accData = await db.getAccumulator(user.id);
-        const localAcc = load(SK.timesheets, null);
-        const localLastUp = load(SK.tsLastUpload, null);
-
-        if (!accData && localAcc) {
-          // Fresh DB but localStorage has data -- migrate it up
-          if (shouldResetTimesheet(localAcc.lastUpload)) {
-            const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
-            setAccumulated(empty);
-            await db.saveAccumulator(user.id, empty, null);
-          } else {
-            setAccumulated(localAcc);
-            setTsLastUpload(localLastUp);
-            await db.saveAccumulator(user.id, localAcc, localLastUp);
-          }
-        } else if (accData) {
-          if (accData.data && shouldResetTimesheet(accData.lastUpload)) {
-            const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
-            setAccumulated(empty);
-            await db.saveAccumulator(user.id, empty, null);
-            // New pay period: clear the calculator's variable hours and recompute standard hours.
-            setC("otHrs", 0);
-            setC("weekendOtHrs", 0);
-            setC("holidayHrs", 0);
-            setC("stdHrs", getCurrentMonthHours());
-          } else if (accData.data) {
-            // Count only the current pay period's days; drop leftovers from a prior period.
-            const t = currentPeriodTotals(accData.data.days);
-            const cleaned = { ...accData.data, days: t.days, otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs };
-            setAccumulated(cleaned);
-            setTsLastUpload(accData.lastUpload);
-            setC("otHrs", t.otHrs);
-            setC("weekendOtHrs", t.weekendOtHrs);
-            setC("holidayHrs", t.holidayHrs);
-            // Persist the cleaned accumulator so the stale days don't linger.
-            if (t.days.length !== (accData.data.days || []).length) {
-              db.saveAccumulator(user.id, cleaned, accData.lastUpload);
-            }
-          }
-        }
-
-        await requestAndSaveNotifPerm();
-      } catch(e) { console.error("Data load error:", e); }
-      setDataLoading(false);
-    };
-    loadAll();
+    loadRef.current({ silent: false });
   }, [user]);
+
+  // Coming back to the app after a couple of minutes: refresh quietly so anything
+  // changed on the other phone shows, without the loading screen.
+  React.useEffect(() => {
+    let hiddenAt = 0;
+    const onVis = () => {
+      if (document.hidden) { hiddenAt = Date.now(); return; }
+      if (hiddenAt && Date.now() - hiddenAt > 2 * 60 * 1000) refreshAll();
+      hiddenAt = 0;
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [refreshAll]);
 
   // Real-time subscriptions (Supabase v2 syntax)
   React.useEffect(() => {
     if (!user) return;
     const channel = supabase.channel("vaulted-sync")
       .on("postgres_changes", { event: "*", schema: "public", table: "payslips" }, () =>
-        db.getPayslips(user.id).then(p => p && setHistory(p.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);})))
+        db.getPayslips(user.id).then(p => p && setHistory(sortH(p)))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_bills" }, () =>
-        db.getSharedBills().then(b => b && setSharedBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), splitMode: r.split_mode || null, splitValue: r.split_value != null ? parseFloat(r.split_value) : null, amounts: r.amounts || undefined }))))
+        db.getSharedBills().then(b => b && setSharedBills(b.map(mapSharedBillRow)))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "glyn_bills", filter: "user_id=eq."+user.id }, () =>
-        db.getGlynBills(user.id).then(b => b && setGlynBills(b.map(r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), amounts: r.amounts || undefined }))))
+        db.getGlynBills(user.id).then(b => b && setGlynBills(b.map(mapGlynBillRow)))
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "leave_logs" }, () =>
         db.getLeaveLogs(user.id).then(l => l && setLeaveLogs(l))
@@ -1650,14 +1648,12 @@ export default function App() {
             const t = currentPeriodTotals(acc.data.days);
             setAccumulated({ ...acc.data, days: t.days, otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs });
             setTsLastUpload(acc.lastUpload);
-            setC("otHrs", t.otHrs);
-            setC("weekendOtHrs", t.weekendOtHrs);
-            setC("holidayHrs", t.holidayHrs);
+            setCMany({ otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs, holidayHrs: t.holidayHrs });
           }
         });
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_settings" }, () =>
-        db.getSharedSettings().then(ss => { if (ss) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); if (ss.bill_tags) setBillTags(ss.bill_tags); if (ss.move_plan) setMovePlan(ss.move_plan); } }).catch(() => {})
+        db.getSharedSettings().then(ss => { if (ss) applySharedSettings(ss); }).catch(() => {})
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "settlements" }, () =>
         db.getSettlements().then(st => st && setSettlements(st))
@@ -1682,7 +1678,7 @@ export default function App() {
         db.getAppSettings(user.id).then(as => {
           if (!as) return;
           if (as.calc_inputs) setCi(applyPeriodRollover(as.calc_inputs));
-          if (as.tier_override !== undefined && as.tier_override !== null) setTierOverride(as.tier_override);
+          setTierOverride(parseTierOverride(as.tier_override));
           if (as.notes) setNotes(as.notes);
           if (as.dismissed_discrepancies) setDismissedDiscs(as.dismissed_discrepancies);
           if (as.cats_data) {
@@ -1711,6 +1707,7 @@ export default function App() {
       monthlyTs, discrepancies, scenarios,
       accumulated, tierOverride,
       settlements, gifts, scheduledBills,
+      billTags, glynBillTags, movePlan,
       exportedAt: new Date().toISOString(),
       version: APP_VERSION,
     };
@@ -1751,6 +1748,25 @@ export default function App() {
       setGifts(await db.getGifts());
     } catch (e) { console.error("Gifts restore failed:", e); }
   };
+  const restoreLeaveLogs = async (arr) => {
+    if (!user || !Array.isArray(arr)) return;
+    try {
+      const incoming = arr.filter(l => l && l.id && l.date);
+      const keep = new Set(incoming.map(l => l.id));
+      setLeaveLogs([...incoming].sort((a,b) => new Date(b.date) - new Date(a.date)));
+      await db.upsertLeaveLogs(user.id, incoming);
+      for (const l of leaveLogs) if (!keep.has(l.id)) await db.deleteLeaveLog(l.id);
+    } catch (e) { console.error("Leave restore failed:", e); }
+  };
+  const restoreScenarios = async (arr) => {
+    if (!user || !Array.isArray(arr)) return;
+    try {
+      const keep = new Set(arr.map(x => x.name));
+      for (const x of arr) await db.upsertScenario(user.id, x);
+      for (const x of scenarios) if (!keep.has(x.name)) await db.deleteScenario(x.id);
+      setScenarios(arr);
+    } catch (e) { console.error("Scenarios restore failed:", e); }
+  };
   const restoreScheduledBills = async (arr) => {
     if (!user || !Array.isArray(arr)) return;
     try {
@@ -1773,76 +1789,6 @@ export default function App() {
     await supabase.auth.signOut();
     setUser(null); setHistory([]);
   };
-
-  // Refresh all data from Supabase
-  const refreshAll = useCallback(async () => {
-    if (!user) return;
-    setDataLoading(true);
-    try {
-      const [payslips, sBills, gBills, lLogs, lSettings, mTs, discs, scens, appSettings, accData] = await Promise.all([
-        db.getPayslips(user.id), db.getSharedBills(), db.getGlynBills(user.id),
-        db.getLeaveLogs(user.id), db.getLeaveSettings(user.id), db.getMonthlyTs(user.id),
-        db.getDiscrepancies(user.id), db.getScenarios(user.id), db.getAppSettings(user.id),
-        db.getAccumulator(user.id),
-      ]);
-      if (payslips && payslips.length > 0) setHistory(payslips.sort((a,b)=>{const [am,ay]=a.month.split(" ");const [bm,by]=b.month.split(" ");return ay!==by?parseInt(ay)-parseInt(by):MONTHS.indexOf(am)-MONTHS.indexOf(bm);}));
-      if (sBills && sBills.length > 0) setSharedBills(sBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), splitMode: b.split_mode || null, splitValue: b.split_value != null ? parseFloat(b.split_value) : null, amounts: b.amounts || undefined })));
-      if (gBills && gBills.length > 0) setGlynBills(gBills.map(b => ({ id: b.bill_id, name: b.name, total: parseFloat(b.total), amounts: b.amounts || undefined })));
-      if (lLogs) setLeaveLogs(lLogs);
-      if (lSettings) setLeaveSettings(lSettings);
-      if (mTs) setMonthlyTs(mTs);
-      if (discs) setDiscrepancies(discs);
-      if (scens) setScenarios(scens);
-      if (appSettings) {
-        if (appSettings.calc_inputs) {
-          const rolled = applyPeriodRollover(appSettings.calc_inputs);
-          setCi(rolled);
-          // New pay period detected: persist the reset so it sticks across reloads.
-          if (rolled !== appSettings.calc_inputs) db.saveAppSettings(user.id, { calc_inputs: rolled });
-        }
-        if (appSettings.tier_override) setTierOverride(appSettings.tier_override);
-        if (appSettings.notes) setNotes(appSettings.notes);
-        if (appSettings.dismissed_discrepancies) setDismissedDiscs(appSettings.dismissed_discrepancies);
-        if (appSettings.cats_data) {
-          const cd = appSettings.cats_data;
-          if (cd.cats) setCats(cd.cats);
-          if (cd.billCats) setBillCats(cd.billCats);
-          if (cd.glynCats) setGlynCats(cd.glynCats);
-          if (cd.glynBillCats) setGlynBillCats(cd.glynBillCats);
-          if (cd.billTags) setBillTags(cd.billTags);
-          if (cd.glynBillTags) setGlynBillTags(cd.glynBillTags);
-        }
-      }
-
-      // Shared bill categories (shared across both users)
-      try {
-        const ss = await db.getSharedSettings();
-        if (ss && (ss.cats || ss.bill_cats)) {
-          setCats(ss.cats || []);
-          setBillCats(ss.bill_cats || {});
-          if (ss.bill_tags) setBillTags(ss.bill_tags);
-        } else if (isOwner) {
-          const cd = appSettings?.cats_data || {};
-          if ((cd.cats && cd.cats.length) || (cd.billCats && Object.keys(cd.billCats).length)) {
-            await db.saveSharedSettings(cd.cats || [], cd.billCats || {});
-          }
-        }
-      } catch (e) {}
-
-      try { const st = await db.getSettlements(); if (st) setSettlements(st); } catch (e) {}
-
-      try { const gf = await db.getGifts(); if (gf) setGifts(gf); } catch (e) {}
-
-      try { const sc = await db.getScheduledBills(); if (sc) setScheduledBills(sc); } catch (e) {}
-      await loadMovePlan();
-
-      if (accData && accData.data) {
-        setAccumulated(accData.data);
-        setTsLastUpload(accData.lastUpload);
-      }
-    } catch(e) { console.error("Refresh error:", e); }
-    setDataLoading(false);
-  }, [user]);
 
   // Surface Supabase errors on-screen (Diagnostics tab + sync dot)
   useEffect(() => {
@@ -1870,32 +1816,6 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [refreshAll]);
-
-  // Pull-to-refresh on touch devices
-  useEffect(() => {
-    let startY = 0, pulling = false;
-    const onTouchStart = (e) => {
-      if (window.scrollY === 0) { startY = e.touches[0].clientY; pulling = true; }
-    };
-    const onTouchMove = (e) => {
-      if (!pulling) return;
-      const dy = e.touches[0].clientY - startY;
-      if (dy > 80 && !dataLoading) {
-        pulling = false;
-        haptic("medium");
-        refreshAll();
-      }
-    };
-    const onTouchEnd = () => { pulling = false; };
-    window.addEventListener("touchstart", onTouchStart, { passive: true });
-    window.addEventListener("touchmove", onTouchMove, { passive: true });
-    window.addEventListener("touchend", onTouchEnd);
-    return () => {
-      window.removeEventListener("touchstart", onTouchStart);
-      window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", onTouchEnd);
-    };
-  }, [refreshAll, dataLoading]);
 
   // -- Annual Leave ---------------------------------------------------------
   const [leaveSettings, setLeaveSettings] = useState({ baseEntitlement: 29, serviceDays: 4, startYear: 2022 });
@@ -1950,8 +1870,10 @@ export default function App() {
   const [tsLastEmail, setTsLastEmail] = useState(() => load(SK.tsLastEmail, ""));
   const [tsAutoMsg, setTsAutoMsg] = useState(null); // { text, ok } -- brief status toast
 
-  const applyTimesheetDays = React.useCallback((days, emailId, meta = null) => {
+  // Apply timesheet days (auto-import, or a manual upload with emailId null).
+  const applyTimesheetDays = (days, emailId, meta = null) => {
     const STD = 8.25;
+    const today = new Date();
     const enrichedDays = days.map(d => {
       const norm = normaliseHoliday(d.holiday);
       const { isHoliday, isHalf, isPartialHol, holHrs: partialHolHrs } = norm;
@@ -1964,35 +1886,27 @@ export default function App() {
       return { ...d, hrs, holHrs, otHrs, wkOtHrs, isHoliday, isHalf, isPartialHol };
     });
 
-    // Auto-log holidays to leave
+    // Auto-log holidays to leave. Local dates (so summer days aren't a day early),
+    // and only days not already logged are saved (no duplicate rows).
     const holidayDays = enrichedDays.filter(d => d.isHoliday || d.isPartialHol);
     if (holidayDays.length > 0) {
+      const newEntries = holidayDays.map(d => {
+        const dt = dayDateOf(d.date, today);
+        if (!dt) return null;
+        const hours = d.isPartialHol ? d.holHrs : (d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS);
+        return { id: genUUID(), date: localISO(dt), hours, label: "Annual Leave (auto)" };
+      }).filter(Boolean);
       setLeaveLogs(prev => {
-        const newEntries = holidayDays.map(d => {
-          const [dd, mm] = d.date.split("/").map(Number);
-          const year = new Date().getFullYear();
-          const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
-          const hours = d.isPartialHol ? d.holHrs : (d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS);
-          return { id: genUUID(), date: dateStr, hours, label: "Annual Leave (auto)" };
-        });
-        const merged = [...prev, ...newEntries]
-          .filter((e, i, arr) => arr.findIndex(x => x.date === e.date) === i)
-          .sort((a, b) => new Date(b.date) - new Date(a.date));
-        if (user) newEntries.forEach(e => trackSave(db.upsertLeaveLog(user.id, e)));
-        return merged;
+        const have = new Set(prev.map(l => l.date));
+        const fresh = newEntries.filter((e, i, arr) => !have.has(e.date) && arr.findIndex(x => x.date === e.date) === i);
+        if (user && fresh.length) trackSave(db.upsertLeaveLogs(user.id, fresh));
+        return [...prev, ...fresh].sort((a, b) => new Date(b.date) - new Date(a.date));
       });
     }
 
-    // Only merge into accumulator if days fall within current pay period
-    const now = new Date();
-    const currentPeriodStart = getPayday(now.getMonth() === 0 ? now.getFullYear()-1 : now.getFullYear(), now.getMonth() === 0 ? 11 : now.getMonth()-1);
-    const currentPeriodEnd = getPayday(now.getFullYear(), now.getMonth());
-    const currentDays = enrichedDays.filter(d => {
-      if (!d.date) return false;
-      const [dd, mm] = d.date.split("/").map(Number);
-      const dayDate = new Date(now.getFullYear(), mm - 1, dd);
-      return dayDate >= currentPeriodStart && dayDate <= currentPeriodEnd;
-    });
+    // Only this pay period's days (29th -> 28th) go into the accumulator - the same
+    // rule the Pay Calc uses, so overtime on the 29th-31st is never dropped.
+    const currentDays = enrichedDays.filter(d => inCurrentPeriod(d, today));
 
     // Merge into accumulated timesheet
     setAccumulated(prev => {
@@ -2024,9 +1938,7 @@ export default function App() {
       if (user) db.saveAccumulator(user.id, newAcc, now).catch(e => console.error("Acc save failed:", e));
       // Update Pay Calc, counting only the current pay period's days.
       const pt = currentPeriodTotals(merged);
-      setC("otHrs", pt.otHrs);
-      setC("weekendOtHrs", pt.weekendOtHrs);
-      setC("holidayHrs", pt.holidayHrs);
+      setCMany({ otHrs: pt.otHrs, weekendOtHrs: pt.weekendOtHrs, holidayHrs: pt.holidayHrs });
       return newAcc;
     });
 
@@ -2034,8 +1946,10 @@ export default function App() {
       const now = new Date().toISOString();
       setTsLastUpload(now);
     }
-    setTsLastEmail(emailId);
-    save(SK.tsLastEmail, emailId);
+    if (emailId) {
+      setTsLastEmail(emailId);
+      save(SK.tsLastEmail, emailId);
+    }
 
     // If monthly timesheet, save to history and run discrepancy check
     if (meta && meta.isMonthly) {
@@ -2067,46 +1981,62 @@ export default function App() {
       // Pass enrichedDays so isHoliday/hrs are already normalised, matching the accumulator format
       checkMonthlyVsWeekly(enrichedDays, accumulatedRef.current.days || [], meta);
     }
+  };
+  const applyTsRef = useRef(null);
+  applyTsRef.current = applyTimesheetDays;
+
+
+
+  // Timesheet queue. One drainer at a time, and each item is only removed from the
+  // server once it has been applied (by its email id), so nothing is applied twice
+  // or lost. Glyn's timesheets, so the owner's phone only.
+  const queueBusy = useRef(false);
+  const drainQueue = useCallback(async () => {
+    const secret = loadText(SK.tsSecret);
+    if (!secret || !user || queueBusy.current) return 0;
+    queueBusy.current = true;
+    const q = `/api/timesheet?token=${encodeURIComponent(secret)}`;
+    let processed = 0;
+    try {
+      for (let i = 0; i < 20; i++) {
+        const res = await fetch(q);
+        if (!res.ok) break;
+        const data = await res.json();
+        if (data.status !== "pending" || !data.data) break;
+        const { emailId, days } = data.data;
+        if (!emailId || emailId !== loadText(SK.tsLastEmail)) {
+          applyTsRef.current(days || [], emailId || null, data.data.meta || null);
+          processed++;
+        }
+        const del = await fetch(`${q}&emailId=${encodeURIComponent(emailId || "")}`, { method: "DELETE" });
+        if (!del.ok) break;
+      }
+    } catch (e) { /* offline or server hiccup: try again next time */ }
+    finally { queueBusy.current = false; }
+    if (processed > 0) {
+      setTsAutoMsg({ text: `✅ ${processed} timesheet${processed !== 1 ? "s" : ""} imported`, ok: true });
+      setTimeout(() => setTsAutoMsg(null), 4000);
+      sendNotification("📋 Timesheet imported", "Your JLI timesheet has been automatically added to Vaulted.", "ts-auto");
+    }
+    return processed;
   }, [user]);
 
-
-
-  // Poll /api/timesheet -- 5s when items pending, 60s when empty
+  // Check the queue once a minute while the app is open, and straight away on return.
   React.useEffect(() => {
-    if (!tsSecret || !user) return;
-    let intervalMs = 10000;
-    let timer = null;
-
-    const poll = async () => {
-      try {
-        const secret = localStorage.getItem("vaulted_ts_secret") || tsSecret;
-        const res = await fetch(`/api/timesheet?token=${encodeURIComponent(secret)}`);
-        const data = await res.json();
-        if (data.status === "pending" && data.data) {
-          const { emailId, days } = data.data;
-          const lastEmail = localStorage.getItem("vaulted_ts_last_email") || "";
-          if (emailId === lastEmail) {
-            // Already applied -- clear from queue and move on
-            await fetch(`/api/timesheet?token=${encodeURIComponent(secret)}`, { method: "DELETE" });
-          } else {
-            applyTimesheetDays(days, emailId, data.data.meta || null);
-            await fetch(`/api/timesheet?token=${encodeURIComponent(secret)}`, { method: "DELETE" });
-            setTsAutoMsg({ text: "✅ Timesheet auto-imported", ok: true });
-            sendNotification("📋 Timesheet imported", "Your JLI timesheet has been automatically added to Vaulted.", "ts-auto");
-            setTimeout(() => setTsAutoMsg(null), 4000);
-          }
-          // More items -- poll again in 5s
-          if ((data.remaining || 1) > 1) intervalMs = 5000;
-        } else {
-          intervalMs = 10000;
-        }
-      } catch { /* silent */ }
-      timer = setTimeout(poll, intervalMs);
+    if (!tsSecret || !user || !isOwner) return;
+    let timer = null, stopped = false, running = false;
+    const tick = async () => {
+      if (running || stopped) return;
+      running = true;
+      clearTimeout(timer);
+      try { if (!document.hidden) await drainQueue(); } finally { running = false; }
+      if (!stopped) timer = setTimeout(tick, 60 * 1000);
     };
-
-    poll();
-    return () => { if (timer) clearTimeout(timer); };
-  }, [tsSecret, user]);
+    const onVis = () => { if (!document.hidden) tick(); };
+    tick();
+    document.addEventListener("visibilitychange", onVis);
+    return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVis); };
+  }, [tsSecret, user, isOwner, drainQueue]);
 
   // -- Monthly timesheet history + discrepancy checker ---------------------
   const [monthlyTs, setMonthlyTs] = useState([]);
@@ -2344,7 +2274,7 @@ export default function App() {
   // Fire notifications once per session after unlock
   const notifFiredRef = React.useRef(false);
   React.useEffect(() => {
-    if (!user || notifFiredRef.current || Notification.permission !== "granted") return;
+    if (!user || notifFiredRef.current || typeof Notification === "undefined" || Notification.permission !== "granted") return;
     notifFiredRef.current = true;
     if (isTomorrowPayday()) {
       sendNotification("💰 Payday tomorrow!", "Your pay should land tomorrow -- check Vaulted for your estimate.", "payday");
@@ -2361,12 +2291,11 @@ export default function App() {
   const [expandedMonth, setExpandedMonth] = useState(null);
 
   // Tier override -- initial value loaded from Supabase via app_settings later
-  const currentMonthStr = MONTHS[new Date().getMonth()]+" "+new Date().getFullYear();
   const [tierOverride,setTierOverride]=useState(null); // null = auto (inferred from latest payslip)
+  // Saved with the pay period it was chosen in; it drops back to auto next period.
   const saveTierOverride=(tierIdx)=>{
-    const val=tierIdx===null?null:{tierIdx,month:currentMonthStr};
     setTierOverride(tierIdx);
-
+    if(user)trackSave(db.saveAppSettings(user.id,{tier_override:tierIdx===null?null:{tierIdx,period:getCurrentPayPeriodKey()}}));
   };
 
   // Timesheet state
@@ -2384,6 +2313,7 @@ export default function App() {
   const [backupList,setBackupList]=useState([]);
   const [backupLoading,setBackupLoading]=useState(false);
   const [tsPending,setTsPending]=useState(null); // extracted data awaiting confirmation
+  const [tsResults,setTsResults]=useState([]);   // per-file outcome of a manual upload
   const [tsLastUpload,setTsLastUpload]=useState(null);
   const [accumulated,setAccumulated]=useState({otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null});
   const accumulatedRef = useRef(accumulated);
@@ -2396,11 +2326,9 @@ export default function App() {
     const holDays = accumulated.days.filter(d=>d.isHoliday);
     if (holDays.length === 0) return;
     const newEntries = holDays.map(d=>{
-      const [dd, mm] = d.date.split("/").map(Number);
-      const year = new Date().getFullYear();
-      const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
-      return { id: genUUID(), date: dateStr, hours: d.isHalf ? STD_DAY_HRS/2 : STD_DAY_HRS, label: "Annual Leave (auto)" };
-    });
+      const dt = dayDateOf(d.date);
+      return dt ? { id: genUUID(), date: localISO(dt), hours: d.isHalf ? STD_DAY_HRS/2 : STD_DAY_HRS, label: "Annual Leave (auto)" } : null;
+    }).filter(Boolean);
     const existing = new Set(leaveLogs.map(l => l.date));
     const toAdd = newEntries.filter(e => !existing.has(e.date));
     if (toAdd.length === 0) return;
@@ -2412,31 +2340,10 @@ export default function App() {
     })();
   }, [tab, user, accumulated.days]);
 
-  // Silent queue drain whenever Timesheet tab is opened
+  // Opening the Timesheet tab checks the queue straight away.
   React.useEffect(() => {
-    if (tab !== "Timesheet" || !tsSecret || !user) return;
-    let cancelled = false;
-    (async () => {
-      let processed = 0;
-      for (let i = 0; i < 20; i++) {
-        if (cancelled) return;
-        try {
-          const res = await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
-          const data = await res.json();
-          if (data.status !== "pending" || !data.data) break;
-          const { emailId, days } = data.data;
-          applyTimesheetDays(days, emailId, data.data.meta || null);
-          await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`, { method: "DELETE" });
-          processed++;
-        } catch(e) { break; }
-      }
-      if (processed > 0 && !cancelled) {
-        setTsAutoMsg({ text: `✅ ${processed} timesheet${processed!==1?"s":""} imported`, ok: true });
-        setTimeout(() => setTsAutoMsg(null), 4000);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [tab, tsSecret, user, applyTimesheetDays]);
+    if (tab === "Timesheet" && tsSecret && user && isOwner) drainQueue();
+  }, [tab, tsSecret, user, isOwner, drainQueue]);
 
   // Auto-backup -- runs after data loads, if last backup was > 24h ago
   React.useEffect(() => {
@@ -2714,44 +2621,48 @@ export default function App() {
 
   const updH=h=>{setHistory(h);};
   // Bills -- write each changed bill to Supabase (bulk reconcile)
-  const updSB=async (b)=>{
+  // Bills: save only the bills that changed (and delete removed ones), so one edit
+  // is one write and the other phone reloads once rather than for every bill.
+  const updSB=(b)=>{
+    const before=new Map(sharedBills.map(x=>[x.id,x]));
     setSharedBills(b);
-    if (user) {
-      // Find changes vs current state - simplest: upsert all, delete missing
-      for (const bill of b) trackSave(db.upsertSharedBill(bill));
-      const currentIds = new Set(sharedBills.map(x => x.id));
-      const newIds = new Set(b.map(x => x.id));
-      for (const id of currentIds) if (!newIds.has(id)) trackSave(db.deleteSharedBill(id));
-    }
+    if (!user) return;
+    for (const bill of b) { const old=before.get(bill.id); if (!old || (old!==bill && !sameBill(old,bill))) trackSave(db.upsertSharedBill(bill)); }
+    const keep=new Set(b.map(x=>x.id));
+    for (const id of before.keys()) if (!keep.has(id)) trackSave(db.deleteSharedBill(id));
   };
-  const updGB=async (b)=>{
+  const updGB=(b)=>{
+    const before=new Map(glynBills.map(x=>[x.id,x]));
     setGlynBills(b);
-    if (user) {
-      for (const bill of b) trackSave(db.upsertGlynBill(user.id, bill));
-      const currentIds = new Set(glynBills.map(x => x.id));
-      const newIds = new Set(b.map(x => x.id));
-      for (const id of currentIds) if (!newIds.has(id)) trackSave(db.deleteGlynBill(user.id, id));
-    }
+    if (!user) return;
+    for (const bill of b) { const old=before.get(bill.id); if (!old || (old!==bill && !sameBill(old,bill))) trackSave(db.upsertGlynBill(user.id, bill)); }
+    const keep=new Set(b.map(x=>x.id));
+    for (const id of before.keys()) if (!keep.has(id)) trackSave(db.deleteGlynBill(user.id, id));
+  };
+  // Categories and tags are saved as one blob. Always send every part, so saving
+  // one piece (a category, a colour) can never wipe another (your personal tags).
+  const saveCatsData=(patch)=>{
+    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats, glynCats, glynBillCats, billTags, glynBillTags, ...patch } }));
   };
   // Categories - store in app_settings (shared per user account)
   const saveSharedCats=(nextCats,nextBillCats,nextTags)=>{ if (user) trackSave(db.saveSharedSettings(nextCats, nextBillCats, nextTags!==undefined?nextTags:billTags)); };
   const updC=c=>{
     setCats(c);
     saveSharedCats(c, billCats);
-    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats: c, billCats, glynCats, glynBillCats } }));
+    saveCatsData({ cats: c });
   };
   const updBC=bc=>{
     setBillCats(bc);
     saveSharedCats(cats, bc);
-    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats: bc, glynCats, glynBillCats } }));
+    saveCatsData({ billCats: bc });
   };
   const updGC=c=>{
     setGlynCats(c);
-    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats, glynCats: c, glynBillCats } }));
+    saveCatsData({ glynCats: c });
   };
   const updGBC=bc=>{
     setGlynBillCats(bc);
-    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: { cats, billCats, glynCats, glynBillCats: bc, billTags, glynBillTags } }));
+    saveCatsData({ glynBillCats: bc });
   };
   // Tags live in this user's own settings blob, so they need no schema change.
   const updTags=(billId,tags,isGlyn)=>{
@@ -2759,12 +2670,12 @@ export default function App() {
     if(isGlyn){
       const n={...glynBillTags};clean.length?(n[billId]=clean):delete n[billId];
       setGlynBillTags(n);
-      if(user)trackSave(db.saveAppSettings(user.id,{cats_data:{cats,billCats,glynCats,glynBillCats,billTags,glynBillTags:n}}));
+      saveCatsData({glynBillTags:n});
     }else{
       const n={...billTags};clean.length?(n[billId]=clean):delete n[billId];
       setBillTags(n);
       saveSharedCats(cats,billCats,n);
-      if(user)trackSave(db.saveAppSettings(user.id,{cats_data:{cats,billCats,glynCats,glynBillCats,billTags:n,glynBillTags}}));
+      saveCatsData({billTags:n});
     }
   };
   const allTags=(isGlyn)=>{
@@ -2774,28 +2685,35 @@ export default function App() {
   // Restore all four category maps from a backup in ONE write, so the saves
   // can't race and overwrite each other (that race stopped restores sticking).
   const restoreCats = d => {
+    const pick = (k, cur) => d[k] !== undefined ? d[k] : cur;
     const cd = {
-      cats: d.cats !== undefined ? d.cats : cats,
-      billCats: d.billCats !== undefined ? d.billCats : billCats,
-      glynCats: d.glynCats !== undefined ? d.glynCats : glynCats,
-      glynBillCats: d.glynBillCats !== undefined ? d.glynBillCats : glynBillCats,
+      cats: pick("cats", cats), billCats: pick("billCats", billCats),
+      glynCats: pick("glynCats", glynCats), glynBillCats: pick("glynBillCats", glynBillCats),
+      billTags: pick("billTags", billTags), glynBillTags: pick("glynBillTags", glynBillTags),
     };
     setCats(cd.cats); setBillCats(cd.billCats); setGlynCats(cd.glynCats); setGlynBillCats(cd.glynBillCats);
-    saveSharedCats(cd.cats, cd.billCats);
-    if (user) db.saveAppSettings(user.id, { cats_data: cd });
+    setBillTags(cd.billTags); setGlynBillTags(cd.glynBillTags);
+    saveSharedCats(cd.cats, cd.billCats, cd.billTags);
+    if (user) trackSave(db.saveAppSettings(user.id, { cats_data: cd }));
   };
-  const setC=useCallback((k,v)=>{
+  const setCMany=useCallback((patch)=>{
     setCi(p=>{
-      const n={...p,[k]:v};
+      if (Object.keys(patch).every(k=>p[k]===patch[k])) return p;   // nothing changed: no save
+      const n={...p,...patch};
       if (user) trackSave(db.saveAppSettings(user.id, { calc_inputs: n }));
       return n;
     });
   },[user]);
+  const setC=useCallback((k,v)=>setCMany({[k]:v}),[setCMany]);
   const updNotes=n=>{
     setNotes(n);
     if (user) trackSave(db.saveAppSettings(user.id, { notes: n }));
   };
-  const deletePayslip=month=>{updH(history.filter(h=>h.month!==month));setDeleteConfirm(null);setExpandedPayslip(null);};
+  const deletePayslip=month=>{
+    setHistory(h=>h.filter(x=>x.month!==month));
+    if(user)trackSave(db.deletePayslip(user.id,month));
+    setDeleteConfirm(null);setExpandedPayslip(null);
+  };
 
   // Shared by the upload box and the Android share-target intake.
   const processPayslipFiles=async files=>{
@@ -2828,7 +2746,10 @@ export default function App() {
           let parsed;
           try { parsed = JSON.parse(rawText); }
           catch(jsonErr) { throw new Error("Could not parse JSON: " + rawText.slice(0, 200)); }
-          if(!parsed.month) throw new Error("Missing 'month' field in extracted data");
+          const month=normaliseMonth(parsed.month);
+          if(!month) throw new Error("Couldn't read the payslip month ("+String(parsed.month||"blank")+")");
+          parsed.month=month;
+          ["gross","net","tax","ni","nest","sl","bonus","ot","weekendOt","holidayPay","hourlyAllowance","regularPay"].forEach(k=>{parsed[k]=Number(parsed[k])||0;});
           // Allowance is active whenever a performance bonus was paid (they're the same tier)
           parsed.perfAllowance = (parsed.bonus || 0) > 0;
           // Save to Supabase
@@ -2854,18 +2775,14 @@ export default function App() {
             return sortH(h);
           });
           const last=successful[successful.length-1];
-          setC("bonus", last.bonus);
-          setC("perfAllowance", last.perfAllowance);
+          setCMany({ bonus: last.bonus, perfAllowance: last.perfAllowance });
           // A payslip means a pay period has closed. If the accumulator still holds a
           // previous period's hours, reset it and clear the calculator now.
           if (shouldResetTimesheet(accumulatedRef.current.lastUpload)) {
             const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
             setAccumulated(empty);
             if (user) db.saveAccumulator(user.id, empty, null);
-            setC("otHrs", 0);
-            setC("weekendOtHrs", 0);
-            setC("holidayHrs", 0);
-            setC("stdHrs", getCurrentMonthHours());
+            setCMany({ otHrs:0, weekendOtHrs:0, holidayHrs:0, stdHrs:getCurrentMonthHours() });
           }
         } catch(postErr){
           console.error("Post-upload processing failed:", postErr);
@@ -3048,16 +2965,16 @@ export default function App() {
       const nc=glynCats.filter(c=>c.id!==id);
       const bc={...glynBillCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});
       setGlynCats(nc);setGlynBillCats(bc);
-      if(user) db.saveAppSettings(user.id,{cats_data:{cats,billCats,glynCats:nc,glynBillCats:bc}});
-      showUndoToast((cat?cat.name:"Category")+" deleted",()=>{setGlynCats(prevCats);setGlynBillCats(prevBC);if(user)db.saveAppSettings(user.id,{cats_data:{cats,billCats,glynCats:prevCats,glynBillCats:prevBC}});});
+      saveCatsData({glynCats:nc,glynBillCats:bc});
+      showUndoToast((cat?cat.name:"Category")+" deleted",()=>{setGlynCats(prevCats);setGlynBillCats(prevBC);saveCatsData({glynCats:prevCats,glynBillCats:prevBC});});
     } else {
       const prevCats=cats;const prevBC=billCats;
       const nc=cats.filter(c=>c.id!==id);
       const bc={...billCats};Object.keys(bc).forEach(k=>{if(bc[k]===id)delete bc[k];});
       setCats(nc);setBillCats(bc);
       saveSharedCats(nc, bc);
-      if(user) db.saveAppSettings(user.id,{cats_data:{cats:nc,billCats:bc,glynCats,glynBillCats}});
-      showUndoToast((cat?cat.name:"Category")+" deleted",()=>{setCats(prevCats);setBillCats(prevBC);saveSharedCats(prevCats, prevBC);if(user)db.saveAppSettings(user.id,{cats_data:{cats:prevCats,billCats:prevBC,glynCats,glynBillCats}});});
+      saveCatsData({cats:nc,billCats:bc});
+      showUndoToast((cat?cat.name:"Category")+" deleted",()=>{setCats(prevCats);setBillCats(prevBC);saveSharedCats(prevCats, prevBC);saveCatsData({cats:prevCats,billCats:prevBC});});
     }
   };
   // Colour lives on the category object; cats are stored as JSON so this needs no migration.
@@ -3103,7 +3020,7 @@ export default function App() {
     const me=isOwner?"glyn":"hollie";
     const them=isOwner?"hollie":"glyn";
     const payer=settleForm.mine?me:them;
-    const entry={id:Date.now(),kind:settleForm.kind,payer,amount:amt,note:settleForm.note.trim(),entry_date:settleForm.date||new Date().toISOString().slice(0,10),created_by:user?user.id:null};
+    const entry={id:Date.now(),kind:settleForm.kind,payer,amount:amt,note:settleForm.note.trim(),entry_date:settleForm.date||localISO(),created_by:user?user.id:null};
     setSettlements([entry,...settlements]);
     if(user)trackSave(db.upsertSettlement(entry));
     haptic();
@@ -3224,34 +3141,49 @@ export default function App() {
     showUndoToast("Scheduled bill removed",()=>{setScheduledBills(prev);if(user&&b)trackSave(db.upsertScheduledBill(b));});
   };
 
+  // Same contents as the cloud backups, as a file.
   const exportData=async()=>{
-    const partnerPersonalBills=await fetchPartnerBills();
-    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,partnerPersonalBills,settlements,gifts,scheduledBills,exportedAt:new Date().toISOString()};
+    const data=await buildBackupData();
     const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
     const url=URL.createObjectURL(blob);
     const a=document.createElement("a");
-    a.href=url;a.download="vaulted-backup-"+new Date().toISOString().slice(0,10)+".json";
+    a.href=url;a.download="vaulted-backup-"+localISO()+".json";
     a.click();URL.revokeObjectURL(url);
+  };
+
+  // Restore a backup (cloud or file). Everything is written back to the database,
+  // not just shown on screen, so it's still there after a reload.
+  const restoreFromData=async d=>{
+    if(!d||typeof d!=="object"||!(d.history||d.sharedBills||d.glynBills))throw new Error("Not a Vaulted backup");
+    if(Array.isArray(d.history)&&user){
+      const incoming=d.history.map(p=>({...p,month:normaliseMonth(p.month)})).filter(p=>p.month);
+      const keep=new Set(incoming.map(p=>p.month));
+      setHistory(sortH(incoming));
+      await trackSave(()=>db.upsertPayslips(user.id,incoming));
+      for(const p of history) if(!keep.has(p.month)) await trackSave(()=>db.deletePayslip(user.id,p.month));
+    }
+    if(Array.isArray(d.sharedBills))updSB(d.sharedBills);
+    if(Array.isArray(d.glynBills))updGB(d.glynBills);
+    if(d.partnerPersonalBills)await restorePartnerBills(d.partnerPersonalBills);
+    if(d.settlements)await restoreSettlements(d.settlements);
+    if(d.gifts)await restoreGifts(d.gifts);
+    if(d.scheduledBills)await restoreScheduledBills(d.scheduledBills);
+    restoreCats(d);
+    if(d.calcInputs){setCi(d.calcInputs);if(user)trackSave(db.saveAppSettings(user.id,{calc_inputs:d.calcInputs}));}
+    if(d.notes)updNotes(d.notes);
+    if(d.leaveLogs)await restoreLeaveLogs(d.leaveLogs);
+    if(d.leaveSettings&&user){setLeaveSettings(d.leaveSettings);trackSave(db.saveLeaveSettings(user.id,d.leaveSettings));}
+    if(d.scenarios)await restoreScenarios(d.scenarios);
+    if(d.tierOverride!==undefined)saveTierOverride(Number.isInteger(d.tierOverride)?d.tierOverride:null);
+    if(d.movePlan&&typeof d.movePlan==="object")savePlan(()=>d.movePlan);
   };
 
   const importData=e=>{
     const file=e.target.files[0];if(!file)return;
     const reader=new FileReader();
-    reader.onload=ev=>{
-      try {
-        const d=JSON.parse(ev.target.result);
-        if(d.history){updH(d.history);}
-        if(d.sharedBills){updSB(d.sharedBills);}
-        if(d.glynBills){updGB(d.glynBills);}
-        if(d.partnerPersonalBills){restorePartnerBills(d.partnerPersonalBills);}
-        if(d.settlements){restoreSettlements(d.settlements);}
-        if(d.gifts){restoreGifts(d.gifts);}
-        if(d.scheduledBills){restoreScheduledBills(d.scheduledBills);}
-        restoreCats(d);
-        if(d.calcInputs){setCi(d.calcInputs);if(user) db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
-        if(d.notes){updNotes(d.notes);}
-        setImportMsg("✓ Data restored successfully");
-      } catch{setImportMsg("⚠ Invalid backup file");}
+    reader.onload=async ev=>{
+      try { await restoreFromData(JSON.parse(ev.target.result)); setImportMsg("✓ Data restored"); }
+      catch(err){ setImportMsg("⚠ Invalid backup file"); }
     };
     reader.readAsText(file);
     e.target.value="";
@@ -3357,67 +3289,10 @@ const calcTimesheetTotals = days => {
     e.target.value = "";
   };
 
-  const confirmTimesheet = async () => {
+  // A manual upload goes through exactly the same steps as an auto-import.
+  const confirmTimesheet = () => {
     if (!tsPending) return;
-    const now = new Date().toISOString();
-    const STD = 8.25;
-    const enrichedDays = tsPending.days.map(d => {
-      const { isHoliday, isHalf } = normaliseHoliday(d.holiday);
-      const hrs = isHoliday ? 0 : parseHM(d.hours);
-      const isWeekend = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
-      const otHrs = (isHoliday || isWeekend) ? 0 : Math.max(0, Math.round((hrs - STD) * 100) / 100);
-      const wkOtHrs = (!isHoliday && isWeekend) ? hrs : 0;
-      return { ...d, hrs, otHrs, wkOtHrs, isHoliday, isHalf };
-    });
-
-    // Auto-log holiday rows to annual leave
-    const holidayDays = enrichedDays.filter(d => d.isHoliday);
-    if (holidayDays.length > 0) {
-      const newLeaveEntries = holidayDays.map(d => {
-        const [dd, mm] = d.date.split("/").map(Number);
-        const year = new Date().getFullYear();
-        const dateStr = new Date(year, mm - 1, dd).toISOString().slice(0, 10);
-        const hours = d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS;
-        return { id: Date.now() + Math.random(), date: dateStr, hours, label: "Annual Leave (from timesheet)" };
-      });
-      setLeaveLogs(prev => {
-        const merged = [...prev, ...newLeaveEntries].filter((entry, idx, arr) =>
-          arr.findIndex(e => e.date === entry.date) === idx
-        ).sort((a, b) => new Date(b.date) - new Date(a.date));
-        return merged;
-      });
-    }
-    const sortAndDedup = days => {
-      const seen = new Set();
-      return [...days]
-        .sort((a, b) => {
-          const [ad, am] = (a.date || "").split("/").map(Number);
-          const [bd, bm] = (b.date || "").split("/").map(Number);
-          return (am !== bm ? am - bm : ad - bd);
-        })
-        .filter(d => {
-          const key = d.date + "_" + d.day;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-    };
-    const mergedDays = sortAndDedup([...(accumulated.days||[]), ...enrichedDays]);
-    // Derive totals from the deduplicated days -- single source of truth
-    const totalOtHrs = Math.round(mergedDays.reduce((s,d) => s + (d.otHrs||0), 0) * 100) / 100;
-    const totalWkndHrs = Math.round(mergedDays.reduce((s,d) => s + (d.wkOtHrs||0), 0) * 100) / 100;
-    const newAcc = {
-      otHrs: totalOtHrs,
-      weekendOtHrs: totalWkndHrs,
-      weeks: [...accumulated.weeks, { uploadedAt: now, ...tsPending.totals }],
-      days: mergedDays,
-      lastUpload: now,
-    };
-    setAccumulated(newAcc);
-    if (user) await trackSave(() => db.saveAccumulator(user.id, newAcc, now));
-    setTsLastUpload(now);
-    setC("otHrs", newAcc.otHrs);
-    setC("weekendOtHrs", newAcc.weekendOtHrs);
+    applyTimesheetDays(tsPending.days, null, null);
     setTsPending(null);
   };
 
@@ -3504,11 +3379,12 @@ const calcTimesheetTotals = days => {
 
   const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Pay Calc","Settle Up","Gifts"];
   const secondaryTabs = isOwner ? [...SECONDARY_TABS, ...(showHiddenTabs ? HIDDEN_TABS : [])] : ["Move","Diag"];
+  const sheetOpen = showMore||!!moveBill||catsOpen||schedOpen||giftOpen||settleOpen||moveCatsOpen;
 
   return (
     <ErrorBoundary>
     <div
-      onTouchStart={e=>{ if(window.scrollY<=0&&!showMore&&!moveBill&&!scrollableAncestorScrolled(e.target)){pullStart.current=e.touches[0].clientY;pullDist.current=0;} else {pullStart.current=null;} }}
+      onTouchStart={e=>{ if(window.scrollY<=0&&!sheetOpen&&!scrollableAncestorScrolled(e.target)){pullStart.current=e.touches[0].clientY;pullDist.current=0;} else {pullStart.current=null;} }}
       onTouchMove={e=>{ if(pullStart.current==null||refreshing)return; if(window.scrollY>0){pullStart.current=null;pullDist.current=0;if(pullY!==0)setPullY(0);return;} const dy=e.touches[0].clientY-pullStart.current; if(dy>12){const d=Math.min((dy-12)*0.5,90);pullDist.current=d;setPullY(d);} else if(pullDist.current!==0){pullDist.current=0;setPullY(0);} }}
       onTouchEnd={()=>{ if(pullStart.current==null)return; const d=pullDist.current; pullStart.current=null; pullDist.current=0; if(d>70&&!refreshing){setRefreshing(true);setPullY(0);haptic("medium");Promise.resolve(refreshAll&&refreshAll()).finally(()=>setTimeout(()=>setRefreshing(false),600));} else {setPullY(0);} }}
       style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:"calc(96px + env(safe-area-inset-bottom))"}}>
@@ -3558,7 +3434,7 @@ const calcTimesheetTotals = days => {
                 <span style={{fontSize:20}}>⏰</span>
                 <div style={{flex:1}}>
                   <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Session expiring soon</div>
-                  <div style={{fontSize:11,color:"#7a6030",marginTop:2}}>You'\''ll be signed out shortly. Refresh data or sign in again to extend.</div>
+                  <div style={{fontSize:11,color:"#7a6030",marginTop:2}}>You'll be signed out shortly. Refresh data or sign in again to extend.</div>
                 </div>
                 <button onClick={async () => {
                   haptic("medium");
@@ -3599,7 +3475,7 @@ const calcTimesheetTotals = days => {
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
               {[
                 {label:"Est. Net Pay",    value:fmt(cr.net),      sub:"from Pay Calc",   accent:"#4a9eff"},
-                {label:"Monthly Surplus", value:fmt(surplus),     sub:"after all bills", accent:surplus>=0?"#00c88c":"#ff4a6a"},
+                {label:"Monthly Surplus", value:fmtS(surplus),     sub:"after all bills", accent:surplus>=0?"#00c88c":"#ff4a6a"},
                 {label:"Latest Net",      value:fmt(latest?.net), sub:latest?.month,     accent:"#7c6fff"},
                 {label:"FY Avg Net",      value:fmt(ts.avgNet),   sub:"Apr to now",      accent:"#ffb84a"},
               ].map(k=>(
@@ -3670,7 +3546,7 @@ const calcTimesheetTotals = days => {
                 ["Shared Bills (my half)",fmt(shGlyn),   "#ff6b8a"],
                 ["My Personal Bills",     fmt(glOnly),   "#ff8c4a"],
                 ["Total Outgoings",       fmt(totalOut), "#ff4a6a"],
-                ["Monthly Surplus",       fmt(surplus),  surplus>=0?"#00c88c":"#ff4a6a"],
+                ["Monthly Surplus",       fmtS(surplus),  surplus>=0?"#00c88c":"#ff4a6a"],
               ].map(([l,v,c],i,arr)=>(
                 <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
               ))}
@@ -4172,7 +4048,7 @@ const calcTimesheetTotals = days => {
               <div style={{textAlign:"center",marginBottom:14}}>
                 <div style={{fontSize:11,color:"#c84aff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
                 <div style={{fontSize:38,fontWeight:700,color:"#c84aff"}}>{fmt(hollieCalc.net)}</div>
-                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after bills: <span style={{color:hollieSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmt(hollieSurplus)}</span></div>
+                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after bills: <span style={{color:hollieSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(hollieSurplus)}</span></div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                 {[["Annual Gross",fmt(hollieCalc.annualGross)],["Annual Net",fmt(hollieCalc.annualNet)]].map(([l,v])=>(
@@ -4218,7 +4094,7 @@ const calcTimesheetTotals = days => {
                 ["Net pay", fmt(hollieCalc.net), "#c8cee0", false],
                 ["Your share of shared bills", "−"+fmt(shHollie), "#ff6b8a", false],
                 ["Your personal bills", "−"+fmt(glOnly), "#ff8c4a", false],
-                ["Left over", fmt(hollieSurplus), hollieSurplus>=0?"#00c88c":"#ff4a6a", true],
+                ["Left over", fmtS(hollieSurplus), hollieSurplus>=0?"#00c88c":"#ff4a6a", true],
               ].map(([l,v,c,bold],i)=>(
                 <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderTop:i?"1px solid #161b28":"none",fontSize:13}}>
                   <span style={{color:"#8892b0"}}>{l}</span><span style={{color:c,fontWeight:bold?800:600}}>{v}</span>
@@ -4236,7 +4112,7 @@ const calcTimesheetTotals = days => {
               <div style={{textAlign:"center",marginBottom:14}}>
                 <div style={{fontSize:11,color:"#4a9eff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
                 <div style={{fontSize:38,fontWeight:700,color:"#4a9eff"}}>{fmt(cr.net)}</div>
-                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after bills: <span style={{color:surplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmt(surplus)}</span></div>
+                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after bills: <span style={{color:surplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(surplus)}</span></div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                 {[["Annual Gross",fmt(cr.annualGross),"#7c6fff"],["Annual Net",fmt(cr.annualNet),"#4a9eff"],["Annual Tax",fmt(cr.annualTax),"#ff6b8a"],["Annual NI",fmt(cr.annualNI),"#ff8c4a"]].map(([l,v,c])=>(
@@ -4703,7 +4579,7 @@ const calcTimesheetTotals = days => {
               {history.length > 0 && (
                 <button onClick={async ()=>{
                   haptic("medium");
-                  if(!window.confirm("This will estimate leave taken from your payslip history and add entries. Existing manual entries won'\''t be overwritten. Continue?")) return;
+                  if(!window.confirm("This will estimate leave taken from your payslip history and add entries. Existing manual entries won't be overwritten. Continue?")) return;
 
                   setImportMsg("Calculating from payslips...");
                   const newEntries = [];
@@ -4733,7 +4609,7 @@ const calcTimesheetTotals = days => {
                       // Use middle of the month as a placeholder date
                       const [mo, yr] = p.month.split(" ");
                       const monthIdx = months.indexOf(mo);
-                      const dateStr = new Date(parseInt(yr), monthIdx, 15).toISOString().slice(0, 10);
+                      const dateStr = localISO(new Date(parseInt(yr), monthIdx, 15));
                       newEntries.push({
                         id: genUUID(),
                         date: dateStr,
@@ -4819,7 +4695,7 @@ const calcTimesheetTotals = days => {
                 <div style={{textAlign:"center",padding:"32px 20px"}}>
                   <div style={{fontSize:36,marginBottom:8}}>🏖️</div>
                   <div style={{fontSize:14,color:"#8892b0",fontWeight:600,marginBottom:6}}>No leave logged for {year} yet</div>
-                  <div style={{fontSize:12,color:"#3a4460"}}>Log leave above or it'\''ll auto-import from your monthly timesheets</div>
+                  <div style={{fontSize:12,color:"#3a4460"}}>Log leave above or it'll auto-import from your monthly timesheets</div>
                 </div>
               )}
 
@@ -5564,7 +5440,7 @@ const calcTimesheetTotals = days => {
               )}
             </div>
 
-            <button onClick={()=>{haptic();setSettleForm({kind:"charge",mine:true,amount:"",note:"",date:new Date().toISOString().slice(0,10)});setSettleOpen(true);}}
+            <button onClick={()=>{haptic();setSettleForm({kind:"charge",mine:true,amount:"",note:"",date:localISO()});setSettleOpen(true);}}
               style={{width:"100%",background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"15px",cursor:"pointer",marginBottom:14}}>
               ＋ Add entry
             </button>
@@ -5729,7 +5605,7 @@ const calcTimesheetTotals = days => {
                   style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px",fontFamily:"inherit",marginBottom:8}}
                 />
                 {tsSecret?(
-                  <div style={{fontSize:11,color:"#00c88c",marginBottom:4}}>✅ Secret saved — polling every 10s</div>
+                  <div style={{fontSize:11,color:"#00c88c",marginBottom:4}}>✅ Secret saved — checking every minute</div>
                 ):(
                   <div style={{fontSize:11,color:"#3a4460",marginBottom:4}}>No secret set — auto-import disabled</div>
                 )}
@@ -5744,6 +5620,9 @@ const calcTimesheetTotals = days => {
                     :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
                   }
                 </label>
+                {tsResults.filter(r=>!r.ok).map((r,i)=>(
+                  <div key={i} style={{fontSize:11,color:"#ff6b8a",marginTop:6}}>⚠ {r.file}: {r.err}</div>
+                ))}
                 {tsPending&&(()=>{
                   const STD=8.25;
                   const enrichedNew=tsPending.days.map(d=>{
@@ -5895,15 +5774,7 @@ const calcTimesheetTotals = days => {
                 )}
                 <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                   <button onClick={()=>{haptic("medium");refreshAll();}} style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#4a9eff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>🔄 Refresh data</button>
-                  <button onClick={async()=>{
-                    const partnerPersonalBills=await fetchPartnerBills();
-                    const data={history,sharedBills,glynBills,cats,billCats,glynCats,glynBillCats,calcInputs:ci,notes,leaveLogs,monthlyTs,scenarios,partnerPersonalBills,settlements,gifts,scheduledBills,exportedAt:new Date().toISOString()};
-                    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
-                    const url=URL.createObjectURL(blob);
-                    const a=document.createElement("a");
-                    a.href=url;a.download=`vaulted-backup-${new Date().toISOString().slice(0,10)}.json`;
-                    a.click();URL.revokeObjectURL(url);
-                  }} style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>📥 Export backup</button>
+                  <button onClick={()=>{haptic();exportData();}} style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>📥 Export backup</button>
                   <button onClick={async()=>{
                     if(!window.confirm("Sign out? You will need to log in again to access your data."))return;
                     haptic("heavy");await handleSignOut();
@@ -5962,21 +5833,7 @@ const calcTimesheetTotals = days => {
                               if(!window.confirm("Restore this backup? Your current data will be replaced."))return;
                               try{
                                 const full=await db.getBackup(b.id);
-                                const d=full.data;
-                                if(d.history){updH(d.history);}
-                                if(d.sharedBills){updSB(d.sharedBills);}
-                                if(d.glynBills){updGB(d.glynBills);}
-                                if(d.partnerPersonalBills){await restorePartnerBills(d.partnerPersonalBills);}
-                                if(d.settlements){await restoreSettlements(d.settlements);}
-                                if(d.gifts){await restoreGifts(d.gifts);}
-                                if(d.scheduledBills){await restoreScheduledBills(d.scheduledBills);}
-                                restoreCats(d);
-                                if(d.calcInputs){setCi(d.calcInputs);if(user)db.saveAppSettings(user.id,{calc_inputs:d.calcInputs});}
-                                if(d.notes){updNotes(d.notes);}
-                                if(d.leaveLogs){setLeaveLogs(d.leaveLogs);}
-                                if(d.leaveSettings){setLeaveSettings(d.leaveSettings);}
-                                if(d.scenarios){setScenarios(d.scenarios);}
-                                if(d.tierOverride!==undefined){setTierOverride(d.tierOverride);}
+                                await restoreFromData(full&&full.data);
                                 setImportMsg("✓ Backup restored");
                               }catch(e){setImportMsg("⚠ Restore failed");}
                               setTimeout(()=>setImportMsg(""),3000);

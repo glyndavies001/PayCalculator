@@ -62,7 +62,7 @@ export default async function handler(req, res) {
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-5",
+          model: "claude-sonnet-4-6",
           max_tokens: 2000,
           messages: [{ role: "user", content:
 `This is a JLI timesheet email. Extract every day row as a JSON array.
@@ -114,10 +114,19 @@ ${emailBody}` }],
     return res.status(200).json({ status: "pending", data, remaining });
   }
 
-  // DELETE — remove oldest item
+  // DELETE — remove the oldest item. With ?emailId=… it's only removed if it is
+  // still that email, so two devices (or two checks) can't remove one they
+  // haven't applied. Without emailId it just removes the oldest (Clear Queue).
   if (req.method === "DELETE") {
-    const { token } = req.query;
+    const { token, emailId } = req.query;
     if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
+    if (emailId) {
+      const head = await redis.lindex(QUEUE_KEY, 0);
+      const h = head && (typeof head === 'string' ? JSON.parse(head) : head);
+      if (!h || h.emailId !== emailId) {
+        return res.status(200).json({ status: "not_head", remaining: await redis.llen(QUEUE_KEY) });
+      }
+    }
     await redis.lpop(QUEUE_KEY);
     const remaining = await redis.llen(QUEUE_KEY);
     return res.status(200).json({ status: "cleared", remaining });
