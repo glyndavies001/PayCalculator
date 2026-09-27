@@ -741,9 +741,11 @@ const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
 const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
 const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
 const notSetFor = (b, mk) => isVariable(b) && !(mk in b.amounts);
-const APP_VERSION = "1.13.75";
-const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
-const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Move","Diag"];
+const APP_VERSION = "1.13.76";
+const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
+const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
+// Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
+const HIDDEN_TABS = ["Pay Info","Tax Year","Leave"];
 
 // Move Plan: how the household's take-home should split once we move. Targets are
 // % of combined take-home; bills land in a bucket through their category.
@@ -1349,6 +1351,7 @@ export default function App() {
   const [movePlan,setMovePlan]=useState(null);             // shared Move Plan (null = not loaded)
   const [moveMissing,setMoveMissing]=useState(false);      // move_plan column not migrated yet
   const [moveCatsOpen,setMoveCatsOpen]=useState(false);    // assign categories to buckets sheet
+  const [showHiddenTabs,setShowHiddenTabs]=useState(()=>{try{return localStorage.getItem("vaulted_show_hidden_tabs")==="1";}catch(e){return false;}});
   const [moveOpenB,setMoveOpenB]=useState(null);           // Move tab: bucket expanded to show its bills
   const [movePick,setMovePick]=useState(null);             // Move tab: bill whose bucket chips are showing
   const personalOk=useRef(false);                          // personal bills came from the DB
@@ -1850,7 +1853,7 @@ export default function App() {
 
   // Keyboard shortcuts (desktop)
   useEffect(() => {
-    const all = [...PRIMARY_TABS, ...SECONDARY_TABS];
+    const all = [...PRIMARY_TABS, ...SECONDARY_TABS, ...HIDDEN_TABS];
     const onKey = (e) => {
       if (e.ctrlKey || e.metaKey) {
         const num = parseInt(e.key);
@@ -3500,7 +3503,7 @@ const calcTimesheetTotals = days => {
 
 
   const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Pay Calc","Settle Up","Gifts"];
-  const secondaryTabs = isOwner ? SECONDARY_TABS : ["Move","Diag"];
+  const secondaryTabs = isOwner ? [...SECONDARY_TABS, ...(showHiddenTabs ? HIDDEN_TABS : [])] : ["Move","Diag"];
 
   return (
     <ErrorBoundary>
@@ -5609,6 +5612,9 @@ const calcTimesheetTotals = days => {
                   return(
                     <>
                       <div style={row}><span style={{color:"#5a6480"}}>Version</span><span style={{color:"#c8cee0",fontWeight:700}}>v{APP_VERSION}</span></div>
+                      {isOwner&&<div style={row}><span style={{color:"#5a6480"}}>Show hidden tabs <span style={{color:"#3a4460"}}>(Pay Info, Tax Year, Leave)</span></span>
+                        <button onClick={()=>{haptic();const v=!showHiddenTabs;setShowHiddenTabs(v);try{localStorage.setItem("vaulted_show_hidden_tabs",v?"1":"0");}catch(e){}}}
+                          style={{background:showHiddenTabs?"#1a3a2a":"#1e2535",border:"1px solid "+(showHiddenTabs?"#00c88c":"#2a3050"),borderRadius:6,color:showHiddenTabs?"#00c88c":"#5a6480",fontSize:11,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>{showHiddenTabs?"On":"Off"}</button></div>}
                       <div style={row}><span style={{color:"#5a6480"}}>Signed in</span><span style={{color:"#c8cee0",wordBreak:"break-all"}}>{user?user.email:"no"}</span></div>
                       <div style={row}><span style={{color:"#5a6480"}}>Pay period</span><span style={{color:"#c8cee0"}}>{fmtD(ps)} – {fmtD(pe)}</span></div>
                       <div style={{...row,borderBottom:"1px solid #1a1f2e"}}><span style={{color:"#5a6480"}}>Standard hours</span><span style={{color:"#c8cee0",fontWeight:700}}>{getCurrentMonthHours()}h</span></div>
