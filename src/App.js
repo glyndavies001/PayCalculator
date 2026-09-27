@@ -741,7 +741,7 @@ const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
 const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
 const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
 const notSetFor = (b, mk) => isVariable(b) && !(mk in b.amounts);
-const APP_VERSION = "1.13.74";
+const APP_VERSION = "1.13.75";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Move","Diag"];
 
@@ -2470,9 +2470,13 @@ export default function App() {
   const myId=user?user.id:null;
   const activeSchedShared=scheduledBills.filter(b=>b.scope==="shared"&&schedActive(b));
   const activeSchedPersonal=scheduledBills.filter(b=>b.scope==="personal"&&b.owner===myId&&schedActive(b));
-  const shGlyn=sharedBills.reduce((s,b)=>s+billShares(b).glyn,0)+activeSchedShared.reduce((s,b)=>s+schedShares(b).glyn,0);
-  const shHollie=sharedBills.reduce((s,b)=>s+billShares(b).hollie,0)+activeSchedShared.reduce((s,b)=>s+schedShares(b).hollie,0);
-  const glOnly=glynBills.reduce((s,b)=>s+b.total,0)+activeSchedPersonal.reduce((s,b)=>s+(Number(b.total)||0),0);
+  // Same figures as the Budget tab's current month: variable bills use this month's
+  // amount, and this month's income entries add to what's left.
+  const nowMk=monthKeyOf(schedNowYear,schedNowMonth);
+  const shGlyn=sharedBills.reduce((s,b)=>s+billShares(withAmount(b,nowMk)).glyn,0)+activeSchedShared.reduce((s,b)=>s+schedShares(b).glyn,0);
+  const shHollie=sharedBills.reduce((s,b)=>s+billShares(withAmount(b,nowMk)).hollie,0)+activeSchedShared.reduce((s,b)=>s+schedShares(b).hollie,0);
+  const glOnly=glynBills.reduce((s,b)=>s+amountOf(b,nowMk),0)+activeSchedPersonal.reduce((s,b)=>s+(Number(b.total)||0),0);
+  const incomeNow=scheduledBills.filter(b=>b.scope==="income"&&b.owner===myId&&schedActive(b)).reduce((s,b)=>s+(Number(b.total)||0),0);
   const totalOut=shGlyn+glOnly;
 
   // Effective tier: must be computed before cr
@@ -2518,7 +2522,7 @@ export default function App() {
   },[accumulated.days,ci.stdHrs,ci.otHrs,ci.weekendOtHrs,ci.holidayHrs]);
 
   const cr=useMemo(()=>calcPay({...ci,stdHrs:effHrs.stdHrs,otHrs:effHrs.otHrs,weekendOtHrs:effHrs.weekendOtHrs,_allowanceOverride:effectiveAllowance}),[ci,effectiveAllowance,effHrs]);
-  const surplus=cr.net-totalOut;
+  const surplus=cr.net+incomeNow-totalOut;
 
   // 12-month look-ahead. Monthly bills are constant; what varies is which
   // scheduled bills land in each month. Surplus assumes pay stays at the
@@ -2605,7 +2609,7 @@ export default function App() {
   };
   const hollieCalc=calcHolliePay(hollieOtForPay);
   const hollieOut=shHollie+glOnly;
-  const hollieSurplus=hollieCalc.net-hollieOut;
+  const hollieSurplus=hollieCalc.net+incomeNow-hollieOut;
   // Whoever is signed in: their own net, and their surplus for the month in view.
   const viewerNet=isOwner?cr.net:hollieCalc.net;
   // Forecasting a future month assumes NO overtime — only contracted hours at the
@@ -3659,6 +3663,7 @@ const calcTimesheetTotals = days => {
               <SectionLabel>Monthly Budget</SectionLabel>
               {[
                 ["Est. Net Pay",          fmt(cr.net),   "#4a9eff"],
+                ...(incomeNow?[["Other Income",fmtS(incomeNow),"#00c88c"]]:[]),
                 ["Shared Bills (my half)",fmt(shGlyn),   "#ff6b8a"],
                 ["My Personal Bills",     fmt(glOnly),   "#ff8c4a"],
                 ["Total Outgoings",       fmt(totalOut), "#ff4a6a"],
