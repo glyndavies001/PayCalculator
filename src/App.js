@@ -50,15 +50,6 @@ async function authHeaders() {
   return h;
 }
 
-function getWorkingDaysInMonth(year, month) {
-  const days = new Date(year, month + 1, 0).getDate();
-  let count = 0;
-  for (let d = 1; d <= days; d++) {
-    const day = new Date(year, month, d).getDay();
-    if (day !== 0 && day !== 6) count++;
-  }
-  return count;
-}
 // Contracted hours for the pay period ENDING on the 28th of the given month
 // (month is 1-12). Same working-day count and contract rate as the live figure.
 function monthHoursFor(year, month) {
@@ -75,30 +66,10 @@ function monthHoursFor(year, month) {
   return Math.round(workDays * rate.stdDayHrs * 100) / 100;
 }
 
+// Standard hours for the current pay period (29th -> 28th).
 function getCurrentMonthHours() {
-  // Returns standard hours for the current pay period (29th -> 28th)
-  // and uses the applicable contract hours (8h before May 2026, 8.25h after)
-  const now = new Date();
-  // Determine current pay period start
-  let periodStart, periodEnd;
-  if (now.getDate() >= 29) {
-    periodStart = new Date(now.getFullYear(), now.getMonth(), 29);
-    periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 28);
-  } else {
-    periodStart = new Date(now.getFullYear(), now.getMonth() - 1, 29);
-    periodEnd = new Date(now.getFullYear(), now.getMonth(), 28);
-  }
-  // Count working days in this period (Mon-Fri only)
-  let workDays = 0;
-  for (let d = new Date(periodStart); d <= periodEnd; d.setDate(d.getDate() + 1)) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) workDays++;
-  }
-  // Use the rate config that applies to the pay month (the month containing periodEnd)
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const payMonthStr = months[periodEnd.getMonth()] + " " + periodEnd.getFullYear();
-  const rate = (typeof getRateFor === "function") ? getRateFor(payMonthStr) : { stdDayHrs: 8.25 };
-  return Math.round(workDays * rate.stdDayHrs * 100) / 100;
+  const [y, m] = getCurrentPayPeriodKey().split("-").map(Number);
+  return monthHoursFor(y, m);
 }
 
 // Returns a key identifying the current pay period (29th -> 28th),
@@ -225,58 +196,6 @@ function calcHolliePay(otHrs) {
   return { stdPay, otPay, gross, pension, taxable, tax, ni, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
 }
 
-const INITIAL_HISTORY = [
-  { month: "Apr 2022", date: "29/04/2022", gross: 1669.82, net: 1432.82, tax: 124.8,  ni: 112.2,  nest: 0,     sl: 0,  bonus: 0,   ot: 60.38  },
-  { month: "May 2022", date: "30/05/2022", gross: 1719.62, net: 1418.23, tax: 134.6,  ni: 118.8,  nest: 47.99, sl: 0,  bonus: 0,   ot: 43.12  },
-  { month: "Jun 2022", date: "30/06/2022", gross: 2019.89, net: 1606.3,  tax: 195,    ni: 158.59, nest: 60,    sl: 0,  bonus: 100, ot: 166.75 },
-  { month: "Jul 2022", date: "30/07/2022", gross: 1595.06, net: 1369.77, tax: 109.8,  ni: 72.48,  nest: 43.01, sl: 0,  bonus: 0,   ot: 0      },
-  { month: "Aug 2022", date: "30/08/2022", gross: 1781.29, net: 1489.07, tax: 144.6,  ni: 97.16,  nest: 50.46, sl: 0,  bonus: 100, ot: 0      },
-  { month: "Oct 2022", date: "30/10/2022", gross: 2036.24, net: 1647.05, tax: 197.6,  ni: 130.94, nest: 60.65, sl: 0,  bonus: 100, ot: 336.38 },
-  { month: "Nov 2022", date: "30/11/2022", gross: 2089.44, net: 1693.29, tax: 208.4,  ni: 124.97, nest: 62.78, sl: 0,  bonus: 100, ot: 149.44 },
-  { month: "Jan 2023", date: "30/01/2023", gross: 2697.37, net: 2044.55, tax: 329.8,  ni: 197.92, nest: 87.1,  sl: 38, bonus: 100, ot: 577.37 },
-  { month: "Feb 2023", date: "28/02/2023", gross: 2246.17, net: 1793.74, tax: 239.6,  ni: 143.78, nest: 69.05, sl: 38, bonus: 100, ot: 51.17  },
-  { month: "Mar 2023", date: "30/03/2023", gross: 2254.26, net: 1798.93, tax: 241.2,  ni: 144.75, nest: 69.38, sl: 38, bonus: 70,  ot: 164.26 },
-  { month: "Apr 2023", date: "30/04/2023", gross: 2218.62, net: 1776.2,  tax: 234,    ni: 140.47, nest: 67.95, sl: 0,  bonus: 100, ot: 82.62  },
-  { month: "May 2023", date: "30/05/2023", gross: 2203.52, net: 1766.51, tax: 231,    ni: 138.66, nest: 67.35, sl: 0,  bonus: 100, ot: 67.52  },
-  { month: "Jul 2023", date: "30/07/2023", gross: 2193.74, net: 1760.3,  tax: 229,    ni: 137.49, nest: 66.95, sl: 5,  bonus: 100, ot: 57.74  },
-  { month: "Aug 2023", date: "30/08/2023", gross: 2226.87, net: 1781.33, tax: 235.8,  ni: 141.46, nest: 68.28, sl: 5,  bonus: 100, ot: 90.87  },
-  { month: "Sep 2023", date: "30/09/2023", gross: 2331.86, net: 1843.72, tax: 256.6,  ni: 154.06, nest: 72.48, sl: 5,  bonus: 100, ot: 195.86 },
-  { month: "Oct 2023", date: "30/10/2023", gross: 2148.58, net: 1731.16, tax: 220.2,  ni: 132.07, nest: 65.15, sl: 10, bonus: 100, ot: 12.58  },
-  { month: "Nov 2023", date: "30/11/2023", gross: 2209.89, net: 1770.66, tax: 232.2,  ni: 139.43, nest: 67.6,  sl: 10, bonus: 100, ot: 63.89  },
-  { month: "Dec 2023", date: "28/12/2023", gross: 2138.01, net: 1724.48, tax: 218,    ni: 130.8,  nest: 64.73, sl: 10, bonus: 100, ot: 0      },
-  { month: "Jan 2024", date: "31/01/2024", gross: 2528.32, net: 1981.95, tax: 296,    ni: 148.03, nest: 80.34, sl: 22, bonus: 100, ot: 192.32 },
-  { month: "Feb 2024", date: "29/02/2024", gross: 2532.14, net: 1983.44, tax: 296.8,  ni: 148.41, nest: 80.49, sl: 23, bonus: 100, ot: 170.14 },
-  { month: "Mar 2024", date: "28/03/2024", gross: 2362.01, net: 1887.12, tax: 262.8,  ni: 131.4,  nest: 73.69, sl: 7,  bonus: 100, ot: 0      },
-  { month: "Apr 2024", date: "30/04/2024", gross: 2368.6,  net: 1917,    tax: 264,    ni: 105.65, nest: 73.95, sl: 8,  bonus: 100, ot: 32.59  },
-  { month: "May 2024", date: "01/06/2024", gross: 2494.34, net: 1991.45, tax: 289.2,  ni: 115.71, nest: 78.98, sl: 19, bonus: 100, ot: 158.36 },
-  { month: "Jun 2024", date: "28/06/2024", gross: 2336,    net: 1897.72, tax: 257.6,  ni: 103.04, nest: 72.64, sl: 5,  bonus: 100, ot: 0      },
-  { month: "Jul 2024", date: "31/07/2024", gross: 2662.03, net: 2090.62, tax: 322.6,  ni: 129.12, nest: 85.69, sl: 34, bonus: 100, ot: 300.03 },
-  { month: "Aug 2024", date: "31/08/2024", gross: 2527.56, net: 2010.89, tax: 296,    ni: 118.36, nest: 80.31, sl: 22, bonus: 100, ot: 191.56 },
-  { month: "Sep 2024", date: "30/09/2024", gross: 2531.86, net: 2013.07, tax: 296.6,  ni: 118.71, nest: 80.48, sl: 23, bonus: 160, ot: 81.86  },
-  { month: "Oct 2024", date: "30/10/2024", gross: 2667.57, net: 2093.1,  tax: 324,    ni: 129.56, nest: 85.91, sl: 35, bonus: 160, ot: 217.57 },
-  { month: "Nov 2024", date: "29/11/2024", gross: 2482.59, net: 1984.51, tax: 286.8,  ni: 114.77, nest: 78.51, sl: 18, bonus: 200, ot: 32.59  },
-  { month: "Dec 2024", date: "24/12/2024", gross: 2450,    net: 1965.24, tax: 280.4,  ni: 112.16, nest: 77.2,  sl: 15, bonus: 200, ot: 0      },
-  { month: "Apr 2025", date: "29/04/2025", gross: 2669.33, net: 2103.44, tax: 324.2,  ni: 129.71, nest: 85.98, sl: 26, bonus: 160, ot: 82.66  },
-  { month: "May 2025", date: "29/05/2025", gross: 2748.21, net: 2150.06, tax: 340,    ni: 136.02, nest: 89.13, sl: 33, bonus: 160, ot: 131.54 },
-  { month: "Jun 2025", date: "30/06/2025", gross: 2728.63, net: 2137.83, tax: 336,    ni: 134.45, nest: 88.35, sl: 32, bonus: 160, ot: 141.96 },
-  { month: "Aug 2025", date: "29/08/2025", gross: 2760.96, net: 2157.68, tax: 342.6,  ni: 137.04, nest: 89.64, sl: 34, bonus: 160, ot: 120.29 },
-  { month: "Oct 2025", date: "29/10/2025", gross: 3125.28, net: 2372.48, tax: 415.4,  ni: 166.18, nest: 104.22,sl: 67, bonus: 160, ot: 158.09 },
-  { month: "Nov 2025", date: "28/11/2025", gross: 2794.04, net: 2177.39, tax: 349,    ni: 139.68, nest: 90.97, sl: 37, bonus: 200, ot: 88.2   },
-  { month: "Sep 2022", date: "30/09/2022", gross: 2195.26, net: 1746.83, tax: 229.4,  ni: 152.01, nest: 67.02, sl: 0,  bonus: 100, ot: 342.12 },
-  { month: "Dec 2022", date: "30/12/2022", gross: 2089.44, net: 1693.29, tax: 208.4,  ni: 124.97, nest: 62.78, sl: 0,  bonus: 100, ot: 149.44 },
-  { month: "Jun 2023", date: "30/06/2023", gross: 2339.91, net: 1848.68, tax: 258.4,  ni: 155.03, nest: 72.8,  sl: 5,  bonus: 100, ot: 219.91 },
-  { month: "Jan 2025", date: "29/01/2025", gross: 2763.27, net: 2150.31, tax: 343,    ni: 137.22, nest: 89.74, sl: 43, bonus: 200, ot: 96.6   },
-  { month: "Feb 2025", date: "28/02/2025", gross: 2899.87, net: 2230.32, tax: 370.2,  ni: 148.15, nest: 95.2,  sl: 56, bonus: 200, ot: 193.2  },
-  { month: "Mar 2025", date: "31/03/2025", gross: 2944.13, net: 2256.27, tax: 379.2,  ni: 151.69, nest: 96.97, sl: 60, bonus: 250, ot: 267.46 },
-  { month: "Jul 2025", date: "29/07/2025", gross: 2657.41, net: 2096.36, tax: 321.8,  ni: 128.75, nest: 85.5,  sl: 25, bonus: 200, ot: 30.74  },
-  { month: "Sep 2025", date: "29/09/2025", gross: 3345.11, net: 2501.93, tax: 459.4,  ni: 183.77, nest: 113.01,sl: 87, bonus: 160, ot: 259.06 },
-  { month: "Dec 2025", date: "22/12/2025", gross: 2678.41, net: 2108.44, tax: 326.2,  ni: 130.43, nest: 86.34, sl: 27, bonus: 200, ot: 51.74  },
-  { month: "Jan 2026", date: "29/01/2026", gross: 2798.53, net: 2179.34, tax: 350,    ni: 140.04, nest: 91.15, sl: 38, bonus: 200, ot: 85.34  },
-  { month: "Feb 2026", date: "27/02/2026", gross: 3212.55, net: 2423.88, tax: 432.8,  ni: 173.16, nest: 107.71,sl: 75, bonus: 160, ot: 328.94 },
-  { month: "Mar 2026", date: "30/03/2026", gross: 2860.71, net: 2216.46, tax: 362.6,  ni: 145.02, nest: 93.63, sl: 43, bonus: 240, ot: 83.16  },
-  { month: "Apr 2026", date: "29/04/2026", gross: 2957.36, net: 2280.31, tax: 381.8,  ni: 152.75, nest: 97.5,  sl: 45, bonus: 240, ot: 117.48 },
-];
-
 // Split modes for shared bills: undefined/"even" = 50/50, "pct" = your % of the
 // total (partner covers the rest), "fixed" = partner pays a set £, you cover the rest.
 const INITIAL_SHARED_BILLS = [
@@ -327,8 +246,6 @@ function billShares(b) {
 
 // localStorage keys -- only truly device-local settings (Supabase has the rest)
 const SK = {
-  timesheets:   "vaulted_timesheets",    // legacy -- for one-time migration on first login
-  tsLastUpload: "vaulted_ts_last",       // legacy -- for one-time migration on first login
   notifPerm:    "vaulted_notif_perm",    // browser notification permission (device-specific)
   tsSecret:     "vaulted_ts_secret",     // device-specific (could differ per device)
   tsLastEmail:  "vaulted_ts_last_email", // device-specific dedup tracking
@@ -723,35 +640,11 @@ function shouldResetTimesheet(tsLastUpload) {
 // Check if a Monday reminder should show
 function shouldShowTimesheetReminder(tsLastUpload) {
   const now = new Date();
-  const day = now.getDay(); // 0=Sun,1=Mon
   if (!tsLastUpload) return true; // never uploaded
   const last = new Date(tsLastUpload);
   const daysSince = Math.floor((now - last) / (1000 * 60 * 60 * 24));
   return daysSince >= 7;
 }
-
-// Legacy key names from older builds -- migrate once then leave
-const LEGACY = {
-  "jli_history": "vaulted_history", "jli_bills": "vaulted_shared_bills",
-  "jli_shared_bills": "vaulted_shared_bills", "jli_glyn_bills": "vaulted_glyn_bills",
-  "jli_categories": "vaulted_cats", "jli_billcats": "vaulted_billcats",
-  "jli_glyn_categories": "vaulted_gcats", "jli_glyn_billcats": "vaulted_gbillcats",
-  "v_history": "vaulted_history", "v_shared_bills": "vaulted_shared_bills",
-  "v_glyn_bills": "vaulted_glyn_bills", "v_cats": "vaulted_cats",
-  "v_billcats": "vaulted_billcats", "v_gcats": "vaulted_gcats",
-  "v_gbillcats": "vaulted_gbillcats", "v_calc": "vaulted_calc",
-};
-
-// Run migration once on load
-(function migrate() {
-  try {
-    Object.entries(LEGACY).forEach(([oldKey, newKey]) => {
-      if (localStorage.getItem(newKey)) return; // already migrated
-      const old = localStorage.getItem(oldKey);
-      if (old) { localStorage.setItem(newKey, old); localStorage.removeItem(oldKey); }
-    });
-  } catch {}
-})();
 
 const load = (key, fb) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fb; } catch { return fb; } };
 const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
@@ -799,7 +692,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.13.77";
+const APP_VERSION = "1.13.78";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -938,7 +831,7 @@ function CollapsibleChart({title,data,dataKey,color}) {
     <div style={{border:"1px solid #1e2535",borderRadius:10,overflow:"hidden",marginBottom:8}}>
       <button onClick={()=>setOpen(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 14px",background:"#141824",border:"none",cursor:"pointer",color:"#e8eaf0"}}>
         <span style={{fontSize:13,fontWeight:600,color:"#8892b0"}}>{title}</span>
-        <span style={{fontSize:12,color:"#3a4460"}}>{open?"A":"V"}</span>
+        <span style={{fontSize:12,color:"#3a4460"}}>{open?"▾":"▸"}</span>
       </button>
       {open&&(
         <div style={{padding:"12px",background:"#111520"}}>
@@ -1358,35 +1251,6 @@ export default function App() {
   const [budTab,setBudTab]=useState("shared");
   const [selIdx,setSelIdx]=useState(0);            // Budget tab: month offset 0-11 (0 = current)
   const [laOpen,setLaOpen]=useState(false);        // collapsed 12-month Year view
-  const [billSnapshot,setBillSnapshot]=useState(()=>{
-    try { return JSON.parse(localStorage.getItem("vaulted_bill_snapshot")||"null"); } catch { return null; }
-  });
-  const billChanges = useMemo(()=>{
-    if (!billSnapshot) return [];
-    const changes = [];
-    sharedBills.forEach(b => {
-      const old = (billSnapshot.shared||[]).find(s=>s.id===b.id);
-      if (old && old.total !== b.total) changes.push({name:b.name, old:old.total, new:b.total, type:"shared"});
-    });
-    glynBills.forEach(b => {
-      const old = (billSnapshot.glyn||[]).find(s=>s.id===b.id);
-      if (old && old.total !== b.total) changes.push({name:b.name, old:old.total, new:b.total, type:"glyn"});
-    });
-    return changes;
-  },[billSnapshot, sharedBills, glynBills]);
-  const dismissBillChanges = () => {
-    const snap = {shared:sharedBills.map(b=>({id:b.id,total:b.total})), glyn:glynBills.map(b=>({id:b.id,total:b.total}))};
-    localStorage.setItem("vaulted_bill_snapshot", JSON.stringify(snap));
-    setBillSnapshot(snap);
-  };
-  // Auto-snapshot on first load if none exists
-  useEffect(()=>{
-    if (!billSnapshot && sharedBills.length > 0) {
-      const snap = {shared:sharedBills.map(b=>({id:b.id,total:b.total})), glyn:glynBills.map(b=>({id:b.id,total:b.total}))};
-      localStorage.setItem("vaulted_bill_snapshot", JSON.stringify(snap));
-      setBillSnapshot(snap);
-    }
-  },[billSnapshot, sharedBills, glynBills]);
   const dragBill=useRef(null);
   const [chartRange,setChartRange]=useState("All");
   const [netTrendOpen,setNetTrendOpen]=useState(false);
@@ -1443,7 +1307,6 @@ export default function App() {
     return ()=>clearInterval(t);
   },[]);
 
-  const [pending,setPending]=useState(null);
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
   const [uploadProgress,setUploadProgress]=useState(null);
@@ -1796,26 +1659,6 @@ export default function App() {
     dbErrorListeners.add(onErr);
     return () => dbErrorListeners.delete(onErr);
   }, []);
-
-  // Keyboard shortcuts (desktop)
-  useEffect(() => {
-    const all = [...PRIMARY_TABS, ...SECONDARY_TABS, ...HIDDEN_TABS];
-    const onKey = (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        const num = parseInt(e.key);
-        if (num >= 1 && num <= 9 && num <= all.length) {
-          e.preventDefault();
-          setTab(all[num-1]);
-        }
-        if (e.key === "r" && e.shiftKey) {
-          e.preventDefault();
-          refreshAll();
-        }
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [refreshAll]);
 
   // -- Annual Leave ---------------------------------------------------------
   const [leaveSettings, setLeaveSettings] = useState({ baseEntitlement: 29, serviceDays: 4, startYear: 2022 });
@@ -2301,7 +2144,6 @@ export default function App() {
   // Timesheet state
   const [tsUploading,setTsUploading]=useState(false);
   const [tsProgress,setTsProgress]=useState(null);
-  const [showManualTs,setShowManualTs]=useState(false);
   const [showPayslipUpload,setShowPayslipUpload]=useState(true);
   const [showQueueDiag,setShowQueueDiag]=useState(false);
   const [showDiagApp,setShowDiagApp]=useState(false);
@@ -2481,7 +2323,6 @@ export default function App() {
   const selIsNow=selIdx===0;
   const selSchedShared=(laSel?laSel.hits:[]).filter(b=>b.scope==="shared");
   const selSchedPersonal=(laSel?laSel.hits:[]).filter(b=>b.scope==="personal");
-  const selSchedShTotal=selSchedShared.reduce((a,b)=>a+(Number(b.total)||0),0);
   const selKey=laSel?monthKeyOf(laSel.yr,laSel.m):monthKeyOf(schedNowYear,schedNowMonth);
   const selShGlyn=sharedBills.reduce((a,b)=>a+billShares(withAmount(b,selKey)).glyn,0)
     +selSchedShared.reduce((a,b)=>a+schedShares(b).glyn,0);
@@ -2619,7 +2460,6 @@ export default function App() {
     avgNet:fyAvgNet(history),
   }),[history]);
 
-  const updH=h=>{setHistory(h);};
   // Bills -- write each changed bill to Supabase (bulk reconcile)
   // Bills: save only the bills that changed (and delete removed ones), so one edit
   // is one write and the other phone reloads once rather than for every bill.
@@ -3082,11 +2922,10 @@ export default function App() {
     showUndoToast("Person removed",()=>{setGifts(prev);if(user&&g)trackSave(db.upsertGift(g));});
   };
 
-  const MONTH_ABBR=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const lastDayLabel=(m)=>{const d=new Date(schedNowYear,m,0).getDate();return `${d} ${MONTH_ABBR[m-1]}`;};
+  const lastDayLabel=(m)=>{const d=new Date(schedNowYear,m,0).getDate();return `${d} ${MONTHS[m-1]}`;};
   const schedWhenLabel=(sb)=>{
     const ms=(Array.isArray(sb.months)?sb.months:[]).slice().sort((a,b)=>a-b);
-    const names=ms.map(m=>MONTH_ABBR[m-1]).join(", ");
+    const names=ms.map(m=>MONTHS[m-1]).join(", ");
     return sb.freq==="once"?`One-off · ${names} ${sb.year||""}`:`Every year · ${names||"—"}`;
   };
   const saveSchedBill=()=>{
@@ -6213,7 +6052,7 @@ const calcTimesheetTotals = days => {
                 {f.freq==="month"&&<div style={{fontSize:11,color:"#5a6480",marginBottom:14}}>Due every month — it'll move into your standing bills list.</div>}
                 {f.freq!=="month"&&<div style={{fontSize:11,color:"#5a6480",marginBottom:8}}>{f.freq==="once"?"Pick the month it's due":"Pick the month(s) it's due each year"}</div>}
                 {f.freq!=="month"&&<div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:14}}>
-                  {MONTH_ABBR.map((mn,i)=>{const m=i+1;const on=f.months.includes(m);return (
+                  {MONTHS.map((mn,i)=>{const m=i+1;const on=f.months.includes(m);return (
                     <button key={m} onClick={()=>{ if(f.freq==="once")setF({months:[m]}); else setF({months:on?f.months.filter(x=>x!==m):[...f.months,m]}); }}
                       style={{width:"calc(25% - 6px)",background:on?"#1a3a5a":"#0d1117",border:"1px solid "+(on?"#2a5a8a":"#2a3050"),borderRadius:8,color:on?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"10px 0",cursor:"pointer"}}>{mn}</button>
                   );})}
