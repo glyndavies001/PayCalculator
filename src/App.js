@@ -353,6 +353,11 @@ const missingColumn = (error, col) => {
     /could not find|schema cache|does not exist/i.test(msg);
 };
 
+const movePlanMissing = (error) => {
+  const msg = (error && (error.message || error.details)) || "";
+  return typeof msg === "string" && msg.includes("move_plan") && /could not find|schema cache|does not exist/i.test(msg);
+};
+
 const jwtRetry = async (run) => {
   let res = await run();
   const msg = (res.error && res.error.message) || "";
@@ -440,6 +445,24 @@ const db = {
       ({ error } = await supabase.from("shared_settings").upsert(row, { onConflict: "id" }));
     }
     reportDbError("saveSharedSettings", error);
+  },
+  // Move Plan lives in shared_settings.move_plan (jsonb) so both of us see it.
+  // {missing:true} = migration not run yet; null = fetch failed.
+  async getMovePlan() {
+    const { data, error } = await jwtRetry(() => supabase.from("shared_settings").select("move_plan").eq("id", 1).maybeSingle());
+    if (movePlanMissing(error)) return { missing: true };
+    if (error) { reportDbError("getMovePlan", error); return null; }
+    return { plan: (data && data.move_plan) || {} };
+  },
+  // Read-modify-write against the latest copy, so the two phones don't overwrite each other.
+  async patchMovePlan(fn) {
+    const cur = await db.getMovePlan();
+    if (!cur || cur.missing) return cur;
+    const next = fn(cur.plan || {});
+    const { error } = await supabase.from("shared_settings").upsert({ id: 1, move_plan: next, updated_at: new Date().toISOString() }, { onConflict: "id" });
+    if (movePlanMissing(error)) return { missing: true };
+    reportDbError("saveMovePlan", error);
+    return error ? null : { plan: next };
   },
   async getSettlements() {
     const { data, error } = await jwtRetry(() => supabase.from("settlements").select("*").order("created_at", { ascending: false }));
@@ -718,9 +741,49 @@ const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
 const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
 const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
 const notSetFor = (b, mk) => isVariable(b) && !(mk in b.amounts);
-const APP_VERSION = "1.13.71";
+const APP_VERSION = "1.13.72";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
-const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Diag"];
+const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Move","Diag"];
+
+// Move Plan: how the household's take-home should split once we move. Targets are
+// % of combined take-home; bills land in a bucket through their category.
+const MOVE_BUCKETS = [
+  { k: "housing", l: "Mortgage / rent", e: "🏠", c: "#4a9eff", d: 30 },
+  { k: "car",     l: "Car",             e: "🚗", c: "#ff8c4a", d: 12 },
+  { k: "living",  l: "Bills & living",  e: "🧾", c: "#ffb84a", d: 28 },
+  { k: "savings", l: "Savings",         e: "🏦", c: "#00c88c", d: 20 },
+  { k: "fun",     l: "Fun & personal",  e: "🎉", c: "#c84aff", d: 10 },
+];
+// Average net over the payslips from the last 12 months. "noOt" strips overtime and
+// weekend pay back out at the marginal rate (5% pension, then 20% tax, 8% NI and 9%
+// student loan when it applied that month) - an estimate, since OT is upside.
+function avgNet12(history) {
+  const now = new Date();
+  const cutoff = new Date(now.getFullYear(), now.getMonth() - 12, 1);
+  let rows = sortH(history).filter(r => { const [mo, yr] = r.month.split(" "); return new Date(parseInt(yr), MONTHS.indexOf(mo), 1) >= cutoff; });
+  if (!rows.length) rows = sortH(history).slice(-12);
+  if (!rows.length) return null;
+  const keep = r => 0.95 * (1 - 0.20 - 0.08 - ((r.sl || 0) > 0 ? 0.09 : 0));
+  const withOt = rows.reduce((a, r) => a + (Number(r.net) || 0), 0) / rows.length;
+  const noOt = rows.reduce((a, r) => a + (Number(r.net) || 0) - ((Number(r.ot) || 0) + (Number(r.weekendOt) || 0)) * keep(r), 0) / rows.length;
+  const r2 = n => Math.round(n * 100) / 100;
+  return { withOt: r2(withOt), noOt: r2(noOt), months: rows.length, from: rows[0].month, to: rows[rows.length - 1].month };
+}
+const MOVE_SQL = "alter table shared_settings add column if not exists move_plan jsonb;\nnotify pgrst, 'reload schema';";
+// Welsh Land Transaction Tax, main-residence bands (as in MoveCalc).
+function lttWales(p) {
+  const bands = [[225000, 0], [400000, .06], [750000, .075], [1500000, .10], [Infinity, .12]];
+  let t = 0, prev = 0;
+  for (const [cap, r] of bands) { if (p > prev) t += (Math.min(p, cap) - prev) * r; prev = cap; if (p <= cap) break; }
+  return t;
+}
+// Monthly repayment on a standard repayment mortgage.
+function mortgagePmt(loan, annualPct, years) {
+  if (loan <= 0 || years <= 0) return 0;
+  const r = annualPct / 100 / 12, n = years * 12;
+  return r === 0 ? loan / n : loan * r / (1 - Math.pow(1 + r, -n));
+}
+const MOVE_DEAL_DEFAULT = { rate: null, term: 25, fee: null, fix: 5 };
 const RANGES = ["3M","6M","12M","2Y","All"];
 const SL_START_YEAR = 2019;
 const SL_WRITEOFF_YEAR = 2049;
@@ -1283,6 +1346,18 @@ export default function App() {
   const [giftSort,setGiftSort]=useState("bday");           // "bday" | "name"
   const [giftOpen,setGiftOpen]=useState(false);            // add/edit sheet
   const [giftForm,setGiftForm]=useState({id:null,name:"",dob:"",notes:"",cost:""});
+  const [movePlan,setMovePlan]=useState(null);             // shared Move Plan (null = not loaded)
+  const [moveMissing,setMoveMissing]=useState(false);      // move_plan column not migrated yet
+  const [moveCatsOpen,setMoveCatsOpen]=useState(false);    // assign categories to buckets sheet
+  const personalOk=useRef(false);                          // personal bills came from the DB
+  const loadMovePlan=async()=>{
+    try {
+      const r=await db.getMovePlan();
+      if(!r)return;                                        // fetch failed: keep what we have
+      if(r.missing){setMoveMissing(true);return;}
+      setMoveMissing(false);setMovePlan(r.plan||{});
+    } catch(e) {}
+  };
   const [scheduledBills,setScheduledBills]=useState([]);   // bills active only in certain months
   const [schedOpen,setSchedOpen]=useState(false);          // manage sheet
   const [schedForm,setSchedForm]=useState(null);           // null=list view, object=add/edit form
@@ -1360,7 +1435,7 @@ export default function App() {
   // Partner (Hollie) restricted view: keep her on allowed tabs only
   React.useEffect(() => {
     if (!isOwner) {
-      if (!["Budget","Pay Calc","Settle Up","Gifts","Diag"].includes(tab)) setTab("Budget");
+      if (!["Budget","Pay Calc","Settle Up","Gifts","Move","Diag"].includes(tab)) setTab("Budget");
     }
   }, [isOwner, tab]);
 
@@ -1449,6 +1524,7 @@ export default function App() {
         } else if (gBills) {
           setGlynBills([]); // partner has no personal bills (and can't see the owner's)
         } // gBills === null -> fetch failed; keep current state, never seed
+        if (gBills) personalOk.current = true;
 
         if (lLogs && lLogs.length > 0) setLeaveLogs(lLogs);
         if (lSettings) setLeaveSettings(lSettings);
@@ -1496,6 +1572,7 @@ export default function App() {
         try { const gf = await db.getGifts(); if (gf) setGifts(gf); } catch (e) {}
 
         try { const sc = await db.getScheduledBills(); if (sc) setScheduledBills(sc); } catch (e) {}
+        await loadMovePlan();
 
         // Load accumulator from DB - migrate from localStorage if DB is empty
         const accData = await db.getAccumulator(user.id);
@@ -1575,7 +1652,7 @@ export default function App() {
         });
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "shared_settings" }, () =>
-        db.getSharedSettings().then(ss => { if (ss) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); if (ss.bill_tags) setBillTags(ss.bill_tags); } }).catch(() => {})
+        db.getSharedSettings().then(ss => { if (ss) { setCats(ss.cats || []); setBillCats(ss.bill_cats || {}); if (ss.bill_tags) setBillTags(ss.bill_tags); if (ss.move_plan) setMovePlan(ss.move_plan); } }).catch(() => {})
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "settlements" }, () =>
         db.getSettlements().then(st => st && setSettlements(st))
@@ -1752,6 +1829,7 @@ export default function App() {
       try { const gf = await db.getGifts(); if (gf) setGifts(gf); } catch (e) {}
 
       try { const sc = await db.getScheduledBills(); if (sc) setScheduledBills(sc); } catch (e) {}
+      await loadMovePlan();
 
       if (accData && accData.data) {
         setAccumulated(accData.data);
@@ -2544,6 +2622,57 @@ export default function App() {
   const selIncomeRows=laSel?laSel.incomeRows:[];
   const selIncome=laSel?laSel.income:0;
   const selSurplus=selNet+selIncome-(selShMine+selPersonal);
+
+  // ── Move Plan ──
+  // Household take-home = Glyn's 12-month payslip average + Hollie's estimated net
+  // (no overtime). Only Glyn's phone can read his payslips, and each phone can only
+  // see its own personal bills, so each phone publishes its part into move_plan.
+  const mp=movePlan||{};
+  const mpTargets=MOVE_BUCKETS.reduce((o,b)=>{const v=mp.targets&&mp.targets[b.k];o[b.k]=v!=null&&isFinite(Number(v))?Number(v):b.d;return o;},{});
+  const mpCatBucket=mp.catBucket||{};
+  const mpCurKey=monthKeyOf(schedNowYear,schedNowMonth);
+  const myGlynAvg=isOwner?avgNet12(history):null;
+  const mpGlyn=isOwner?myGlynAvg:(mp.glynAvg||null);
+  const mpHollieNet=Math.round(calcHolliePay(0).net*100)/100;
+  const mpBasis=mp.basis==="withOt"?"withOt":"noOt";
+  const mpIncome=mpGlyn?(mpBasis==="withOt"?mpGlyn.withOt:mpGlyn.noOt)+mpHollieNet:0;
+  const mpBucketOf=(key)=>{const k=mpCatBucket[key];return MOVE_BUCKETS.some(b=>b.k===k)?k:"living";};
+  const mpZero=()=>MOVE_BUCKETS.reduce((o,b)=>{o[b.k]=0;return o;},{});
+  const mpMyPersonal=(()=>{
+    const o=mpZero();
+    glynBills.forEach(b=>{const cid=glynBillCats[b.id];o[mpBucketOf("p:"+myId+":"+(cid==null?"un":cid))]+=amountOf(b,mpCurKey);});
+    MOVE_BUCKETS.forEach(b=>{o[b.k]=Math.round(o[b.k]*100)/100;});
+    return o;
+  })();
+  const mpPersonalAll={...(mp.personal||{})};
+  if(myId)mpPersonalAll[myId]=mpMyPersonal;
+  const mpActual=(()=>{
+    const o=mpZero();
+    sharedBills.forEach(b=>{const cid=billCats[b.id];o[mpBucketOf("s:"+(cid==null?"un":cid))]+=amountOf(b,mpCurKey);});
+    Object.values(mpPersonalAll).forEach(x=>MOVE_BUCKETS.forEach(b=>{o[b.k]+=Number(x&&x[b.k])||0;}));
+    return o;
+  })();
+  const savePlan=(fn)=>{
+    setMovePlan(p=>fn(p||{}));
+    trackSave(()=>db.patchMovePlan(fn).then(r=>{if(r&&r.missing)setMoveMissing(true);}));
+  };
+  // Glyn's phone publishes his average so Hollie's phone can use it.
+  useEffect(()=>{
+    if(!isOwner||!movePlan||moveMissing||dataLoading||!myGlynAvg)return;
+    const cur=movePlan.glynAvg||{};
+    if(cur.withOt===myGlynAvg.withOt&&cur.noOt===myGlynAvg.noOt&&cur.months===myGlynAvg.months&&cur.to===myGlynAvg.to)return;
+    const avg=myGlynAvg;
+    savePlan(p=>({...p,glynAvg:avg}));
+  });
+  // Each phone publishes its own personal bills, totalled by bucket.
+  useEffect(()=>{
+    if(!myId||!movePlan||moveMissing||dataLoading||!personalOk.current)return;
+    const cur=(movePlan.personal||{})[myId]||{};
+    const have=!!(movePlan.personal&&movePlan.personal[myId]);
+    if(have&&MOVE_BUCKETS.every(b=>(Number(cur[b.k])||0)===mpMyPersonal[b.k]))return;
+    const mine=mpMyPersonal,id=myId;
+    savePlan(p=>({...p,personal:{...(p.personal||{}),[id]:mine}}));
+  });
 
   const chartData=useMemo(()=>{
     const s=sortH(history);
@@ -3350,7 +3479,7 @@ const calcTimesheetTotals = days => {
 
 
   const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Pay Calc","Settle Up","Gifts"];
-  const secondaryTabs = isOwner ? SECONDARY_TABS : ["Diag"];
+  const secondaryTabs = isOwner ? SECONDARY_TABS : ["Move","Diag"];
 
   return (
     <ErrorBoundary>
@@ -4955,6 +5084,329 @@ const calcTimesheetTotals = days => {
           </div>
         )}
 
+        {tab==="Move"&&(()=>{
+          const lbl={fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"};
+          const inp={width:"100%",boxSizing:"border-box",background:"#1e2535",border:"1px solid #2a3050",borderRadius:7,color:"#e8eaf0",fontSize:14,padding:"9px 10px"};
+          const note={fontSize:10.5,color:"#3a4460",lineHeight:1.5};
+          const fmt0=n=>"£"+Math.round(Number(n)||0).toLocaleString("en-GB");
+          // Saves on blur, like the bill amounts; the key resets it when the plan syncs.
+          const field=(value,onSave,opts={})=>(
+            <input key={String(value==null?"":value)} type={opts.type||"number"} inputMode={opts.type?undefined:"decimal"}
+              defaultValue={value==null?"":value} placeholder={opts.ph||""}
+              onBlur={e=>{const v=e.target.value;if(String(v)!==String(value==null?"":value))onSave(v);}}
+              onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
+              style={{...inp,...(opts.style||{})}}/>
+          );
+          const numOrNull=v=>v===""||v==null||!isFinite(Number(v))?null:Number(v);
+
+          if(moveMissing) return (
+            <div style={{...card,borderRadius:12,fontSize:12.5,color:"#ffb84a",lineHeight:1.6}}>
+              Move plan needs one database change first. Run this in Supabase → SQL editor, then pull down to refresh:
+              <pre style={{marginTop:10,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,padding:10,fontSize:11,color:"#c8cee0",whiteSpace:"pre-wrap"}}>{MOVE_SQL}</pre>
+            </div>
+          );
+          if(!movePlan) return <div style={{...card,borderRadius:12,fontSize:12.5,color:"#5a6480",textAlign:"center",padding:"20px 12px"}}>Loading move plan…</div>;
+
+          const totalPct=MOVE_BUCKETS.reduce((a,b)=>a+mpTargets[b.k],0);
+          const billsTotal=MOVE_BUCKETS.reduce((a,b)=>a+mpActual[b.k],0);
+          const left=mpIncome-billsTotal;
+          const waiting=[];
+          if(!mpGlyn)waiting.push("Glyn's payslip average");
+          if(Object.keys(mpPersonalAll).length<2)waiting.push((isOwner?"Hollie":"Glyn")+"'s personal bills");
+          const basisBtn=(k,label)=>{const on=mpBasis===k;return(
+            <button onClick={()=>{haptic();savePlan(p=>({...p,basis:k}));}} style={{flex:1,background:on?"#4a9eff":"#0d1117",
+              color:on?"#fff":"#5a6480",border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"8px 6px",fontSize:11.5,fontWeight:700,cursor:"pointer"}}>{label}</button>
+          );};
+
+          // ── MoveCalc: sale, purchase and mortgage deals ──
+          const mc=mp.mc||{};
+          const n=k=>Number(mc[k])||0;
+          const setMc=(k,v)=>savePlan(p=>({...p,mc:{...(p.mc||{}),[k]:numOrNull(v)}}));
+          const sale=n("salePrice"), bal=n("mortBal");
+          const agentFee=sale*n("agentPct")/100;
+          const sellCosts=agentFee+n("erc")+n("solSale")+n("epc");
+          const equity=sale-bal-sellCosts;
+          const price=n("newPrice");
+          const tax=lttWales(price);
+          const cash=n("savings");
+          const baseCosts=tax+n("solBuy")+n("survey")+n("otherBuy");
+          const deals=Array.isArray(mp.deals)&&mp.deals.length?mp.deals:[MOVE_DEAL_DEFAULT];
+          const res=deals.map(dl=>{
+            const rate=Number(dl.rate)||0, dterm=Number(dl.term)||0, fee=Number(dl.fee)||0, fix=Number(dl.fix)||0;
+            const costs=baseCosts+fee;
+            const cashLeft=cash-costs;
+            const deposit=Math.max(0,equity)+cashLeft;
+            const loan=Math.max(0,price-Math.max(0,deposit));
+            const monthly=mortgagePmt(loan,rate,dterm);
+            const fixCost=fix&&monthly?monthly*fix*12+fee:null;
+            return {rate,term:dterm,fee,fix,costs,cashLeft,deposit,loan,monthly,fixCost};
+          });
+          let cheap=-1,cheapVal=Infinity,nFix=0;
+          res.forEach((r,i)=>{if(r.fixCost!==null){nFix++;if(r.fixCost<cheapVal){cheapVal=r.fixCost;cheap=i;}}});
+          if(nFix<2)cheap=-1;
+          const sel=Number.isInteger(mp.dealSel)&&mp.dealSel>=0&&mp.dealSel<deals.length?mp.dealSel:0;
+          const sd=res[sel];
+          const letter=i=>String.fromCharCode(65+(i%26));
+          const setDeal=(i,k,v)=>savePlan(p=>{
+            const list=(Array.isArray(p.deals)&&p.deals.length?p.deals:[MOVE_DEAL_DEFAULT]).map((x,j)=>j===i?{...x,[k]:numOrNull(v)}:x);
+            return {...p,deals:list};
+          });
+          const housingT=mpIncome*mpTargets.housing/100;
+          const payShare=mpIncome>0?sd.monthly/mpIncome*100:0;
+          const payCol=sd.monthly<=housingT?"#00c88c":sd.monthly<=housingT*1.1?"#ffb84a":"#ff4a6a";
+
+          // Saving towards moving day: cash available is what's saved so far.
+          const d=mp.deposit||{};
+          const goal=Number(d.goal)||0;
+          let monthsLeft=null;
+          if(d.moveDate&&/^\d{4}-\d{2}$/.test(d.moveDate)){
+            const [y,mo]=d.moveDate.split("-").map(Number);const now=new Date();
+            monthsLeft=(y-now.getFullYear())*12+(mo-1-now.getMonth());
+          }
+          const need=Math.max(0,goal-cash);
+          const perMonth=monthsLeft>0?need/monthsLeft:need;
+          const savT=mpIncome*mpTargets.savings/100;
+          const depPct=goal>0?Math.min(100,cash/goal*100):0;
+
+          // Device-local fold state for the MoveCalc cards, like the bill categories.
+          const shut=k=>!!collapsed["mv_"+k];
+          const toggle=k=>{setCollapsed(prev=>{const nx={...prev};nx["mv_"+k]?delete nx["mv_"+k]:(nx["mv_"+k]=true);save(SK.collapsed,nx);return nx;});haptic();};
+          const mvCard=(k,title,right,body)=>(
+            <div style={{background:"#141824",borderRadius:12,overflow:"hidden",border:"1px solid #1e2535"}}>
+              <div onClick={()=>toggle(k)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 13px",background:"#10151f",cursor:"pointer",borderBottom:shut(k)?"none":"1px solid #1e2535"}}>
+                <span style={{fontSize:12,fontWeight:700,color:"#c8cee0"}}>{title}</span>
+                <span style={{display:"flex",alignItems:"center",gap:8}}>
+                  {right!=null&&<span style={{fontSize:12.5,fontWeight:700,color:"#7a8499"}}>{right}</span>}
+                  <span style={{fontSize:11,color:"#5a6480",width:9,textAlign:"center"}}>{shut(k)?"▸":"▾"}</span>
+                </span>
+              </div>
+              {!shut(k)&&<div style={{padding:"12px 13px",display:"flex",flexDirection:"column",gap:10}}>{body}</div>}
+            </div>
+          );
+          const inField=(label,key,ph,suf)=>(
+            <div style={{minWidth:0}}>
+              <div style={{...lbl,marginBottom:4}}>{label}{suf?" "+suf:""}</div>
+              {field(mc[key],v=>setMc(key,v),{ph})}
+            </div>
+          );
+          const kv=(k,v,tone,total)=>(
+            <div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:total?"8px 0 0":"3px 0",
+              borderTop:total?"1px solid #1e2535":"none",marginTop:total?4:0}}>
+              <span style={{color:total?"#c8cee0":"#8892b0",fontWeight:total?700:500}}>{k}</span>
+              <span style={{fontWeight:700,color:tone==="neg"?"#ff4a6a":tone==="pos"?"#00c88c":tone==="amber"?"#ffb84a":"#e8eaf0"}}>{v}</span>
+            </div>
+          );
+          const warn=t=><div style={{background:"#1d160833",border:"1px solid #4a3a1a",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#ffb84a",lineHeight:1.5}}>{t}</div>;
+          const grid2={display:"grid",gridTemplateColumns:"1fr 1fr",gap:8};
+
+          return (
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+
+            {/* ── header: combined take-home ── */}
+            <div style={{...card,borderRadius:12,padding:"12px 12px 13px",display:"flex",flexDirection:"column",gap:11}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
+                <span style={{fontSize:14,fontWeight:800,color:"#e8eaf0"}}>🏡 Move plan</span>
+                {mpGlyn&&<span style={{fontSize:10.5,color:"#5a6480"}}>{mpGlyn.months} payslips · {mpGlyn.from} – {mpGlyn.to}</span>}
+              </div>
+              <div>
+                <div style={lbl}>Household take-home</div>
+                <div style={{fontSize:24,fontWeight:800,color:"#e8eaf0",marginTop:3}}>{mpGlyn?fmt(mpIncome):"—"}<span style={{fontSize:11,color:"#5a6480",fontWeight:600}}> a month</span></div>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <div style={{flex:1,background:"#0d1117",borderRadius:8,padding:"9px 10px"}}>
+                  <div style={lbl}>Glyn · avg</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#4a9eff",marginTop:3}}>{mpGlyn?fmt(mpBasis==="withOt"?mpGlyn.withOt:mpGlyn.noOt):"—"}</div>
+                  <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{mpGlyn?(mpBasis==="withOt"?"no OT "+fmt(mpGlyn.noOt):"with OT "+fmt(mpGlyn.withOt)):"waiting"}</div>
+                </div>
+                <div style={{flex:1,background:"#0d1117",borderRadius:8,padding:"9px 10px"}}>
+                  <div style={lbl}>Hollie · est</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#c84aff",marginTop:3}}>{fmt(mpHollieNet)}</div>
+                  <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>base pay, no OT</div>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:6}}>
+                {basisBtn("noOt","Without overtime")}
+                {basisBtn("withOt","With overtime")}
+              </div>
+              {waiting.length>0&&(
+                <div style={{background:"#1d160833",border:"1px solid #4a3a1a",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#ffb84a",lineHeight:1.5}}>
+                  Waiting on {waiting.join(" and ")} — {waiting.length>1?"they appear":"it appears"} once {isOwner?"Hollie opens":"Glyn opens"} Vaulted.
+                </div>
+              )}
+            </div>
+
+            {/* ── target split vs bills now ── */}
+            <div style={{background:"#141824",borderRadius:12,overflow:"hidden",border:"1px solid #1e2535"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 13px",background:"#10151f",borderBottom:"1px solid #1e2535"}}>
+                <span style={{fontSize:12,fontWeight:700,color:"#c8cee0"}}>Target split</span>
+                <span style={{fontSize:11,fontWeight:700,color:totalPct===100?"#3a4460":"#ffb84a"}}>{totalPct}%{totalPct!==100?" · should add to 100%":""}</span>
+              </div>
+              {MOVE_BUCKETS.map((b,i)=>{
+                const tgt=mpIncome*mpTargets[b.k]/100, act=mpActual[b.k];
+                const over=act>tgt+0.005;
+                const w=tgt>0?Math.min(100,act/tgt*100):(act>0?100:0);
+                return (
+                  <div key={b.k} style={{padding:"11px 13px",borderTop:i?"1px solid #171d2b":"none"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{flex:1,minWidth:0,fontSize:13.5,color:"#c8cee0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.e} {b.l}</span>
+                      {field(mpTargets[b.k],v=>savePlan(p=>({...p,targets:{...mpTargets,...(p.targets||{}),[b.k]:Math.max(0,Math.min(100,Math.round(Number(v)||0)))}})),
+                        {style:{width:50,padding:"6px 7px",fontSize:13,textAlign:"right",borderColor:b.c+"55"}})}
+                      <span style={{fontSize:11,color:"#5a6480"}}>%</span>
+                      <span style={{width:78,textAlign:"right",fontSize:13.5,fontWeight:700,color:"#e8eaf0"}}>{fmt(tgt)}</span>
+                    </div>
+                    <div style={{height:5,borderRadius:3,background:"#1e2535",marginTop:8,overflow:"hidden"}}>
+                      <div style={{height:"100%",width:w+"%",background:over?"#ff4a6a":b.c}}/>
+                    </div>
+                    <div style={{fontSize:10.5,color:"#3a4460",marginTop:4}}>
+                      Bills now {fmt(act)} · {over?<span style={{color:"#ff4a6a",fontWeight:700}}>over by {fmt(act-tgt)}</span>:<span>{fmt(tgt-act)} spare</span>}
+                    </div>
+                  </div>
+                );
+              })}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 13px",borderTop:"1px solid #1e2535",background:"#10151f"}}>
+                <span style={{fontSize:12,color:"#8892b0",fontWeight:600}}>Left after all bills</span>
+                <span style={{fontSize:14,fontWeight:800,color:left>=0?"#00c88c":"#ff4a6a"}}>{fmtS(left)}</span>
+              </div>
+            </div>
+
+            <button onClick={()=>{haptic();setMoveCatsOpen(true);}} style={{background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:"#8892b0",fontSize:11.5,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>🗂 Which bills go where</button>
+
+            {/* ── the move: selected deal's monthly vs the housing target ── */}
+            <div style={{...card,borderRadius:12,padding:"12px 12px 13px",display:"flex",flexDirection:"column",gap:8}}>
+              <div style={lbl}>Monthly mortgage · deal {letter(sel)}</div>
+              <div style={{fontSize:24,fontWeight:800,color:sd.monthly?"#e8eaf0":"#3a4460"}}>{sd.monthly?fmt(sd.monthly):"—"}</div>
+              {sd.monthly>0?(
+                <>
+                  <div style={{fontSize:11,color:"#5a6480"}}>{fmt0(sd.loan)} over {sd.term} yrs @ {sd.rate}%</div>
+                  <div style={{background:"#0d1117",borderRadius:8,padding:"9px 11px",fontSize:11.5,color:"#8892b0",lineHeight:1.5}}>
+                    <b style={{color:payCol}}>{payShare.toFixed(0)}% of take-home.</b>{" "}
+                    {sd.monthly<=housingT
+                      ?<>Fits — {fmt(housingT-sd.monthly)} under your {mpTargets.housing}% target ({fmt(housingT)}).</>
+                      :<><span style={{color:payCol,fontWeight:700}}>{fmt(sd.monthly-housingT)} over</span> your {mpTargets.housing}% target ({fmt(housingT)}).</>}
+                  </div>
+                </>
+              ):(
+                <div style={note}>Fill in the sale, purchase and a mortgage deal below. Your {mpTargets.housing}% housing target is {fmt(housingT)} a month.</div>
+              )}
+            </div>
+
+            {mvCard("sell","Selling your house",sale?fmt0(equity):null,<>
+              <div style={grid2}>{inField("Sale price £","salePrice","220000")}{inField("Mortgage left £","mortBal","120000")}</div>
+              {sale>0&&<div>
+                {[["Agent fee",agentFee],["Early repayment charge",n("erc")],["Solicitor (sale)",n("solSale")],["EPC",n("epc")]]
+                  .filter(x=>x[1]>0).map(x=>kv(x[0],"−"+fmt0(x[1]),"neg"))}
+                {kv("Mortgage repaid","−"+fmt0(bal),"neg")}
+                {kv("Equity released",fmt0(equity),equity<0?"neg":null,true)}
+              </div>}
+            </>)}
+
+            {mvCard("buy","Buying the new house",price?fmt0(sd.loan):null,<>
+              <div style={grid2}>{inField("House price £","newPrice","300000")}{inField("Cash available £","savings","0")}</div>
+              <div style={note}>Cash covers buying costs first — the rest tops up your deposit.</div>
+              {price>0&&<div>
+                {[["LTT (stamp duty)",tax],["Solicitor + searches",n("solBuy")],["Survey",n("survey")],["Broker / valuation / other",n("otherBuy")],["Product fee (deal "+letter(sel)+")",sd.fee]]
+                  .filter(x=>x[1]>0).map(x=>kv(x[0],"−"+fmt0(x[1]),"neg"))}
+                {kv("Cash after costs",fmt0(sd.cashLeft),sd.cashLeft<0?"neg":null)}
+                {kv("+ Equity carried over",fmt0(Math.max(0,equity)))}
+                {kv("Deposit",fmt0(sd.deposit),sd.deposit<0?"neg":"pos")}
+                {kv("Mortgage needed",fmt0(sd.loan),null,true)}
+                {kv("Loan-to-value",(sd.loan/price*100).toFixed(1)+"%",sd.loan/price>0.9?"amber":null)}
+              </div>}
+              {price>0&&sd.cashLeft<0&&warn("Buying costs exceed your cash by "+fmt0(-sd.cashLeft)+" — this comes out of your equity.")}
+              {price>0&&sd.deposit<0&&warn("Costs exceed your equity and cash — you'd need more money to complete.")}
+              {price>0&&sd.loan/price>0.95&&warn("Loan-to-value over 95% — most lenders won't offer this.")}
+            </>)}
+
+            {mvCard("costs","Costs",(sellCosts+baseCosts)>0?fmt0(sellCosts+baseCosts):null,<>
+              <div style={note}>Selling costs come off your equity; buying costs come out of your cash. Product fees are per deal.</div>
+              <div style={grid2}>{inField("Agent fee %","agentPct","1.2")}{inField("Early repayment £","erc","0")}</div>
+              <div style={grid2}>{inField("Solicitor (sale) £","solSale","1000")}{inField("EPC £","epc","80")}</div>
+              <div style={grid2}>{inField("Solicitor + searches £","solBuy","1500")}{inField("Survey £","survey","500")}</div>
+              {inField("Broker / valuation / other £","otherBuy","0")}
+            </>)}
+
+            {mvCard("deals","Mortgage deals",deals.length+" deal"+(deals.length===1?"":"s"),<>
+              {deals.map((dl,i)=>{
+                const r=res[i];const on=i===sel;
+                return (
+                  <div key={i} style={{background:"#0d1117",border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:10,padding:"10px 10px 9px",display:"flex",flexDirection:"column",gap:8}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{flex:1,fontSize:13,fontWeight:700,color:on?"#8ec5ff":"#c8cee0"}}>Deal {letter(i)}</span>
+                      {on&&<span style={{fontSize:9,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#15203a",color:"#8ec5ff"}}>IN USE</span>}
+                      {i===cheap&&<span style={{fontSize:9,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#0a2018",color:"#00c88c"}}>CHEAPEST</span>}
+                    </div>
+                    <div style={grid2}>
+                      <div><div style={{...lbl,marginBottom:4}}>Rate %</div>{field(dl.rate,v=>setDeal(i,"rate",v),{ph:"4.5"})}</div>
+                      <div><div style={{...lbl,marginBottom:4}}>Term yrs</div>{field(dl.term,v=>setDeal(i,"term",v),{ph:"25"})}</div>
+                    </div>
+                    <div style={grid2}>
+                      <div><div style={{...lbl,marginBottom:4}}>Product fee £</div>{field(dl.fee,v=>setDeal(i,"fee",v),{ph:"0"})}</div>
+                      <div><div style={{...lbl,marginBottom:4}}>Fixed for yrs</div>{field(dl.fix,v=>setDeal(i,"fix",v),{ph:"5"})}</div>
+                    </div>
+                    {r.monthly?(
+                      <div>
+                        {kv("Monthly",fmt(r.monthly))}
+                        {kv("Total interest over term",fmt0(r.monthly*r.term*12-r.loan),"neg")}
+                        {r.fixCost!==null&&kv("Cost over "+r.fix+"-yr fix (incl. fee)",fmt0(r.fixCost))}
+                      </div>
+                    ):<div style={note}>Enter a rate and term.</div>}
+                    <div style={{display:"flex",gap:6}}>
+                      <button onClick={()=>{haptic();savePlan(p=>({...p,dealSel:i}));}} disabled={on}
+                        style={{flex:1,background:on?"#15203a":"#1a3a5a",border:"1px solid "+(on?"#1e2535":"#2a5a8a"),borderRadius:7,color:on?"#5a6480":"#8ec5ff",fontSize:12,fontWeight:700,padding:"9px",cursor:on?"default":"pointer"}}>{on?"In use":"Use this deal"}</button>
+                      <button onClick={()=>{
+                          if(deals.length===1){window.alert("Keep at least one deal.");return;}
+                          if(!window.confirm("Remove deal "+letter(i)+"?"))return;
+                          haptic("medium");
+                          savePlan(p=>{const list=(Array.isArray(p.deals)?p.deals:[]).filter((x,j)=>j!==i);
+                            const s0=Number.isInteger(p.dealSel)?p.dealSel:0;
+                            return {...p,deals:list,dealSel:s0>i?s0-1:Math.min(s0,list.length-1)};});
+                        }}
+                        style={{background:"#1e2535",border:"none",borderRadius:7,color:"#5a6480",fontSize:12,padding:"9px 14px",cursor:"pointer"}}>Remove</button>
+                    </div>
+                  </div>
+                );
+              })}
+              <button onClick={()=>{haptic();savePlan(p=>({...p,deals:[...(Array.isArray(p.deals)&&p.deals.length?p.deals:[MOVE_DEAL_DEFAULT]),{...MOVE_DEAL_DEFAULT}]}));}}
+                style={{width:"100%",background:"transparent",border:"1px dashed #2a3a55",borderRadius:9,color:"#8ec5ff",fontSize:12.5,fontWeight:600,padding:"12px",cursor:"pointer"}}>+ Add deal</button>
+            </>)}
+
+            {/* ── saving towards moving day ── */}
+            {mvCard("save","Saving for the move",goal?Math.round(depPct)+"%":null,<>
+              <div style={grid2}>
+                <div><div style={{...lbl,marginBottom:4}}>Cash target £</div>{field(d.goal,v=>savePlan(p=>({...p,deposit:{...(p.deposit||{}),goal:numOrNull(v)}})),{ph:"0"})}</div>
+                <div><div style={{...lbl,marginBottom:4}}>Moving around</div>{field(d.moveDate,v=>savePlan(p=>({...p,deposit:{...(p.deposit||{}),moveDate:v||null}})),{type:"month"})}</div>
+              </div>
+              {goal>0?(
+                <div style={{background:"#0d1117",borderRadius:8,padding:"10px 11px"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11.5,color:"#8892b0"}}>
+                    <span>{fmt0(cash)} of {fmt0(goal)}</span><span style={{color:"#00c88c",fontWeight:700}}>{Math.round(depPct)}%</span>
+                  </div>
+                  <div style={{height:6,borderRadius:3,background:"#1e2535",marginTop:7,overflow:"hidden"}}>
+                    <div style={{height:"100%",width:depPct+"%",background:"#00c88c"}}/>
+                  </div>
+                  {need===0&&<div style={{fontSize:11.5,color:"#00c88c",marginTop:8,fontWeight:700}}>Target reached 🎉</div>}
+                  {need>0&&monthsLeft!=null&&(monthsLeft>0?(
+                    <div style={{fontSize:11.5,color:"#8892b0",marginTop:8,lineHeight:1.5}}>
+                      {monthsLeft} month{monthsLeft===1?"":"s"} to go — save <b style={{color:"#e8eaf0"}}>{fmt(perMonth)}</b> a month.{" "}
+                      {perMonth<=savT
+                        ?<span style={{color:"#00c88c"}}>Fits your {mpTargets.savings}% savings target ({fmt(savT)}).</span>
+                        :<span style={{color:"#ffb84a"}}>{fmt(perMonth-savT)} a month more than your savings target.</span>}
+                    </div>
+                  ):<div style={{fontSize:11.5,color:"#ffb84a",marginTop:8}}>Moving date reached — {fmt0(need)} still to go.</div>)}
+                  {need>0&&monthsLeft==null&&<div style={{...note,marginTop:8}}>Add a moving date to see what to save each month.</div>}
+                </div>
+              ):(
+                <div style={note}>Set how much cash you want by moving day. Progress uses "Cash available" from Buying.</div>
+              )}
+            </>)}
+
+            <div style={{...note,padding:"0 4px"}}>
+              Glyn's figure averages his payslips from the last 12 months; without overtime, OT and weekend pay are taken back out at the marginal rate, so it's an estimate. Hollie's is her estimated net on base pay. Bills are this month's standing shared bills plus both of your personal bills; non-monthly bills aren't included. LTT uses Welsh main-residence rates for 2026/27 — confirm figures with your lender and conveyancer. Everything here is shared between you both.
+            </div>
+          </div>
+          );
+        })()}
+
         {tab==="Gifts"&&(()=>{
           const totalCost=gifts.reduce((a,g)=>a+(Number(g.cost)||0),0);
           const bDone=gifts.filter(g=>g.birthday_year===giftYear).length;
@@ -5550,6 +6002,56 @@ const calcTimesheetTotals = days => {
           </div>
         </div>
       )}
+
+      {/* Move plan: which bucket each category counts towards */}
+      {moveCatsOpen&&(()=>{
+        const close=()=>setMoveCatsOpen(false);
+        const rowsFor=(list,prefix,bills,bmap)=>{
+          const r=list.map((c,ci)=>({key:prefix+c.id,name:c.name,col:catColor(c,ci),n:bills.filter(b=>bmap[b.id]===c.id).length}));
+          const un=bills.filter(b=>!bmap[b.id]).length;
+          if(un)r.push({key:prefix+"un",name:"Uncategorised",col:"#5a6480",n:un});
+          return r;
+        };
+        const groups=[
+          {t:"Shared bills",rows:rowsFor(cats,"s:",sharedBills,billCats)},
+          {t:"My bills",rows:rowsFor(glynCats,"p:"+myId+":",glynBills,glynBillCats)},
+        ];
+        return(
+          <div onClick={close} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
+            <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"78vh",overflowY:"auto"}}>
+              <SheetGrab onClose={close}/>
+              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 4px"}}>Which bills go where</div>
+              <div style={{fontSize:11,color:"#5a6480",padding:"0 4px 12px",lineHeight:1.5}}>Pick a bucket for each category. Anything not set counts as Bills &amp; living.</div>
+              {groups.map(g=>g.rows.length>0&&(
+                <div key={g.t}>
+                  <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"4px 4px 6px"}}>{g.t}</div>
+                  {g.rows.map(r=>{
+                    const cur=mpBucketOf(r.key);
+                    const cb=MOVE_BUCKETS.find(b=>b.k===cur);
+                    return (
+                      <div key={r.key} style={{background:"#0d1117",border:"1px solid "+r.col+"3d",borderRadius:10,padding:"10px 10px 8px",marginBottom:8}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <span style={{flex:"0 0 auto",width:9,height:9,borderRadius:5,background:r.col}}/>
+                          <span style={{flex:1,minWidth:0,fontSize:14,fontWeight:600,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</span>
+                          <span style={{flex:"0 0 auto",fontSize:10.5,color:"#3a4460"}}>{r.n} bill{r.n===1?"":"s"}</span>
+                        </div>
+                        <div style={{display:"flex",gap:5,marginTop:8}}>
+                          {MOVE_BUCKETS.map(b=>{const on=cur===b.k;return(
+                            <button key={b.k} onClick={()=>{haptic();savePlan(p=>({...p,catBucket:{...(p.catBucket||{}),[r.key]:b.k}}));}}
+                              style={{flex:1,background:on?b.c+"22":"#141824",border:"1px solid "+(on?b.c:"#2a3050"),borderRadius:6,fontSize:15,padding:"6px 0",cursor:"pointer"}}>{b.e}</button>
+                          );})}
+                        </div>
+                        <div style={{fontSize:10.5,color:cb.c,marginTop:5,fontWeight:600}}>{cb.l}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+              <button onClick={close} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Move-to-category sheet */}
       {catsOpen&&(()=>{
