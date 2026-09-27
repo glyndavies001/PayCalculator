@@ -741,7 +741,7 @@ const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
 const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
 const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
 const notSetFor = (b, mk) => isVariable(b) && !(mk in b.amounts);
-const APP_VERSION = "1.13.72";
+const APP_VERSION = "1.13.73";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Payslips"];
 const SECONDARY_TABS = ["Pay Info","Timesheet","Tax Year","Leave","Settle Up","Gifts","Move","Diag"];
 
@@ -1349,6 +1349,8 @@ export default function App() {
   const [movePlan,setMovePlan]=useState(null);             // shared Move Plan (null = not loaded)
   const [moveMissing,setMoveMissing]=useState(false);      // move_plan column not migrated yet
   const [moveCatsOpen,setMoveCatsOpen]=useState(false);    // assign categories to buckets sheet
+  const [moveOpenB,setMoveOpenB]=useState(null);           // Move tab: bucket expanded to show its bills
+  const [movePick,setMovePick]=useState(null);             // Move tab: bill whose bucket chips are showing
   const personalOk=useRef(false);                          // personal bills came from the DB
   const loadMovePlan=async()=>{
     try {
@@ -2636,22 +2638,34 @@ export default function App() {
   const mpHollieNet=Math.round(calcHolliePay(0).net*100)/100;
   const mpBasis=mp.basis==="withOt"?"withOt":"noOt";
   const mpIncome=mpGlyn?(mpBasis==="withOt"?mpGlyn.withOt:mpGlyn.noOt)+mpHollieNet:0;
-  const mpBucketOf=(key)=>{const k=mpCatBucket[key];return MOVE_BUCKETS.some(b=>b.k===k)?k:"living";};
+  const mpValid=k=>MOVE_BUCKETS.some(b=>b.k===k);
+  const mpBillBucket=mp.billBucket||{};
+  // Category bucket (used by the "Which bills go where" sheet).
+  const mpBucketOf=(key)=>{const k=mpCatBucket[key];return mpValid(k)?k:"living";};
+  // A bill's own pick beats its category's; unset falls back to Bills & living.
+  const mpResolve=(billKey,catKey)=>{const k=mpBillBucket[billKey];return mpValid(k)?k:mpBucketOf(catKey);};
   const mpZero=()=>MOVE_BUCKETS.reduce((o,b)=>{o[b.k]=0;return o;},{});
-  const mpMyPersonal=(()=>{
-    const o=mpZero();
-    glynBills.forEach(b=>{const cid=glynBillCats[b.id];o[mpBucketOf("p:"+myId+":"+(cid==null?"un":cid))]+=amountOf(b,mpCurKey);});
-    MOVE_BUCKETS.forEach(b=>{o[b.k]=Math.round(o[b.k]*100)/100;});
-    return o;
-  })();
+  // My personal bills as published to the other phone: names, this month's amount, category.
+  const mpMyBills=glynBills.map(b=>{const cid=glynBillCats[b.id];
+    return {id:b.id,name:b.name,amt:Math.round(amountOf(b,mpCurKey)*100)/100,cat:cid==null?null:cid};});
+  const mpMe={who:isOwner?"Glyn":"Hollie",bills:mpMyBills};
   const mpPersonalAll={...(mp.personal||{})};
-  if(myId)mpPersonalAll[myId]=mpMyPersonal;
-  const mpActual=(()=>{
-    const o=mpZero();
-    sharedBills.forEach(b=>{const cid=billCats[b.id];o[mpBucketOf("s:"+(cid==null?"un":cid))]+=amountOf(b,mpCurKey);});
-    Object.values(mpPersonalAll).forEach(x=>MOVE_BUCKETS.forEach(b=>{o[b.k]+=Number(x&&x[b.k])||0;}));
-    return o;
+  if(myId)mpPersonalAll[myId]=mpMe;
+  // Every bill counted, with its bucket. Shared bills at their full amount.
+  const mpRows=(()=>{
+    const out=[];
+    sharedBills.forEach(b=>{const cid=billCats[b.id];
+      out.push({key:"s:"+b.id,name:b.name,who:"Shared",amt:amountOf(b,mpCurKey),
+        bucket:mpResolve("s:"+b.id,"s:"+(cid==null?"un":cid)),own:mpValid(mpBillBucket["s:"+b.id])});});
+    Object.entries(mpPersonalAll).forEach(([uid,x])=>{
+      if(!x||!Array.isArray(x.bills))return;   // old totals-only format: skip until that phone republishes
+      x.bills.forEach(b=>{const bk="p:"+uid+":"+b.id;
+        out.push({key:bk,name:b.name,who:x.who||"",amt:Number(b.amt)||0,
+          bucket:mpResolve(bk,"p:"+uid+":"+(b.cat==null?"un":b.cat)),own:mpValid(mpBillBucket[bk])});});
+    });
+    return out;
   })();
+  const mpActual=(()=>{const o=mpZero();mpRows.forEach(r=>{o[r.bucket]+=r.amt;});return o;})();
   const savePlan=(fn)=>{
     setMovePlan(p=>fn(p||{}));
     trackSave(()=>db.patchMovePlan(fn).then(r=>{if(r&&r.missing)setMoveMissing(true);}));
@@ -2664,13 +2678,12 @@ export default function App() {
     const avg=myGlynAvg;
     savePlan(p=>({...p,glynAvg:avg}));
   });
-  // Each phone publishes its own personal bills, totalled by bucket.
+  // Each phone publishes its own personal bills (names and amounts) for the Move tab.
   useEffect(()=>{
     if(!myId||!movePlan||moveMissing||dataLoading||!personalOk.current)return;
-    const cur=(movePlan.personal||{})[myId]||{};
-    const have=!!(movePlan.personal&&movePlan.personal[myId]);
-    if(have&&MOVE_BUCKETS.every(b=>(Number(cur[b.k])||0)===mpMyPersonal[b.k]))return;
-    const mine=mpMyPersonal,id=myId;
+    const cur=(movePlan.personal||{})[myId];
+    if(cur&&JSON.stringify(cur)===JSON.stringify(mpMe))return;
+    const mine=mpMe,id=myId;
     savePlan(p=>({...p,personal:{...(p.personal||{}),[id]:mine}}));
   });
 
@@ -5112,7 +5125,7 @@ const calcTimesheetTotals = days => {
           const left=mpIncome-billsTotal;
           const waiting=[];
           if(!mpGlyn)waiting.push("Glyn's payslip average");
-          if(Object.keys(mpPersonalAll).length<2)waiting.push((isOwner?"Hollie":"Glyn")+"'s personal bills");
+          if(Object.values(mpPersonalAll).filter(x=>x&&Array.isArray(x.bills)).length<2)waiting.push((isOwner?"Hollie":"Glyn")+"'s personal bills");
           const basisBtn=(k,label)=>{const on=mpBasis===k;return(
             <button onClick={()=>{haptic();savePlan(p=>({...p,basis:k}));}} style={{flex:1,background:on?"#4a9eff":"#0d1117",
               color:on?"#fff":"#5a6480",border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"8px 6px",fontSize:11.5,fontWeight:700,cursor:"pointer"}}>{label}</button>
@@ -5248,7 +5261,9 @@ const calcTimesheetTotals = days => {
                 return (
                   <div key={b.k} style={{padding:"11px 13px",borderTop:i?"1px solid #171d2b":"none"}}>
                     <div style={{display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{flex:1,minWidth:0,fontSize:13.5,color:"#c8cee0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.e} {b.l}</span>
+                      <span onClick={()=>{haptic();setMovePick(null);setMoveOpenB(o=>o===b.k?null:b.k);}}
+                        style={{flex:1,minWidth:0,fontSize:13.5,color:"#c8cee0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",cursor:"pointer"}}>
+                        <span style={{fontSize:11,color:b.c,display:"inline-block",width:12}}>{moveOpenB===b.k?"▾":"▸"}</span>{b.e} {b.l}</span>
                       {field(mpTargets[b.k],v=>savePlan(p=>({...p,targets:{...mpTargets,...(p.targets||{}),[b.k]:Math.max(0,Math.min(100,Math.round(Number(v)||0)))}})),
                         {style:{width:50,padding:"6px 7px",fontSize:13,textAlign:"right",borderColor:b.c+"55"}})}
                       <span style={{fontSize:11,color:"#5a6480"}}>%</span>
@@ -5257,9 +5272,43 @@ const calcTimesheetTotals = days => {
                     <div style={{height:5,borderRadius:3,background:"#1e2535",marginTop:8,overflow:"hidden"}}>
                       <div style={{height:"100%",width:w+"%",background:over?"#ff4a6a":b.c}}/>
                     </div>
-                    <div style={{fontSize:10.5,color:"#3a4460",marginTop:4}}>
+                    <div onClick={()=>{haptic();setMovePick(null);setMoveOpenB(o=>o===b.k?null:b.k);}} style={{fontSize:10.5,color:"#3a4460",marginTop:4,cursor:"pointer"}}>
                       Bills now {fmt(act)} · {over?<span style={{color:"#ff4a6a",fontWeight:700}}>over by {fmt(act-tgt)}</span>:<span>{fmt(tgt-act)} spare</span>}
                     </div>
+                    {moveOpenB===b.k&&(()=>{
+                      const list=mpRows.filter(r=>r.bucket===b.k).sort((x,y)=>y.amt-x.amt);
+                      return (
+                        <div style={{marginTop:9,background:"#0d1117",border:"1px solid "+b.c+"3d",borderRadius:9,overflow:"hidden"}}>
+                          {list.length===0&&<div style={{fontSize:11,color:"#3a4460",padding:"10px 11px",fontStyle:"italic"}}>No bills in here yet.</div>}
+                          {list.map((r,ri)=>(
+                            <div key={r.key} style={{borderTop:ri?"1px solid #171d2b":"none"}}>
+                              <div onClick={()=>{haptic();setMovePick(k=>k===r.key?null:r.key);}}
+                                style={{display:"flex",alignItems:"center",gap:8,padding:"9px 11px",cursor:"pointer"}}>
+                                <div style={{flex:1,minWidth:0}}>
+                                  <div style={{fontSize:12.5,color:"#c8cee0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
+                                  <div style={{fontSize:10,color:"#3a4460",marginTop:1}}>{r.who}{r.own?" · moved here":""}</div>
+                                </div>
+                                <span style={{fontSize:12.5,fontWeight:700,color:"#e8eaf0"}}>{fmt(r.amt)}</span>
+                              </div>
+                              {movePick===r.key&&(
+                                <div style={{padding:"0 11px 10px"}}>
+                                  <div style={{display:"flex",gap:5}}>
+                                    {MOVE_BUCKETS.map(x=>{const on=r.bucket===x.k;return(
+                                      <button key={x.k} onClick={()=>{haptic();setMovePick(null);
+                                          savePlan(p=>({...p,billBucket:{...(p.billBucket||{}),[r.key]:x.k}}));}}
+                                        style={{flex:1,background:on?x.c+"22":"#141824",border:"1px solid "+(on?x.c:"#2a3050"),borderRadius:6,fontSize:15,padding:"6px 0",cursor:"pointer"}}>{x.e}</button>
+                                    );})}
+                                  </div>
+                                  {r.own&&<button onClick={()=>{haptic();setMovePick(null);
+                                      savePlan(p=>{const nb={...(p.billBucket||{})};delete nb[r.key];return {...p,billBucket:nb};});}}
+                                    style={{marginTop:6,background:"transparent",border:"none",color:"#5a6480",fontSize:11,padding:"2px 0",cursor:"pointer"}}>Follow its category instead</button>}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -5401,7 +5450,7 @@ const calcTimesheetTotals = days => {
             </>)}
 
             <div style={{...note,padding:"0 4px"}}>
-              Glyn's figure averages his payslips from the last 12 months; without overtime, OT and weekend pay are taken back out at the marginal rate, so it's an estimate. Hollie's is her estimated net on base pay. Bills are this month's standing shared bills plus both of your personal bills; non-monthly bills aren't included. LTT uses Welsh main-residence rates for 2026/27 — confirm figures with your lender and conveyancer. Everything here is shared between you both.
+              Glyn's figure averages his payslips from the last 12 months; without overtime, OT and weekend pay are taken back out at the marginal rate, so it's an estimate. Hollie's is her estimated net on base pay. Bills are this month's standing shared bills (full amount) plus both of your personal bills; one-off and non-monthly bills aren't included. Tap a bucket to see its bills, and tap a bill to move it. LTT uses Welsh main-residence rates for 2026/27 — confirm figures with your lender and conveyancer. Everything here is shared between you both.
             </div>
           </div>
           );
