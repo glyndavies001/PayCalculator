@@ -651,12 +651,24 @@ function shouldResetTimesheet(tsLastUpload) {
 }
 
 // Check if a Monday reminder should show
-function shouldShowTimesheetReminder(tsLastUpload) {
-  const now = new Date();
-  if (!tsLastUpload) return true; // never uploaded
-  const last = new Date(tsLastUpload);
-  const daysSince = Math.floor((now - last) / (1000 * 60 * 60 * 24));
-  return daysSince >= 7;
+// Timesheets come in every Monday evening (weekly) and the evening before payday (monthly).
+// One is due once 9pm has passed on that day with nothing received since that morning.
+// Returns "weekly", "monthly" or null.
+const TS_DUE_HOUR = 21;
+function timesheetDue(lastReceived, now = new Date()) {
+  const atDue = d => { const x = new Date(d); x.setHours(TS_DUE_HOUR, 0, 0, 0); return x; };
+  const morning = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+  const mon = atDue(now);
+  mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7));   // this week's Monday
+  if (mon > now) mon.setDate(mon.getDate() - 7);
+  const eveOf = (y, m) => { const e = atDue(getPayday(y, m)); e.setDate(e.getDate() - 1); return e; };
+  let eve = eveOf(now.getFullYear(), now.getMonth());
+  if (eve > now) { const p = new Date(now.getFullYear(), now.getMonth() - 1, 1); eve = eveOf(p.getFullYear(), p.getMonth()); }
+  const last = lastReceived ? new Date(lastReceived) : null;
+  const weekly = !last || last < morning(mon);
+  const monthly = !last || last < morning(eve);
+  if (weekly && monthly) return mon >= eve ? "weekly" : "monthly";
+  return weekly ? "weekly" : monthly ? "monthly" : null;
 }
 
 const load = (key, fb) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fb; } catch { return fb; } };
@@ -705,7 +717,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.13.80";
+const APP_VERSION = "1.13.81";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -1024,14 +1036,6 @@ function isTomorrowPayday() {
   return pd.toDateString() === tomorrow.toDateString();
 }
 
-// Check if a timesheet reminder should fire (Monday or 7+ days since last upload)
-function shouldFireTimesheetNotif(tsLastUpload) {
-  const now = new Date();
-  const isMonday = now.getDay() === 1;
-  if (!tsLastUpload) return isMonday;
-  const daysSince = Math.floor((now - new Date(tsLastUpload)) / (1000 * 60 * 60 * 24));
-  return isMonday && daysSince >= 7;
-}
 
 // -- Error Boundary -----------------------------------------------------------
 class ErrorBoundary extends React.Component {
@@ -2175,10 +2179,19 @@ export default function App() {
     if (isTomorrowPayday()) {
       sendNotification("💰 Payday tomorrow!", "Your pay should land tomorrow -- check Vaulted for your estimate.", "payday");
     }
-    if (shouldFireTimesheetNotif(tsLastUpload)) {
-      sendNotification("📋 Timesheet reminder", "It's Monday -- don't forget to upload your weekly timesheet.", "timesheet");
-    }
   }, [user]);
+
+  // Timesheet reminder: once a session, when one is due. Waits for the data to load and a
+  // little longer, so a timesheet already waiting in the queue gets processed first.
+  const tsNotifRef = React.useRef({ fired: false, last: null });
+  React.useEffect(() => {
+    if (!user || dataLoading || tsNotifRef.current.fired || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    tsNotifRef.current.fired = true;
+    setTimeout(() => {
+      const due = timesheetDue(tsNotifRef.current.last);
+      if (due) sendNotification("📋 Timesheet due", due === "monthly" ? "Your monthly timesheet should be in by now -- upload it in Vaulted." : "Your weekly timesheet should be in by now -- upload it in Vaulted.", "timesheet");
+    }, 15000);
+  }, [user, dataLoading]);
 
   // Onboarding handled by Supabase auth -- no separate state needed
 
@@ -2261,7 +2274,11 @@ export default function App() {
     runBackup();
     return () => { cancelled = true; };
   }, [user, dataLoading]);
-  const showTsReminder=shouldShowTimesheetReminder(tsLastUpload);
+  // When the last timesheet came in: a new pay period clears the weekly record, so the monthly one counts too
+  const tsLastReceived=[tsLastUpload,...monthlyTs.map(m=>m.savedAt)].filter(Boolean).reduce((a,t)=>(!a||new Date(t)>new Date(a)?t:a),null);
+  tsNotifRef.current.last=tsLastReceived;
+  const tsDue=timesheetDue(tsLastReceived);
+  const showTsReminder=!!tsDue;
 
   const latest=useMemo(()=>sortH(history).slice(-1)[0],[history]);
   const prevMonth=useMemo(()=>sortH(history).slice(-2)[0],[history]);
@@ -3351,7 +3368,7 @@ const calcTimesheetTotals = days => {
                 <span style={{fontSize:20}}>⚠️</span>
                 <div>
                   <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
-                  <div style={{fontSize:12,color:"#8a7040",marginTop:2}}>{tsLastUpload?`Last uploaded ${Math.floor((new Date()-new Date(tsLastUpload))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} - Tap to upload</div>
+                  <div style={{fontSize:12,color:"#8a7040",marginTop:2}}>{tsDue==="monthly"?"Monthly - ":"Weekly - "}{tsLastReceived?`Last uploaded ${Math.floor((new Date()-new Date(tsLastReceived))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} - Tap to upload</div>
                 </div>
               </div>
             )}
