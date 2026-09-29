@@ -127,7 +127,7 @@ function getRateFor(monthStr) {
 const PAY = {
   baseRate: 14.50, otRate: 18.125, weekendOtRate: 21.75,
   taxFreeMonthly: 1047.50, niPrimaryThreshold: 1048, niUpperThreshold: 4189,
-  slThreshold: 2372, nestRate: 0.05, taxCode: "C1257L", niCategory: "A",
+  nestRate: 0.04, taxCode: "C1257L", niCategory: "A",   // NEST: 4% comes off pay, NEST claims the other 1% as tax relief
   bonusTiers: [
     { label: "Tier 1", range: "<80%",      bonus: 0,   allowance: 0.00 },
     { label: "Tier 2", range: "80-84.99%", bonus: 80,  allowance: 0.20 },
@@ -138,13 +138,25 @@ const PAY = {
   ],
 };
 
+// Plan 2 student loan: yearly threshold from each tax year (6 April) — [first tax year, £/year].
+const SL_PLAN2 = [[2026, 29385], [2025, 28470], [2021, 27295]];
+// Monthly threshold for a pay date (payroll takes 9% above it, rounded down to whole pounds).
+function slThresholdFor(date) {
+  const d = date ? new Date(date) : new Date();
+  const ty = d.getMonth() > 3 || (d.getMonth() === 3 && d.getDate() >= 6) ? d.getFullYear() : d.getFullYear() - 1;
+  const row = SL_PLAN2.find(([y]) => ty >= y) || SL_PLAN2[SL_PLAN2.length - 1];
+  return Math.round(row[1] / 12 * 100) / 100;
+}
+// Pay date for a pay-period key like "2026-09" (paid at the end of the period, around the 28th).
+const payDateForKey = key => { const [y, m] = key.split("-").map(Number); return new Date(y, m - 1, 28); };
+
 function getAllowanceForBonus(bonus) {
   // Find the matching tier by bonus amount; default to 0 if not found
   const tier = PAY.bonusTiers.slice().reverse().find(t => bonus >= t.bonus && t.bonus > 0);
   return tier ? tier.allowance : 0;
 }
 
-function calcPay({ stdHrs, otHrs, weekendOtHrs, holidayHrs, bonus, perfAllowance, _allowanceOverride, _rateOverride }) {
+function calcPay({ stdHrs, otHrs, weekendOtHrs, holidayHrs, bonus, perfAllowance, _allowanceOverride, _rateOverride, _slThreshold }) {
   const allowance = _allowanceOverride !== undefined
     ? _allowanceOverride
     : perfAllowance !== undefined
@@ -165,7 +177,8 @@ function calcPay({ stdHrs, otHrs, weekendOtHrs, holidayHrs, bonus, perfAllowance
   const niUpper = Math.max(0, gross - PAY.niUpperThreshold);
   const ni = niLower * 0.08 + niUpper * 0.02;
   const nest = Math.max(0, gross - 520) * PAY.nestRate;
-  const sl = Math.max(0, gross - PAY.slThreshold) * 0.09;
+  const slT = _slThreshold != null ? _slThreshold : slThresholdFor(payDateForKey(getCurrentPayPeriodKey()));
+  const sl = Math.floor(Math.max(0, gross - slT) * 0.09);   // payroll rounds down to whole pounds
   const deductions = tax + ni + nest + sl;
   const net = gross - deductions;
   return { stdPay, otPay, wkPay, bonus, gross, tax, ni, nest, sl, deductions, net,
@@ -190,7 +203,7 @@ function calcHolliePay(otHrs) {
   const niLower = Math.max(0, Math.min(taxable, PAY.niUpperThreshold) - PAY.niPrimaryThreshold);
   const niUpper = Math.max(0, taxable - PAY.niUpperThreshold);
   const ni = niLower * 0.08 + niUpper * 0.02;
-  const sl = Math.max(0, taxable - PAY.slThreshold) * 0.09;
+  const sl = Math.floor(Math.max(0, taxable - slThresholdFor(payDateForKey(getCurrentPayPeriodKey()))) * 0.09);
   const deductions = pension + tax + ni + sl;
   const net = gross - deductions;
   return { stdPay, otPay, gross, pension, taxable, tax, ni, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
@@ -692,7 +705,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.13.78";
+const APP_VERSION = "1.13.79";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -708,7 +721,7 @@ const MOVE_BUCKETS = [
   { k: "fun",     l: "Fun & personal",  e: "🎉", c: "#c84aff", d: 10 },
 ];
 // Average net over the payslips from the last 12 months. "noOt" strips overtime and
-// weekend pay back out at the marginal rate (5% pension, then 20% tax, 8% NI and 9%
+// weekend pay back out at the marginal rate (4% pension, then 20% tax, 8% NI and 9%
 // student loan when it applied that month) - an estimate, since OT is upside.
 function avgNet12(history) {
   const now = new Date();
@@ -716,7 +729,7 @@ function avgNet12(history) {
   let rows = sortH(history).filter(r => { const [mo, yr] = r.month.split(" "); return new Date(parseInt(yr), MONTHS.indexOf(mo), 1) >= cutoff; });
   if (!rows.length) rows = sortH(history).slice(-12);
   if (!rows.length) return null;
-  const keep = r => 0.95 * (1 - 0.20 - 0.08 - ((r.sl || 0) > 0 ? 0.09 : 0));
+  const keep = r => 1 - 0.04 - 0.20 - 0.08 - ((r.sl || 0) > 0 ? 0.09 : 0);
   const withOt = rows.reduce((a, r) => a + (Number(r.net) || 0), 0) / rows.length;
   const noOt = rows.reduce((a, r) => a + (Number(r.net) || 0) - ((Number(r.ot) || 0) + (Number(r.weekendOt) || 0)) * keep(r), 0) / rows.length;
   const r2 = n => Math.round(n * 100) / 100;
@@ -1798,9 +1811,10 @@ export default function App() {
     if (meta && meta.isMonthly) {
       const STD = 8.25;
       let stdHrs = 0, otHrs = 0, wkndHrs = 0, holHrs = 0;
-      days.forEach(d => {
+      enrichedDays.forEach(d => {
         if (d.isHoliday) { holHrs += d.isHalf ? STD_DAY_HRS / 2 : STD_DAY_HRS; return; }
-        const hrs = parseHM(d.hours);
+        if (d.isPartialHol) holHrs += d.holHrs || 0;
+        const hrs = d.hrs;
         const isWknd = d.day.toLowerCase().startsWith("sat") || d.day.toLowerCase().startsWith("sun");
         if (isWknd) { wkndHrs += hrs; }
         else if (hrs <= STD) { stdHrs += hrs; }
@@ -1909,33 +1923,69 @@ export default function App() {
       return [...prev.filter(m => m.emailId !== entry.emailId && m.period !== entry.period), entry]
         .sort((a, b) => new Date(b.period.split(" to ")[0]) - new Date(a.period.split(" to ")[0]));
     });
-    checkDiscrepancy(entry, history);
+    checkDiscrepancy(entry, history, [...monthlyTs, entry]);
   };
 
-  const checkDiscrepancy = async (tsEntry, hist) => {
+  // Hours for the pay period ending the 28th of `payMonth` ("Sep 2026"), from timesheet days, the
+  // way payroll pays them: the month's contracted hours with holidays paid inside them, and any
+  // weekday shortfall taken from weekday overtime first, then weekend overtime, then standard hours.
+  // Days come from every saved monthly timesheet, as JLI's email periods don't line up with the 29th.
+  const payrollHours = (allDays, payMonth) => {
+    const [mo, yr] = payMonth.split(" ");
+    const m = MONTHS.indexOf(mo) + 1, y = Number(yr);
+    const start = new Date(y, m - 2, 29), end = new Date(y, m - 1, 28);
+    const std = getRateFor(payMonth).stdDayHrs;
+    const seen = new Set();
+    let ot = 0, wknd = 0, hol = 0, short = 0;
+    for (const d of allDays) {
+      const [dd, mm] = String((d && d.date) || "").split("/").map(Number);
+      if (!dd || !mm) continue;
+      const dt = [y, y - 1].map(Y => new Date(Y, mm - 1, dd)).find(x => x >= start && x <= end);
+      if (!dt || seen.has(+dt)) continue;
+      seen.add(+dt);
+      const n = normaliseHoliday(d.holiday);
+      if (n.isHoliday) { hol += n.isHalf ? std / 2 : std; continue; }
+      const hrs = parseHM(d.hours || "");
+      if (/^(sat|sun)/i.test(d.day || "")) { wknd += hrs; continue; }
+      const part = n.isPartialHol ? n.holHrs : 0;
+      hol += part;
+      ot += Math.max(0, hrs + part - std);
+      short += Math.max(0, std - (hrs + part));
+    }
+    let rem = short;
+    const otHrs = Math.max(0, ot - rem); rem = Math.max(0, rem - ot);
+    const weekendOtHrs = Math.max(0, wknd - rem); rem = Math.max(0, rem - wknd);
+    const stdHrs = Math.max(0, monthHoursFor(y, m) - hol - rem);
+    return { stdHrs, otHrs, weekendOtHrs, holidayHrs: hol };
+  };
+
+  const CHECK_VERSION = 2;   // checks saved before this are re-run once with the corrected model
+  const checkDiscrepancy = async (tsEntry, hist, allTs, opts = {}) => {
     if (!tsEntry || !tsEntry.month) return;
     const payslip = hist.find(h => h.month === tsEntry.month);
     if (!payslip) return; // payslip not yet uploaded -- will recheck when payslip arrives
 
-    // Infer tier allowance from the payslip's actual bonus amount
-    let tierIdx = 0;
-    for (let i = PAY.bonusTiers.length - 1; i >= 0; i--) {
-      if ((payslip.bonus || 0) >= PAY.bonusTiers[i].bonus && PAY.bonusTiers[i].bonus > 0) {
-        tierIdx = i;
-        break;
+    // The hourly allowance is paid at last month's tier (the previous payslip's bonus)
+    const tierFor = bonus => {
+      for (let i = PAY.bonusTiers.length - 1; i >= 0; i--) {
+        if ((bonus || 0) >= PAY.bonusTiers[i].bonus && PAY.bonusTiers[i].bonus > 0) return i;
       }
-    }
-    const allowance = PAY.bonusTiers[tierIdx].allowance;
+      return 0;
+    };
+    const [pmo, pyr] = tsEntry.month.split(" ");
+    const prevDate = new Date(Number(pyr), MONTHS.indexOf(pmo) - 1, 1);
+    const prevSlip = hist.find(h => h.month === MONTHS[prevDate.getMonth()] + " " + prevDate.getFullYear());
+    const allowance = PAY.bonusTiers[tierFor(prevSlip ? prevSlip.bonus : payslip.bonus)].allowance;
     // Use historical rates for retroactive accuracy
     const rateConfig = (typeof getRateFor === "function") ? getRateFor(tsEntry.month) : null;
+    const days = [...(tsEntry.days || []), ...((allTs || []).filter(t => t !== tsEntry).flatMap(t => t.days || []))];
+    const hrs = payrollHours(days, tsEntry.month);
     const expected = calcPay({
-      stdHrs: tsEntry.stdHrs,
-      otHrs: tsEntry.otHrs,
-      weekendOtHrs: tsEntry.wkndHrs,
-      holidayHrs: tsEntry.holHrs, // include paid holiday hours
+      ...hrs,
       bonus: payslip.bonus, // use actual bonus from payslip
       _allowanceOverride: allowance,
       _rateOverride: rateConfig ? { baseRate: rateConfig.baseRate, otRate: rateConfig.otRate, weekendOtRate: rateConfig.weekendOtRate } : undefined,
+      _slThreshold: slThresholdFor(new Date(Number(pyr), MONTHS.indexOf(pmo), 28)),
     });
 
     const THRESH = 1.00; // £1 tolerance for rounding
@@ -1959,7 +2009,7 @@ export default function App() {
       items,
       ts: { stdHrs: tsEntry.stdHrs, otHrs: tsEntry.otHrs, wkndHrs: tsEntry.wkndHrs, totalHrs: tsEntry.totalHrs },
       payslip: { gross: payslip.gross, net: payslip.net, tax: payslip.tax, ni: payslip.ni },
-      expected: { gross: Math.round(expected.gross*100)/100, net: Math.round(expected.net*100)/100 },
+      expected: { gross: Math.round(expected.gross*100)/100, net: Math.round(expected.net*100)/100, v: CHECK_VERSION },
       checkedAt: new Date().toISOString(),
     };
 
@@ -1969,7 +2019,7 @@ export default function App() {
         .sort((a, b) => new Date(b.checkedAt) - new Date(a.checkedAt));
     });
 
-    if (items.length > 0) {
+    if (items.length > 0 && !opts.quiet) {
       sendNotification(
         "⚠️ Pay discrepancy -- " + tsEntry.month,
         items.length + " item" + (items.length>1?"s":"") + " don't match your timesheet. Check Vaulted.",
@@ -2092,7 +2142,9 @@ export default function App() {
     monthlyTs.forEach(ts => {
       if (!ts.month) return;
       const alreadyChecked = discrepancies.find(d => d.month === ts.month);
-      if (!alreadyChecked) checkDiscrepancy(ts, history);
+      // re-run older checks quietly with the corrected model (no notifications for past months)
+      if (!alreadyChecked) checkDiscrepancy(ts, history, monthlyTs);
+      else if (!(alreadyChecked.expected && alreadyChecked.expected.v >= CHECK_VERSION)) checkDiscrepancy(ts, history, monthlyTs, { quiet: true });
     });
   }, [history]);
 
@@ -2244,8 +2296,8 @@ export default function App() {
   const effectiveAllowance=PAY.bonusTiers[effectiveTierIdx].allowance;
 
   // Shortfall absorption: if actual weekday hours in the period are below contracted
-  // (working days × 8.25), absorb the deficit from weekend OT first, then weekday OT,
-  // then std hours. Done silently — the pay calc just uses the effective figures.
+  // (working days × 8.25), absorb the deficit from weekday OT first, then weekend OT,
+  // then std hours (as payroll does). Done silently — the pay calc just uses the effective figures.
   const effHrs=useMemo(()=>{
     const STD=8.25;
     const cur=getCurrentPayPeriodKey();
@@ -2265,10 +2317,10 @@ export default function App() {
         .reduce((s,d)=>s+Math.max(0,STD-((d.hrs||0)+(d.holHrs||0))),0)
       *100)/100;
     let rem=shortfall;
-    const weekendOtHrs=Math.max(0,(ci.weekendOtHrs||0)-rem);
-    rem=Math.max(0,rem-(ci.weekendOtHrs||0));
     const otHrs=Math.max(0,(ci.otHrs||0)-rem);
     rem=Math.max(0,rem-(ci.otHrs||0));
+    const weekendOtHrs=Math.max(0,(ci.weekendOtHrs||0)-rem);
+    rem=Math.max(0,rem-(ci.weekendOtHrs||0));
     const stdHrs=Math.max(0,(ci.stdHrs||0)-rem-(ci.holidayHrs||0));
     return{stdHrs,otHrs,weekendOtHrs};
   },[accumulated.days,ci.stdHrs,ci.otHrs,ci.weekendOtHrs,ci.holidayHrs]);
@@ -4061,8 +4113,8 @@ const calcTimesheetTotals = days => {
               {[
                 ["Income Tax (20%)",  "Tax-free: "+fmt(PAY.taxFreeMonthly)+"/mo", fmt(cr.tax),  "#ff6b8a"],
                 ["National Insurance","8% to £4,189 | 2% above",                  fmt(cr.ni),   "#ff8c4a"],
-                ["NEST Pension (5%)", "On qualifying earnings",                    fmt(cr.nest), "#ffb84a"],
-                ["Student Loan P2",   "9% above £2,372/mo",                        fmt(cr.sl),   "#c84aff"],
+                ["NEST Pension (4%)", "On qualifying earnings",                    fmt(cr.nest), "#ffb84a"],
+                ["Student Loan P2",   "9% above "+fmt(slThresholdFor(payDateForKey(getCurrentPayPeriodKey())))+"/mo", fmt(cr.sl),   "#c84aff"],
               ].map(([l,sub,v,c])=>(
                 <div key={l} style={{...row,flexDirection:"column",gap:2}}>
                   <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#8892b0"}}>{l}</span><span style={{fontWeight:700,color:c}}>-{v}</span></div>
@@ -4125,7 +4177,7 @@ const calcTimesheetTotals = days => {
                 ["Employer",           "JLI Trading Limited"],
                 ["Tax Code",           PAY.taxCode],
                 ["NI Category",        PAY.niCategory],
-                ["NEST Pension",       "5% employee contribution"],
+                ["NEST Pension",       "4% from pay (+1% tax relief)"],
                 ["Student Loan",       "Plan 2 (30-year write-off)"],
                 ["Tax-Free Allowance", fmt(PAY.taxFreeMonthly)+"/mo"],
                 ["Standard Day",       (typeof getRateFor === "function" ? (() => { const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; const now = new Date(); const monthStr = months[now.getMonth()] + " " + now.getFullYear(); const rate = getRateFor(monthStr); const h = Math.floor(rate.stdDayHrs); const m = Math.round((rate.stdDayHrs - h) * 60); return h + "hrs" + (m > 0 ? " " + m + "min" : ""); })() : "8hrs 15min")],
