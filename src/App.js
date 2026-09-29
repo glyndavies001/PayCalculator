@@ -705,7 +705,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.13.79";
+const APP_VERSION = "1.13.80";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -1956,7 +1956,8 @@ export default function App() {
     const otHrs = Math.max(0, ot - rem); rem = Math.max(0, rem - ot);
     const weekendOtHrs = Math.max(0, wknd - rem); rem = Math.max(0, rem - wknd);
     const stdHrs = Math.max(0, monthHoursFor(y, m) - hol - rem);
-    return { stdHrs, otHrs, weekendOtHrs, holidayHrs: hol };
+    const periodDays = Math.round((end - start) / 86400000) + 1;
+    return { stdHrs, otHrs, weekendOtHrs, holidayHrs: hol, complete: seen.size >= periodDays };
   };
 
   const CHECK_VERSION = 2;   // checks saved before this are re-run once with the corrected model
@@ -4714,6 +4715,10 @@ const calcTimesheetTotals = days => {
                     <span style={{color:"#7c6fff"}}>{monthlyTs.length} months</span>
                   </div>
                   {monthlyTs.map((m, i) => {
+                    // Hours as paid (29th–28th, shortfall out of overtime); the timesheet's own totals if a day is missing
+                    const paid = m.month ? payrollHours(monthlyTs.flatMap(t => t.days || []), m.month) : null;
+                    const hrs = paid && paid.complete ? paid : { stdHrs: m.stdHrs, otHrs: m.otHrs, weekendOtHrs: m.wkndHrs, holidayHrs: m.holHrs };
+                    const h2 = v => Math.round((Number(v) || 0) * 100) / 100;
                     const disc = discrepancies.find(d => d.month === m.month);
                     const isOk = disc && disc.status === "ok";
                     const hasIssue = disc && disc.status === "discrepancy";
@@ -4724,7 +4729,7 @@ const calcTimesheetTotals = days => {
                         <div onClick={()=>{haptic();setExpandedMonth(expanded?null:m.month);}}
                           style={{display:"grid",gridTemplateColumns:"80px 1fr 60px 28px",padding:"10px 12px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center",cursor:"pointer"}}>
                           <span style={{color:"#8892b0",fontWeight:600,fontSize:11}}>{m.month||m.period.slice(0,5)}</span>
-                          <span style={{color:"#5a6480",fontSize:10}}>{m.totalHrs} - {m.otHrs}h OT - {m.wkndHrs}h wknd</span>
+                          <span style={{color:"#5a6480",fontSize:10}}>{m.totalHrs} - {h2(hrs.otHrs)}h OT - {h2(hrs.weekendOtHrs)}h wknd</span>
                           <span style={{textAlign:"right",fontSize:11,fontWeight:700,color:dismissed?"#5a6480":hasIssue?"#ff6b8a":isOk?"#00c88c":"#3a4460"}}>
                             {hasIssue?(dismissed?"hidden":"⚠️ "+disc.items.length+" issue"+(disc.items.length>1?"s":"")):isOk?"✅ OK":"--"}
                           </span>
@@ -4734,10 +4739,10 @@ const calcTimesheetTotals = days => {
                           <div style={{background:"#0d1117",borderBottom:"1px solid #1e2535",padding:"12px 14px"}}>
                             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:10}}>
                               {[
-                                ["Std Hrs",  m.stdHrs+"h",  "#e8eaf0"],
-                                ["OT Hrs",   m.otHrs+"h",   "#4affd4"],
-                                ["Wknd Hrs", m.wkndHrs+"h", "#ffb84a"],
-                                ["Hol Hrs",  m.holHrs+"h",  "#00c88c"],
+                                ["Std Hrs",  h2(hrs.stdHrs)+"h",  "#e8eaf0"],
+                                ["OT Hrs",   h2(hrs.otHrs)+"h",   "#4affd4"],
+                                ["Wknd Hrs", h2(hrs.weekendOtHrs)+"h", "#ffb84a"],
+                                ["Hol Hrs",  h2(hrs.holidayHrs)+"h",  "#00c88c"],
                                 ["Total",    m.totalHrs,    "#7c6fff"],
                                 ["Period",   m.period ? m.period.replace("2026-","").replace(/-/g,"/") : "--", "#5a6480"],
                               ].map(([l,v,c])=>(
