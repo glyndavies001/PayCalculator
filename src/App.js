@@ -265,6 +265,7 @@ const SK = {
   pickerTap:    "vaulted_picker_tap",    // ms timestamp of last upload-box tap (survives reload)
   pickerEvent:  "vaulted_picker_event",  // ms timestamp of last change event received
   loadCount:    "vaulted_load_count",    // app load counter (picker-death diagnostics)
+  paySeen:      "vaulted_pay_seen",      // the wage payment whose payday card was dismissed
   // Below kept for backward compat - falls back to defaults if missing
   collapsed:    "vaulted_cat_collapsed", // which category cards are folded (device-local)
   billSort:     "vaulted_bill_sort",      // how bills are ordered inside a category
@@ -620,6 +621,9 @@ async function trackSave(promiseOrFn) {
 
 // Work out the actual payday for a given month/year (paid on 29th, adjusted)
 function getPayday(year, month) {
+  // A month outside 0-11 rolls into the next or previous year (12 = January next year).
+  const first = new Date(year, month, 1);
+  year = first.getFullYear(); month = first.getMonth();
   // Start with the 29th
   let d = new Date(year, month, 29);
   // If month has fewer than 29 days (Feb), go to last day
@@ -717,7 +721,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.13.81";
+const APP_VERSION = "1.14.0";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -1037,6 +1041,156 @@ function isTomorrowPayday() {
 }
 
 
+// -- Bank (Monzo, read-only) ----------------------------------------------------
+// The "bank" edge function holds the Monzo keys and tokens and does all the talking to Monzo.
+// The app reads its own accounts, pots and transactions from the bank_* tables, which only
+// answer a signed-in session that has passed two-step (aal2). Nothing here can move money.
+const BANK_LABEL = { uk_retail: "Personal", uk_retail_joint: "Joint" };
+const DAY_MS = 86400000;
+const pounds = p => (Number(p) || 0) / 100;
+const BANK_ERR = {
+  network: "Couldn't reach Vaulted's server. Check your signal and try again.",
+  two_step: "Two-step sign-in is needed first.",
+  forbidden: "Only Glyn can change the Monzo keys.",
+  bad_client_id: "That Client ID doesn't look right. It starts with oauth2client_.",
+  bad_secret: "That Client secret doesn't look right. Copy it again from Monzo.",
+  not_confidential: "That Monzo client isn't Confidential. Make a new one with Confidentiality set to Confidential.",
+  not_configured: "Monzo isn't set up yet.",
+  signin: "Please sign in again.",
+  server: "Something went wrong on the server. Try again in a minute.",
+};
+const BANK_RETURN = {
+  expired: "That Monzo sign-in took too long or was already used. Tap Link Monzo to try again.",
+  cancelled: "Monzo sign-in was cancelled.",
+  noconf: "Your Monzo client isn't Confidential, so the link would stop after 6 hours. Make a Confidential client and save its keys again.",
+  in_use: "That Monzo login is already linked to the other person's Vaulted.",
+  error: "Monzo sign-in didn't work. Please try again.",
+};
+const bankErrText = e => BANK_ERR[e] || BANK_ERR.server;
+// Calls the bank function. Always resolves; failures come back as {error}.
+async function bankCall(action, extra = {}) {
+  try {
+    const { data, error } = await supabase.functions.invoke("bank", { body: { action, ...extra } });
+    if (error) {
+      let body = null;
+      try { if (error.context && typeof error.context.json === "function") body = await error.context.json(); } catch (e) {}
+      return { error: (body && body.error) || "network" };
+    }
+    return data || {};
+  } catch (e) { return { error: "network" }; }
+}
+// Transactions since a time, oldest first, in pages of 1,000. null = the read failed.
+async function bankTxSince(userId, since) {
+  const cols = "tx_id,account_id,created,amount,description,merchant,merchant_id,counterparty,category,scheme,pot_id,dd_id";
+  const out = [];
+  for (let from = 0; from < 20000; from += 1000) {
+    const { data, error } = await supabase.from("bank_transactions").select(cols).eq("user_id", userId).gte("created", since).order("created", { ascending: true }).order("tx_id", { ascending: true }).range(from, from + 999);
+    if (error) return null;
+    out.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return out;
+}
+// "5 min ago".
+function agoText(t, now = Date.now()) {
+  if (!t) return "never";
+  const m = Math.round((now - new Date(t).getTime()) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return m + " min ago";
+  const h = Math.round(m / 60);
+  if (h < 36) return h + (h === 1 ? " hour ago" : " hours ago");
+  return Math.round(h / 24) + " days ago";
+}
+// The pay cycle today is in: from the last payday (on or before today) up to the next one.
+function payCycle(now = new Date()) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let start = getPayday(today.getFullYear(), today.getMonth());
+  if (start > today) start = getPayday(today.getFullYear(), today.getMonth() - 1);
+  return { start, next: getPayday(start.getFullYear(), start.getMonth() + 1) };
+}
+const isPotMove = t => !!t.pot_id || t.scheme === "uk_retail_pot";
+const txWhen = t => new Date(t.created);
+const txName = t => t.merchant || t.counterparty || t.description || "Payment";
+// The same payee each time: its direct debit, its merchant, or its name without numbers.
+function txKey(t) {
+  if (t.dd_id) return "dd:" + t.dd_id;
+  if (t.merchant_id) return "m:" + t.merchant_id;
+  const n = String(t.counterparty || t.description || "").toLowerCase().replace(/[0-9]+/g, "").replace(/\s+/g, " ").trim();
+  return n ? "n:" + n : null;
+}
+const medianOf = a => { const s = [...a].sort((x, y) => x - y); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+// Regular payments out of one account: seen in at least 2 of the last 3 pay cycles and no more
+// than twice a cycle (card payments: once a cycle at a steady amount, so shopping isn't counted).
+// Each comes with its usual day of the month, its latest amount, and whether it's gone out yet
+// this cycle. Moves to and from pots are left out. txns must be oldest first.
+function regularOutgoings(txns, accountId, now = new Date()) {
+  const cyc = payCycle(now);
+  const starts = [cyc.start];
+  for (let k = 1; k <= 3; k++) starts.push(getPayday(cyc.start.getFullYear(), cyc.start.getMonth() - k));
+  const cycleOf = d => {
+    if (d >= cyc.next) return -1;
+    for (let k = 0; k < starts.length; k++) if (d >= starts[k]) return k;
+    return -1;
+  };
+  const groups = new Map();
+  for (const t of txns) {
+    if (t.account_id !== accountId || !(Number(t.amount) < 0) || isPotMove(t)) continue;
+    const c = cycleOf(txWhen(t));
+    const key = c < 0 ? null : txKey(t);
+    if (!key) continue;
+    let g = groups.get(key);
+    if (!g) groups.set(key, g = { per: [[], [], [], []], card: false });
+    g.per[c].push(t);
+    if (t.scheme === "mastercard" || (t.merchant_id && !t.dd_id)) g.card = true;
+  }
+  const out = [];
+  for (const [key, g] of groups) {
+    const past = [g.per[1], g.per[2], g.per[3]];
+    if (past.filter(p => p.length).length < 2) continue;
+    if (past.some(p => p.length > (g.card ? 1 : 2))) continue;
+    const amounts = past.filter(p => p.length).map(p => -Number(p[p.length - 1].amount));
+    if (g.card) { const m = medianOf(amounts); if (amounts.some(a => Math.abs(a - m) > Math.max(100, m * 0.15))) continue; }
+    // Due on its usual day of the month, placed inside this cycle.
+    const days = past.flatMap(p => p.map(t => txWhen(t).getDate()));
+    const wraps = Math.max(...days) - Math.min(...days) > 15;   // e.g. 31st one month, 1st the next
+    let dom = Math.round(medianOf(wraps ? days.map(d => (d < 15 ? d + 31 : d)) : days));
+    if (dom > 31) dom -= 31;
+    const onDay = (y, m) => new Date(y, m, Math.min(dom, new Date(y, m + 1, 0).getDate()));
+    let due = onDay(cyc.start.getFullYear(), cyc.start.getMonth());
+    if (due < cyc.start) due = onDay(cyc.start.getFullYear(), cyc.start.getMonth() + 1);
+    const last = past.find(p => p.length);
+    const latest = last[last.length - 1];
+    out.push({ key, name: txName(latest), amount: -Number(latest.amount), due, paid: g.per[0].length > 0 });
+  }
+  return out.sort((a, b) => a.due - b.due);
+}
+// What's still to go out of one account before the next payday.
+function stillToGo(txns, accountId, now = new Date()) {
+  const { next } = payCycle(now);
+  return regularOutgoings(txns, accountId, now).filter(r => !r.paid && r.due < next);
+}
+// The wage that landed around the latest payday (within a week of it), or a few days early
+// for the next one: £500+ into one of `accounts` (the personal ones) from JLI, or else one Monzo
+// files as income. Transfers from people (Hollie into the joint account, say) never count.
+function findPay(txns, now = new Date(), accounts = null) {
+  const { start, next } = payCycle(now);
+  const pick = pd => {
+    const from = pd.getTime() - 3 * DAY_MS, to = pd.getTime() + 3 * DAY_MS;
+    const c = txns.filter(t => Number(t.amount) >= 50000 && !isPotMove(t) && (!accounts || accounts.includes(t.account_id)) && txWhen(t).getTime() >= from && txWhen(t).getTime() < to);
+    const jli = c.filter(t => /\bjli\b/i.test((t.counterparty || "") + " " + (t.description || "")));
+    const pool = jli.length ? jli : c.filter(t => t.category === "income");
+    if (!pool.length) return null;
+    return pool.reduce((a, b) => (Number(b.amount) > Number(a.amount) ? b : a));
+  };
+  const early = pick(next);
+  if (early) return { tx: early, payday: next };
+  if (now.getTime() - start.getTime() > 8 * DAY_MS) return null;
+  const t = pick(start);
+  return t ? { tx: t, payday: start } : null;
+}
+const lnkStyle = { background: "none", border: "none", color: "#5a6480", fontSize: 11.5, textDecoration: "underline", cursor: "pointer", padding: 0 };
+const miniBtn = { background: "#1e2535", border: "1px solid #2a3050", borderRadius: 6, color: "#8ec5ff", fontSize: 11, fontWeight: 700, padding: "7px 10px", cursor: "pointer", flexShrink: 0 };
+
 // -- Error Boundary -----------------------------------------------------------
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -1235,6 +1389,366 @@ function DiagProbe({ prompt, user }) {
   );
 }
 
+// -- Two-step sign-in (authenticator app) -------------------------------------------
+// Shown after signing in when two-step is on and this phone hasn't had a code yet.
+function TwoStepScreen({ factorId, onDone, onSkip, onSignOut }) {
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (value) => {
+    const c = String(value != null ? value : code).replace(/\D/g, "");
+    if (busy) return;
+    if (c.length !== 6) { setErr("Enter the 6 digits"); return; }
+    setBusy(true); setErr("");
+    let id = factorId;
+    if (!id) { try { const f = await supabase.auth.mfa.listFactors(); id = f.data && f.data.totp[0] && f.data.totp[0].id; } catch (e) {} }
+    const { error } = id ? await supabase.auth.mfa.challengeAndVerify({ factorId: id, code: c }) : { error: { message: "No authenticator found for this account" } };
+    setBusy(false);
+    if (error) { setCode(""); setErr(/invalid|expired|incorrect/i.test(error.message || "") ? "That code didn't work. Try the one showing now." : (error.message || "Couldn't check the code")); return; }
+    haptic("success");
+    onDone();
+  };
+  const lnk = { background: "none", border: "none", color: "#5a6480", cursor: "pointer", fontSize: 12.5, padding: "6px 2px" };
+  return (
+    <div style={{ minHeight: "100vh", background: "#0d0f14", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans','Segoe UI',sans-serif", padding: "24px 20px", color: "#e8eaf0" }}>
+      <div style={{ fontSize: 44, marginBottom: 14 }}>🔐</div>
+      <h1 style={{ margin: "0 0 6px", fontSize: 22, fontWeight: 800, color: "#fff", letterSpacing: 3 }}><span style={{ color: "#4a9eff" }}>V</span>AULTED</h1>
+      <p style={{ color: "#8892b0", fontSize: 13.5, margin: "0 0 22px", textAlign: "center", lineHeight: 1.5, maxWidth: 300 }}>Two-step sign-in: enter the 6-digit code from Google Authenticator.</p>
+      <div style={{ width: "100%", maxWidth: 300 }}>
+        <input autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} placeholder="••••••" aria-label="6-digit code"
+          onChange={e => { const v = e.target.value.replace(/\D/g, "").slice(0, 6); setCode(v); setErr(""); if (v.length === 6) submit(v); }}
+          onKeyDown={e => { if (e.key === "Enter") submit(); }}
+          style={{ width: "100%", boxSizing: "border-box", background: "#141824", border: "1px solid " + (err ? "#ff4a6a" : "#1e2535"), borderRadius: 10, color: "#fff", fontSize: 26, letterSpacing: 8, textAlign: "center", padding: "12px", fontFamily: "inherit", outline: "none" }}/>
+        {err && <div style={{ color: "#ff6b8a", fontSize: 12.5, marginTop: 10, textAlign: "center" }}>{err}</div>}
+        <button onClick={() => submit()} disabled={busy} style={{ width: "100%", marginTop: 14, background: "#4a9eff", border: "none", borderRadius: 10, color: "#000", fontSize: 15, fontWeight: 700, padding: "14px", cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.7 : 1 }}>{busy ? "Checking…" : "Continue"}</button>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12 }}>
+          <button onClick={onSkip} style={lnk}>Not now</button>
+          <button onClick={onSignOut} style={lnk}>Sign out</button>
+        </div>
+        <div style={{ fontSize: 11, color: "#3a4460", marginTop: 14, textAlign: "center", lineHeight: 1.5 }}>"Not now" opens Vaulted with your bank details hidden.</div>
+      </div>
+    </div>
+  );
+}
+
+// Turning two-step on: add Vaulted to Google Authenticator, then type the code it shows.
+function TwoStepSetup({ onDone, onCancel }) {
+  const [f, setF] = useState(null);   // {id, qr, secret, uri}
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [showQr, setShowQr] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        // A half-finished set-up from before would block a new one: clear it first.
+        const l = await supabase.auth.mfa.listFactors();
+        for (const x of ((l.data && l.data.all) || [])) if (x.status !== "verified") await supabase.auth.mfa.unenroll({ factorId: x.id });
+        const { data, error } = await supabase.auth.mfa.enroll({ factorType: "totp", friendlyName: "Vaulted", issuer: "Vaulted" });
+        if (error) throw error;
+        const svg = String((data.totp && data.totp.qr_code) || "").replace(/^data:image\/svg\+xml;utf-8,/, "");
+        if (alive) setF({ id: data.id, qr: svg ? "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg) : null, secret: data.totp.secret, uri: data.totp.uri });
+      } catch (e) { if (alive) setErr((e && e.message) || "Couldn't start two-step"); }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const verify = async (value) => {
+    const c = String(value != null ? value : code).replace(/\D/g, "");
+    if (!f || busy) return;
+    if (c.length !== 6) { setErr("Enter the 6 digits"); return; }
+    setBusy(true); setErr("");
+    const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId: f.id, code: c });
+    setBusy(false);
+    if (error) { setCode(""); setErr(/invalid|expired|incorrect/i.test(error.message || "") ? "That code didn't work. Try the one showing now." : (error.message || "Couldn't check the code")); return; }
+    haptic("success");
+    onDone();
+  };
+  const cancel = async () => { haptic(); if (f) { try { await supabase.auth.mfa.unenroll({ factorId: f.id }); } catch (e) {} } onCancel(); };
+  const copy = async () => { try { await navigator.clipboard.writeText(f.secret); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch (e) {} };
+  const small = { fontSize: 11.5, color: "#5a6480", lineHeight: 1.55 };
+  const step = { fontSize: 12.5, fontWeight: 700, color: "#e8eaf0", margin: "2px 0 6px" };
+  if (err && !f) return <div><div style={{ ...small, color: "#ff6b8a" }}>{err}</div><button onClick={onCancel} style={{ ...lnkStyle, marginTop: 8 }}>Close</button></div>;
+  if (!f) return <div style={small}>Setting up…</div>;
+  return (
+    <div>
+      <div style={step}>1. Add Vaulted to Google Authenticator</div>
+      <a href={f.uri} onClick={() => haptic()} style={{ display: "block", textAlign: "center", textDecoration: "none", background: "#4a9eff", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700, padding: "11px" }}>Open Google Authenticator</a>
+      <div style={{ ...small, marginTop: 8 }}>If that doesn't open it: in Google Authenticator tap <b>+</b> → <b>Enter a setup key</b>, call it Vaulted, and paste this key:</div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+        <code style={{ flex: 1, fontSize: 12, color: "#c8cee0", background: "#0d1117", border: "1px solid #1e2535", borderRadius: 6, padding: "7px 8px", wordBreak: "break-all", letterSpacing: 1 }}>{f.secret}</code>
+        <button onClick={copy} style={miniBtn}>{copied ? "Copied" : "Copy"}</button>
+      </div>
+      {f.qr && <button onClick={() => setShowQr(s => !s)} style={{ ...lnkStyle, marginTop: 8 }}>{showQr ? "Hide the QR code" : "Show a QR code (to scan from another phone)"}</button>}
+      {showQr && f.qr && <div style={{ background: "#fff", borderRadius: 8, padding: 10, marginTop: 8, textAlign: "center" }}><img src={f.qr} alt="QR code for Google Authenticator" style={{ width: 180, height: 180 }}/></div>}
+      <div style={{ ...step, marginTop: 14 }}>2. Type the 6-digit code it shows</div>
+      <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} placeholder="••••••" aria-label="6-digit code"
+        onChange={e => { const v = e.target.value.replace(/\D/g, "").slice(0, 6); setCode(v); setErr(""); if (v.length === 6) verify(v); }}
+        style={{ width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid " + (err ? "#ff4a6a" : "#1e2535"), borderRadius: 8, color: "#fff", fontSize: 20, letterSpacing: 6, textAlign: "center", padding: "10px", fontFamily: "inherit", outline: "none" }}/>
+      {err && <div style={{ color: "#ff6b8a", fontSize: 12, marginTop: 6 }}>{err}</div>}
+      <button onClick={() => verify()} disabled={busy} style={{ width: "100%", marginTop: 10, background: "#00c88c", border: "none", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700, padding: "11px", cursor: "pointer", opacity: busy ? 0.7 : 1 }}>{busy ? "Checking…" : "Turn on two-step"}</button>
+      <button onClick={cancel} style={{ ...lnkStyle, marginTop: 10 }}>Cancel</button>
+    </div>
+  );
+}
+
+// Diag → Bank & two-step. Everything bank-related starts from here; nothing is pushed at anyone.
+function BankSettings({ isOwner, mfa, onMfaChanged, onEnterCode, bank, reloadBank, onWatch, onSigningIn }) {
+  const [st, setSt] = useState(null);          // the bank function's status
+  const [busy, setBusy] = useState("");        // which button is working
+  const [msg, setMsg] = useState(null);        // {ok, text}
+  const [setup2fa, setSetup2fa] = useState(false);
+  const [keys, setKeys] = useState({ id: "", secret: "", open: false });
+  const [copied, setCopied] = useState(false);
+  const aal2 = mfa.level === "aal2";
+  const loadStatus = useCallback(async () => { setSt(await bankCall("status")); }, []);
+  useEffect(() => { if (mfa.hasFactor) loadStatus(); }, [mfa.hasFactor, mfa.level, loadStatus]);
+  const run = async (name, fn) => { if (busy) return; setBusy(name); setMsg(null); try { await fn(); } finally { setBusy(""); } };
+  const saveKeys = () => run("keys", async () => {
+    const r = await bankCall("config", { clientId: keys.id.trim(), clientSecret: keys.secret.trim() });
+    if (r.error) { setMsg({ ok: false, text: bankErrText(r.error) }); return; }
+    haptic("success");
+    setKeys({ id: "", secret: "", open: false });
+    setMsg({ ok: true, text: "Keys saved. Now tap Link Monzo." });
+    await loadStatus();
+  });
+  // Monzo's sign-in opens in its own tab, so Vaulted stays here and follows along.
+  const link = () => run("link", async () => {
+    const r = await bankCall("link");
+    if (!r.url) { setMsg({ ok: false, text: bankErrText(r.error) }); return; }
+    const w = window.open(r.url, "_blank");
+    if (w) { try { w.opener = null; } catch (e) {} onSigningIn(); return; }
+    window.location.href = r.url;   // pop-ups blocked: go there in this window instead
+    await new Promise(res => setTimeout(res, 4000));
+  });
+  const refresh = () => run("sync", async () => {
+    const r = await bankCall("sync");
+    if (r.status === "ok") { setMsg({ ok: true, text: "Up to date." }); await reloadBank(); }
+    else if (r.status === "busy") setMsg({ ok: true, text: "Already updating. Give it a moment." });
+    else if (r.error) setMsg({ ok: false, text: bankErrText(r.error) });
+    await loadStatus();
+  });
+  const unlink = () => {
+    if (!window.confirm("Unlink Monzo? Vaulted forgets your accounts and transactions. You can link again any time.")) return;
+    run("unlink", async () => {
+      const r = await bankCall("unlink");
+      if (r.error) { setMsg({ ok: false, text: bankErrText(r.error) }); return; }
+      setMsg({ ok: true, text: "Unlinked. Vaulted has forgotten your bank details." });
+      await reloadBank(); await loadStatus();
+    });
+  };
+  // Turning two-step off unlinks Monzo first: with no code left, a password alone could set up
+  // a new one and get at the bank details.
+  const turnOff = () => {
+    const linked = !!(st && !st.error && st.linked);
+    if (!window.confirm(linked ? "Turn off two-step? This also unlinks Monzo and forgets your bank details." : "Turn off two-step?")) return;
+    run("off", async () => {
+      if (linked) {
+        const r = await bankCall("unlink");
+        if (r.error) { setMsg({ ok: false, text: "Couldn't unlink Monzo, so two-step is still on. " + bankErrText(r.error) }); return; }
+      }
+      let failed = false;
+      try {
+        const l = await supabase.auth.mfa.listFactors();
+        for (const x of ((l.data && l.data.all) || [])) { const { error } = await supabase.auth.mfa.unenroll({ factorId: x.id }); if (error) failed = true; }
+        await supabase.auth.refreshSession();
+      } catch (e) { failed = true; }
+      setMsg(failed ? { ok: false, text: "Couldn't turn two-step off. Please try again." } : { ok: true, text: linked ? "Monzo unlinked and two-step is off." : "Two-step is off." });
+      await onMfaChanged(); await reloadBank(); await loadStatus();
+    });
+  };
+  const copyRedirect = async () => { try { await navigator.clipboard.writeText(st.redirect); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch (e) {} };
+  const box = { background: "#111520", border: "1px solid #1e2535", borderRadius: 8, padding: "11px 12px", marginBottom: 10 };
+  const h = { fontSize: 13, fontWeight: 700, color: "#e8eaf0", marginBottom: 4 };
+  const small = { fontSize: 11.5, color: "#5a6480", lineHeight: 1.55 };
+  const btn = { width: "100%", background: "#4a9eff", border: "none", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700, padding: "11px", cursor: "pointer" };
+  const btn2 = { flex: 1, background: "#1e2535", border: "none", borderRadius: 8, color: "#8ec5ff", fontSize: 12, fontWeight: 700, padding: "10px", cursor: "pointer" };
+  const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #1e2535", borderRadius: 8, color: "#e8eaf0", fontSize: 13, padding: "10px 12px", fontFamily: "inherit", marginTop: 8 };
+  const ready = !!(st && !st.error);
+  const recent = ready && st.authorisedAt && Date.now() - Date.parse(st.authorisedAt) < 20 * 60000;
+  const again = ready && st.approvedAt ? new Date(Date.parse(st.approvedAt) + 90 * DAY_MS) : null;
+  const keysOk = keys.id.trim() && keys.secret.trim();
+  const linkBtn = label => <button onClick={link} disabled={!!busy} style={{ ...btn, marginTop: 10, opacity: busy ? 0.7 : 1 }}>{busy === "link" ? "Opening Monzo…" : label}</button>;
+  return (
+    <div>
+      <div style={box}>
+        {!mfa.hasFactor && !setup2fa && <>
+          <div style={h}>Two-step sign-in: off</div>
+          <div style={small}>Needed before a bank can be linked. You'd type a code from Google Authenticator only when signing in on a new phone or after signing out.</div>
+          <button onClick={() => { haptic(); setMsg(null); setSetup2fa(true); }} style={{ ...btn, marginTop: 10 }}>Turn on two-step</button>
+        </>}
+        {!mfa.hasFactor && setup2fa && <TwoStepSetup onDone={async () => { setSetup2fa(false); setMsg({ ok: true, text: "Two-step is on. Turning it on signs you out everywhere else, so sign back in to Vitals and Trolley (password only)." }); await onMfaChanged(); }} onCancel={() => setSetup2fa(false)}/>}
+        {mfa.hasFactor && !aal2 && <>
+          <div style={h}>Two-step sign-in: on</div>
+          <div style={small}>Enter your code to see bank details on this phone.</div>
+          <button onClick={() => { haptic(); onEnterCode(); }} style={{ ...btn, marginTop: 10 }}>Enter code</button>
+        </>}
+        {mfa.hasFactor && aal2 && <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div><div style={h}>Two-step sign-in: on ✓</div><div style={small}>Codes come from Google Authenticator.</div></div>
+          <button onClick={turnOff} disabled={!!busy} style={lnkStyle}>Turn off</button>
+        </div>}
+      </div>
+
+      {mfa.hasFactor && aal2 && <div style={box}>
+        <div style={h}>🏦 Monzo</div>
+        {!st && <div style={small}>Checking…</div>}
+        {st && st.error && <div style={{ ...small, color: "#ff6b8a" }}>{bankErrText(st.error)} <button onClick={loadStatus} style={lnkStyle}>Try again</button></div>}
+        {ready && (!st.configured || keys.open) && (st.canConfigure ? <>
+          <div style={small}>One-off setup (free):</div>
+          <ol style={{ ...small, paddingLeft: 18, margin: "6px 0 8px" }}>
+            <li>Go to <b>developers.monzo.com</b> and sign in with your Monzo email, approving it in the Monzo app.</li>
+            <li>Tap <b>Clients</b> → <b>New OAuth Client</b>. Name: Vaulted. Confidentiality: <b>Confidential</b>. Redirect URL:</li>
+          </ol>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <code style={{ flex: 1, fontSize: 10.5, color: "#c8cee0", background: "#0d1117", border: "1px solid #1e2535", borderRadius: 6, padding: "7px 8px", wordBreak: "break-all" }}>{st.redirect}</code>
+            <button onClick={copyRedirect} style={miniBtn}>{copied ? "Copied" : "Copy"}</button>
+          </div>
+          <div style={{ ...small, marginTop: 8 }}>3. Paste the Client ID and Client secret here. They're kept on Vaulted's server only and never shown again.</div>
+          <input value={keys.id} onChange={e => setKeys(k => ({ ...k, id: e.target.value }))} placeholder="Client ID (oauth2client_…)" autoCapitalize="off" autoCorrect="off" spellCheck={false} style={inp}/>
+          <input type="password" value={keys.secret} onChange={e => setKeys(k => ({ ...k, secret: e.target.value }))} placeholder="Client secret" autoComplete="off" style={inp}/>
+          <button onClick={saveKeys} disabled={!!busy || !keysOk} style={{ ...btn, marginTop: 10, opacity: (busy || !keysOk) ? 0.5 : 1 }}>{busy === "keys" ? "Saving…" : "Save keys"}</button>
+          {st.configured && <button onClick={() => setKeys({ id: "", secret: "", open: false })} style={{ ...lnkStyle, marginTop: 10 }}>Cancel</button>}
+        </> : <div style={small}>Monzo isn't set up yet.</div>)}
+        {ready && st.configured && !keys.open && !st.linked && <>
+          <div style={small}>{isOwner ? "Link your Monzo to see what's really left before payday, check your pay lands right, and show your pots on the Move tab." : "Optional: link your own Monzo. Only you would see it."} Read-only: Vaulted can't move money.</div>
+          {linkBtn("Link Monzo")}
+          <div style={{ ...small, marginTop: 8 }}>Monzo emails you a link: open it, then approve Vaulted in the Monzo app.</div>
+          {st.canConfigure && <button onClick={() => setKeys(k => ({ ...k, open: true }))} style={{ ...lnkStyle, marginTop: 10 }}>Change Monzo keys</button>}
+        </>}
+        {ready && st.configured && !keys.open && st.linked && <>
+          {st.status === "approve" && recent && <>
+            <div style={small}>Waiting for you to approve Vaulted in the Monzo app.</div>
+            <button onClick={() => { haptic(); onWatch(); }} style={{ ...btn, marginTop: 10 }}>I've approved it</button>
+          </>}
+          {st.status === "approve" && !recent && <>
+            <div style={{ ...small, color: "#ffb84a" }}>Monzo wants you to approve Vaulted again (it asks every 90 days).</div>
+            {linkBtn("Approve again")}
+          </>}
+          {st.status === "reauth" && <>
+            <div style={{ ...small, color: "#ffb84a" }}>The Monzo link has stopped working.</div>
+            {linkBtn("Link again")}
+          </>}
+          {st.status === "ok" && <>
+            {bank.accounts.map(a => (
+              <div key={a.account_id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "5px 0", borderBottom: "1px solid #1a1f2e" }}>
+                <span style={{ color: "#8892b0" }}>{BANK_LABEL[a.type] || "Account"}</span>
+                <span style={{ color: "#e8eaf0", fontWeight: 700 }}>{fmtS(pounds(a.balance))}</span>
+              </div>
+            ))}
+            {st.monzoName && <div style={{ ...small, marginTop: 8 }}>Linked to {st.monzoName}'s Monzo</div>}
+            <div style={{ ...small, marginTop: st.monzoName ? 2 : 8 }}>Updated {agoText(st.lastSync)}{again ? ` · Monzo will ask you to approve again around ${again.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}` : ""}</div>
+            {st.problem && <div style={{ ...small, color: "#ffb84a", marginTop: 4 }}>Last problem: {st.problem}</div>}
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button onClick={refresh} disabled={!!busy} style={btn2}>{busy === "sync" ? "Updating…" : "🔄 Update now"}</button>
+              <button onClick={unlink} disabled={!!busy} style={{ ...btn2, color: "#ff6b8a" }}>{busy === "unlink" ? "Unlinking…" : "Unlink"}</button>
+            </div>
+          </>}
+          {st.status !== "ok" && <button onClick={unlink} disabled={!!busy} style={{ ...lnkStyle, marginTop: 10 }}>Unlink</button>}
+        </>}
+      </div>}
+      {msg && <div style={{ fontSize: 12, color: msg.ok ? "#00c88c" : "#ff6b8a", lineHeight: 1.5 }}>{msg.text}</div>}
+    </div>
+  );
+}
+
+// Progress while linking Monzo: waits for the approval in the Monzo app, then the first fetch.
+function BankLinkSheet({ sheet, aal2, onEnterCode, onClose }) {
+  const r = sheet.result || {};
+  let icon = "🏦", title = "Linking Monzo", body, button = null;
+  if (sheet.phase === "signin") body = "In the Monzo page that opened: enter your email, open the link Monzo emails you, then approve Vaulted in the Monzo app. Vaulted carries on by itself.";
+  else if (sheet.phase === "wait" && !aal2) { body = "Enter your two-step code to finish linking."; button = ["Enter code", onEnterCode]; }
+  else if (sheet.phase === "wait") body = sheet.busy ? "Approved ✓ Fetching your accounts and history…" : "Now open the Monzo app and approve Vaulted (fingerprint or PIN). This carries on by itself.";
+  else if (sheet.phase === "done") {
+    icon = "✅"; title = "Monzo linked";
+    const since = r.fullHistory && r.from ? " back to " + new Date(r.from).toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "";
+    body = `${r.accounts || 0} account${r.accounts === 1 ? "" : "s"} · ${Number(r.added || 0).toLocaleString("en-GB")} transactions${since}.`;
+    button = ["Done", onClose];
+  } else { icon = "⚠️"; title = "Monzo"; body = sheet.msg || BANK_RETURN.error; button = ["Close", onClose]; }
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 400, background: "#000a", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div role="dialog" aria-label={title} style={{ width: "100%", maxWidth: 520, background: "#141824", borderTop: "1px solid #2a3050", borderRadius: "16px 16px 0 0", padding: "20px 18px calc(22px + env(safe-area-inset-bottom))", boxSizing: "border-box", textAlign: "center" }}>
+        <div style={{ fontSize: 34 }}>{icon}</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: "#e8eaf0", marginTop: 6 }}>{title}</div>
+        <div style={{ fontSize: 13, color: "#8892b0", marginTop: 8, lineHeight: 1.55 }}>{body}</div>
+        {((sheet.phase === "wait" && aal2) || sheet.phase === "signin") && <div style={{ fontSize: 11, color: "#3a4460", marginTop: 10 }}>Checking every few seconds…</div>}
+        {button && <button onClick={() => { haptic(); button[1](); }} style={{ width: "100%", marginTop: 16, background: "#4a9eff", border: "none", borderRadius: 10, color: "#000", fontSize: 14, fontWeight: 700, padding: "13px", cursor: "pointer" }}>{button[0]}</button>}
+        {(sheet.phase === "wait" || sheet.phase === "signin") && <button onClick={() => { haptic(); onClose(); }} style={{ ...lnkStyle, marginTop: 14 }}>Hide</button>}
+      </div>
+    </div>
+  );
+}
+
+// Dashboard: the wage that just landed, and what's really left before payday.
+function BankCards({ left, pay, locked, attention, onDismissPay, onUnlock, onOpenBank }) {
+  const [open, setOpen] = useState(false);
+  const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
+  const lab = { fontSize: 11, color: "#5a6480", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
+  const dshort = d => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+  let payBox = null;
+  if (pay) {
+    const ref = pay.slipNet != null ? pay.slipNet : pay.est ? pay.est.net : null;
+    const diff = ref == null ? null : Math.round((pay.landed - ref) * 100) / 100;
+    const match = diff != null && Math.abs(diff) <= 1;
+    const what = pay.slipNet != null ? "your payslip" : "Vaulted's estimate";
+    payBox = (
+      <div style={{ ...card, border: "1px solid " + (diff == null ? "#1e2535" : match ? "#1a4030" : "#4a3a1a") }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+          <div style={lab}>💷 Pay landed · {dshort(pay.when)}</div>
+          <button onClick={onDismissPay} aria-label="Dismiss" style={{ background: "none", border: "none", color: "#3a4460", fontSize: 15, cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>✕</button>
+        </div>
+        <div style={{ fontSize: 24, fontWeight: 800, color: "#e8eaf0", marginTop: 4 }}>{fmt(pay.landed)}</div>
+        {pay.payer && <div style={{ fontSize: 11, color: "#5a6480", marginTop: 2 }}>from {pay.payer}</div>}
+        {ref != null && <div style={{ fontSize: 12.5, marginTop: 8, color: match ? "#00c88c" : "#ffb84a", fontWeight: 600 }}>
+          {match ? `✓ Matches ${what}` : `${fmt(Math.abs(diff))} ${diff > 0 ? "more" : "less"} than ${what}`} <span style={{ color: "#5a6480", fontWeight: 500 }}>({fmt(ref)})</span>
+        </div>}
+        {pay.slipNet == null && pay.est && !pay.est.complete && <div style={{ fontSize: 10.5, color: "#5a6480", marginTop: 4 }}>The estimate is missing some timesheet days.</div>}
+      </div>
+    );
+  }
+  const n = left ? left.rows.reduce((s, r) => s + r.due.length, 0) : 0;
+  return (<>
+    {locked && <div onClick={onUnlock} style={{ ...card, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+      <span style={{ fontSize: 18 }}>🔒</span>
+      <div style={{ flex: 1, fontSize: 12.5, color: "#8892b0" }}>Enter your two-step code to see your Monzo balance</div>
+      <span style={{ fontSize: 11, color: "#4a9eff", fontWeight: 700 }}>Unlock →</span>
+    </div>}
+    {attention && <div onClick={onOpenBank} style={{ ...card, background: "#1a1500", border: "1px solid #ffb84a", display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+      <span style={{ fontSize: 18 }}>🏦</span>
+      <div style={{ flex: 1, fontSize: 12.5, color: "#ffb84a" }}>{attention}</div>
+    </div>}
+    {payBox}
+    {left && <div style={{ ...card, cursor: "pointer" }} onClick={() => { haptic(); setOpen(o => !o); }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+        <div style={lab}>💰 What's really left</div>
+        <div style={{ fontSize: 11, color: "#5a6480" }}>to payday {dshort(left.next)}</div>
+      </div>
+      {left.rows.map((r, i) => (
+        <div key={r.id} style={{ marginTop: i ? 10 : 6, paddingTop: i ? 10 : 0, borderTop: i ? "1px solid #1a1f2e" : "none" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+            <span style={{ fontSize: 12, color: "#8892b0", fontWeight: 600 }}>{r.label}</span>
+            <span style={{ fontSize: i ? 17 : 24, fontWeight: 800, color: r.left >= 0 ? "#00c88c" : "#ff4a6a" }}>{fmtS(pounds(r.left))}</span>
+          </div>
+          <div style={{ fontSize: 11, color: "#5a6480", marginTop: 2, textAlign: "right" }}>{fmtS(pounds(r.balance))} now − {fmt(pounds(r.dueTotal))} still to go</div>
+        </div>
+      ))}
+      <div style={{ fontSize: 11.5, color: "#4a9eff", marginTop: 10 }}>{n ? `${open ? "▾" : "▸"} ${n} regular payment${n === 1 ? "" : "s"} still to go` : "Nothing regular left to go out before payday"}</div>
+      {open && left.rows.map(r => r.due.length > 0 && (
+        <div key={"d" + r.id} style={{ marginTop: 6 }}>
+          {left.rows.length > 1 && <div style={{ fontSize: 10, color: "#5a6480", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, margin: "6px 0 2px" }}>{r.label}</div>}
+          {r.due.map(d => (
+            <div key={d.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, padding: "3px 0" }}>
+              <span style={{ color: "#8892b0", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span style={{ color: "#5a6480" }}>{d.due.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span> {d.name}</span>
+              <span style={{ color: "#e8eaf0", fontWeight: 600, flexShrink: 0 }}>{fmt(pounds(d.amount))}</span>
+            </div>
+          ))}
+        </div>
+      ))}
+      <div style={{ fontSize: 10, color: "#3a4460", marginTop: 8 }}>Monzo · updated {agoText(left.updated)} · regular payments spotted over the last 3 months</div>
+    </div>}
+  </>);
+}
+
 export default function App() {
   const [tab,setTab]=useState("Dashboard");
   const [isOwner,setIsOwner]=useState(true);   // false = partner (Hollie): restricted view
@@ -1365,6 +1879,127 @@ export default function App() {
     return () => { subscription.unsubscribe(); clearInterval(interval); };
   }, []);
 
+  // -- Two-step and bank (Monzo) ---------------------------------------------
+  // mfa.need = two-step is on for this login but this phone hasn't had a code yet (a new phone,
+  // or after signing out). "Not now" opens the app with bank details hidden.
+  const [mfa,setMfa]=useState({checked:false,level:null,hasFactor:false,factorId:null,need:false,skipped:false});
+  const checkMfa=useCallback(async()=>{
+    let level=null,hasFactor=false,factorId=null;
+    try{
+      const a=await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if(a&&a.data){level=a.data.currentLevel;hasFactor=a.data.nextLevel==="aal2";}
+      // Asked fresh from the server, in case two-step was turned on from another phone.
+      const f=await Promise.race([supabase.auth.mfa.listFactors(),new Promise(r=>setTimeout(()=>r(null),4000))]);
+      if(f&&f.data&&!f.error){const v=f.data.totp||[];hasFactor=v.length>0;factorId=v[0]?v[0].id:null;}
+    }catch(e){}
+    setMfa(m=>({checked:true,level,hasFactor,factorId,need:hasFactor&&level!=="aal2"&&!m.skipped,skipped:m.skipped}));
+  },[]);
+  const [bank,setBank]=useState({accounts:[],pots:[],txns:[],link:null});
+  const bankSyncAt=useRef(0);
+  const loadBankRef=useRef(null);
+  const [linkSheet,setLinkSheet]=useState(null);   // Monzo linking progress
+  const [bankReturn,setBankReturn]=useState(()=>{try{const v=new URLSearchParams(window.location.search).get("bank");return v&&/^[a-z]{2,12}$/.test(v)?v:null;}catch(e){return null;}});
+  const [paySeen,setPaySeen]=useState(()=>loadText(SK.paySeen));
+  // Bank details for whoever's signed in, only with two-step on and a Monzo link. When what's
+  // stored is over half an hour old it quietly asks the server to fetch from Monzo.
+  const loadBank=useCallback(async(opts={})=>{
+    if(!user)return;
+    let aal=null;
+    try{aal=(await supabase.auth.mfa.getAuthenticatorAssuranceLevel()).data;}catch(e){}
+    if(!aal||aal.nextLevel!=="aal2"){setBank({accounts:[],pots:[],txns:[],link:null});return;}   // no two-step, no bank
+    const st=await bankCall("status");
+    if(st&&st.error){   // couldn't check: keep what's showing
+      if(aal.currentLevel!=="aal2")return;
+    }
+    const link=st&&!st.error?st:null;
+    if(aal.currentLevel!=="aal2"||(link&&!link.linked)){setBank({accounts:[],pots:[],txns:[],link});return;}
+    const since=new Date(Date.now()-130*DAY_MS).toISOString();
+    const [acc,pots,txns]=await Promise.all([
+      supabase.from("bank_accounts").select("account_id,type,balance,total_balance,closed,updated_at").eq("user_id",user.id),
+      supabase.from("bank_pots").select("pot_id,account_id,name,balance,goal_amount,deleted,updated_at").eq("user_id",user.id),
+      bankTxSince(user.id,since),
+    ]);
+    if(acc.error||pots.error||!txns){setBank(b=>({...b,link:link||b.link}));return;}
+    const accounts=(acc.data||[]).filter(a=>!a.closed&&BANK_LABEL[a.type]).sort((a,b)=>(a.type==="uk_retail"?0:1)-(b.type==="uk_retail"?0:1));
+    setBank(b=>({accounts,pots:(pots.data||[]).filter(p=>!p.deleted),txns,link:link||b.link}));
+    const newest=Math.max(0,...accounts.map(a=>Date.parse(a.updated_at)||0));
+    if(!opts.noSync&&link&&link.status==="ok"&&Date.now()-newest>30*60000&&Date.now()-bankSyncAt.current>10*60000){
+      bankSyncAt.current=Date.now();
+      const r=await bankCall("sync");
+      if(r&&r.status==="ok"&&loadBankRef.current)loadBankRef.current({noSync:true});
+      else if(r&&r.status)setBank(b=>({...b,link:b.link?{...b.link,status:r.status}:b.link}));
+    }
+  },[user]);
+  loadBankRef.current=loadBank;
+  React.useEffect(()=>{
+    if(!user){setMfa({checked:false,level:null,hasFactor:false,factorId:null,need:false,skipped:false});setBank({accounts:[],pots:[],txns:[],link:null});setLinkSheet(null);return;}
+    checkMfa();
+  },[user,checkMfa]);
+  React.useEffect(()=>{
+    if(user&&mfa.checked&&!mfa.need&&loadBankRef.current)loadBankRef.current();
+  },[user,mfa.checked,mfa.need,mfa.level,mfa.hasFactor]);
+  // Back from Monzo's sign-in (?bank=…): tidy the address, then act on it once signed in.
+  React.useEffect(()=>{
+    if(!bankReturn)return;
+    try{const u=new URL(window.location.href);u.searchParams.delete("bank");window.history.replaceState(null,"",u.pathname+u.search+u.hash);}catch(e){}
+  },[]);
+  React.useEffect(()=>{
+    if(!bankReturn||!user||!mfa.checked||mfa.need)return;
+    setLinkSheet(bankReturn==="approve"?{phase:"wait"}:{phase:"error",msg:BANK_RETURN[bankReturn]||BANK_RETURN.error});
+    setBankReturn(null);
+  },[bankReturn,user,mfa.checked,mfa.need]);
+  // Monzo's sign-in is open in another tab: watch for it to come back (the sign-in time on the
+  // server changes), then wait for the approval.
+  const linkSigningIn=!!(linkSheet&&linkSheet.phase==="signin");
+  React.useEffect(()=>{
+    if(!linkSigningIn||!user)return;
+    let stop=false,running=false,timer=null,first=null,tries=0;
+    const tick=async()=>{
+      if(stop||running)return;
+      running=true;clearTimeout(timer);
+      let st;
+      try{st=await bankCall("status");}finally{running=false;}
+      if(stop)return;
+      tries++;
+      if(st&&!st.error){
+        if(first===null)first=st.authorisedAt||"";
+        else if((st.authorisedAt||"")!==first&&st.linked&&(st.status==="approve"||st.status==="ok")){setLinkSheet({phase:"wait"});return;}
+      }
+      if(tries>=300){setLinkSheet({phase:"error",msg:"The Monzo sign-in didn't finish. Tap Link Monzo in Diag → Bank & two-step to try again."});return;}
+      timer=setTimeout(tick,4000);
+    };
+    tick();
+    const onVis=()=>{if(!document.hidden)tick();};
+    document.addEventListener("visibilitychange",onVis);
+    return()=>{stop=true;clearTimeout(timer);document.removeEventListener("visibilitychange",onVis);};
+  },[linkSigningIn,user]);
+  // While the linking sheet waits: ask every few seconds (and straight away on coming back to
+  // the app) until Monzo says it's approved and the first fetch is done.
+  const linkWaiting=!!(linkSheet&&linkSheet.phase==="wait");
+  const mfaAal2=mfa.level==="aal2";
+  React.useEffect(()=>{
+    if(!linkWaiting||!user||!mfaAal2)return;
+    let stop=false,running=false,tries=0,timer=null;
+    const tick=async()=>{
+      if(stop||running)return;
+      running=true;clearTimeout(timer);
+      let r;
+      try{r=await bankCall("sync");}finally{running=false;}
+      if(stop)return;
+      tries++;
+      if(r.status==="ok"){haptic("success");setLinkSheet({phase:"done",result:r});if(loadBankRef.current)loadBankRef.current({noSync:true});return;}
+      if(r.status==="reauth"||r.linked===false){setLinkSheet({phase:"error",msg:"The Monzo link didn't complete. Tap Link Monzo in Diag → Bank & two-step to try again."});return;}
+      if(r.error&&r.error!=="network"){setLinkSheet({phase:"error",msg:bankErrText(r.error)});return;}
+      if(tries>=150){setLinkSheet({phase:"error",msg:"Still waiting for approval. Approve Vaulted in the Monzo app, then tap \"I've approved it\" in Diag → Bank & two-step."});return;}
+      if(r.status==="busy")setLinkSheet(s=>s&&s.phase==="wait"&&!s.busy?{...s,busy:true}:s);
+      timer=setTimeout(tick,4000);
+    };
+    tick();
+    const onVis=()=>{if(!document.hidden)tick();};
+    document.addEventListener("visibilitychange",onVis);
+    return()=>{stop=true;clearTimeout(timer);document.removeEventListener("visibilitychange",onVis);};
+  },[linkWaiting,user,mfaAal2]);
+
   // Partner (Hollie) restricted view: keep her on allowed tabs only
   React.useEffect(() => {
     if (!isOwner) {
@@ -1478,6 +2113,7 @@ export default function App() {
         }
       }
 
+      if (silent && loadBankRef.current) loadBankRef.current();
       if (!silent) await requestAndSaveNotifPerm();
     } catch(e) { console.error("Data load error:", e); }
     if (!silent) setDataLoading(false);
@@ -2216,6 +2852,7 @@ export default function App() {
   const [showDiagTimesheets,setShowDiagTimesheets]=useState(true);
   const [showDiagAccount,setShowDiagAccount]=useState(false);
   const [showDiagBackup,setShowDiagBackup]=useState(false);
+  const [showDiagBank,setShowDiagBank]=useState(false);
   const [tsMsg,setTsMsg]=useState(null);
   const [showBackups,setShowBackups]=useState(false);
   const [backupList,setBackupList]=useState([]);
@@ -3233,6 +3870,45 @@ const calcTimesheetTotals = days => {
     return {date:pd.toLocaleDateString("en-GB",{day:"numeric",month:"short"}),days};
   },[nowTick]);
 
+  // Bank: what's left before payday on each account, and the wage that landed.
+  const bankLeft=useMemo(()=>{
+    if(!bank.accounts.length)return null;
+    const now=new Date(nowTick);
+    const rows=bank.accounts.map(a=>{
+      const due=stillToGo(bank.txns,a.account_id,now);
+      const dueTotal=due.reduce((s,r)=>s+r.amount,0);
+      const balance=Number(a.balance)||0;
+      return {id:a.account_id,label:BANK_LABEL[a.type],balance,due,dueTotal,left:balance-dueTotal};
+    });
+    const updated=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
+    return {rows,next:payCycle(now).next,updated};
+  },[bank,nowTick]);
+  const bankPay=useMemo(()=>{
+    if(!isOwner||!bank.txns.length)return null;
+    const personal=bank.accounts.filter(a=>a.type==="uk_retail").map(a=>a.account_id);
+    const p=findPay(bank.txns,new Date(nowTick),personal.length?personal:null);
+    if(!p||p.tx.tx_id===paySeen)return null;
+    const payMonth=MONTHS[p.payday.getMonth()]+" "+p.payday.getFullYear();
+    const slip=history.find(h=>h.month===payMonth);
+    let est=null;
+    try{
+      // The same model as the payslip check: that month's paid hours from the timesheets, the
+      // allowance at the previous payslip's tier, and the Pay Calc's bonus.
+      const y=p.payday.getFullYear(),mi=p.payday.getMonth();
+      const hrs=payrollHours([...monthlyTs.flatMap(t=>t.days||[]),...(accumulated.days||[])],payMonth);
+      const prev=new Date(y,mi-1,1);
+      const prevSlip=history.find(h=>h.month===MONTHS[prev.getMonth()]+" "+prev.getFullYear());
+      const rate=getRateFor(payMonth);
+      const e=calcPay({...hrs,bonus:Number(ci.bonus)||0,
+        _allowanceOverride:prevSlip?getAllowanceForBonus(prevSlip.bonus||0):effectiveAllowance,
+        _rateOverride:{baseRate:rate.baseRate,otRate:rate.otRate,weekendOtRate:rate.weekendOtRate},
+        _slThreshold:slThresholdFor(new Date(y,mi,28))});
+      est={net:Math.round(e.net*100)/100,complete:hrs.complete};
+    }catch(e){}
+    return {id:p.tx.tx_id,when:new Date(p.tx.created),landed:pounds(p.tx.amount),payer:p.tx.counterparty||p.tx.merchant||p.tx.description||"",
+      slipNet:slip?Number(slip.net):null,est};
+  },[isOwner,bank.txns,bank.accounts,nowTick,paySeen,history,monthlyTs,accumulated.days,ci.bonus,effectiveAllowance]);
+
   const slProgress=useMemo(()=>{
     const elapsed=new Date().getFullYear()-SL_START_YEAR;
     const total=SL_WRITEOFF_YEAR-SL_START_YEAR;
@@ -3259,8 +3935,16 @@ const calcTimesheetTotals = days => {
     return <LoginScreen onLogin={u => setUser(u)} />;
   }
 
+  // Two-step is on for this login and this phone hasn't had a code yet
+  if (mfa.need) {
+    return <TwoStepScreen factorId={mfa.factorId}
+      onDone={()=>{setMfa(m=>({...m,need:false,skipped:false,level:"aal2"}));checkMfa();}}
+      onSkip={()=>setMfa(m=>({...m,need:false,skipped:true}))}
+      onSignOut={handleSignOut}/>;
+  }
+
   // Data loading - show skeleton matching dashboard shape
-  if (dataLoading) {
+  if (dataLoading || !mfa.checked) {
     const skBox = { background:"#141824", borderRadius:12, border:"1px solid #1e2535", animation:"pulse 1.5s ease-in-out infinite" };
     return (
       <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:80}}>
@@ -3286,6 +3970,11 @@ const calcTimesheetTotals = days => {
   }
 
 
+  const bankLinkInfo=bank.link&&bank.link.linked?bank.link:null;
+  const bankAttention=!bankLinkInfo||!mfaAal2||linkSheet?null
+    :bankLinkInfo.status==="reauth"?"Your Monzo link has stopped. Tap to link it again."
+    :bankLinkInfo.status==="approve"&&!(bankLinkInfo.authorisedAt&&Date.now()-Date.parse(bankLinkInfo.authorisedAt)<20*60000)?"Monzo wants you to approve Vaulted again (it asks every 90 days). Tap to do it."
+    :null;
   const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Pay Calc","Settle Up","Gifts"];
   const secondaryTabs = isOwner ? [...SECONDARY_TABS, ...(showHiddenTabs ? HIDDEN_TABS : [])] : ["Move","Diag"];
   const sheetOpen = showMore||!!moveBill||catsOpen||schedOpen||giftOpen||settleOpen||moveCatsOpen;
@@ -3372,6 +4061,12 @@ const calcTimesheetTotals = days => {
                 </div>
               </div>
             )}
+            <BankCards left={bankLeft} pay={bankPay}
+              locked={mfa.hasFactor&&!mfaAal2&&!!bankLinkInfo}
+              attention={bankAttention}
+              onDismissPay={()=>{haptic();if(bankPay){setPaySeen(bankPay.id);save(SK.paySeen,bankPay.id);}}}
+              onUnlock={()=>{haptic();setMfa(m=>({...m,need:true,skipped:false}));}}
+              onOpenBank={()=>{haptic();setShowDiagBank(true);setTab("Diag");window.scrollTo(0,0);}}/>
             {missingMonths.length>0&&(
               <div style={{background:"#1a0f1a",border:"1px solid #c84aff",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
@@ -5250,6 +5945,28 @@ const calcTimesheetTotals = days => {
               )}
             </>)}
 
+            {/* ── Monzo pots (only on the phone of whoever linked them) ── */}
+            {bank.pots.length>0&&(()=>{
+              const accs=bank.accounts.filter(a=>bank.pots.some(p=>p.account_id===a.account_id));
+              const shown=bank.pots.filter(p=>accs.some(a=>a.account_id===p.account_id));
+              const total=shown.reduce((s,p)=>s+(Number(p.balance)||0),0);
+              const newest=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
+              return mvCard("pots","🏦 Monzo pots",fmt0(pounds(total)),<>
+                {accs.map(a=>(
+                  <div key={a.account_id}>
+                    {accs.length>1&&<div style={{...lbl,marginBottom:4}}>{BANK_LABEL[a.type]}</div>}
+                    {shown.filter(p=>p.account_id===a.account_id).sort((x,y)=>(Number(y.balance)||0)-(Number(x.balance)||0)).map(p=>(
+                      <div key={p.pot_id} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"3px 0"}}>
+                        <span style={{color:"#8892b0",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                        <span style={{fontWeight:700,color:"#e8eaf0",flexShrink:0}}>{fmt(pounds(p.balance))}{p.goal_amount?<span style={{color:"#5a6480",fontWeight:500}}> of {fmt0(pounds(p.goal_amount))}</span>:null}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+                <div style={note}>Straight from Monzo. Only you can see these. Updated {agoText(newest)}.</div>
+              </>);
+            })()}
+
             <div style={{...note,padding:"0 4px"}}>
               Glyn's figure averages his payslips from the last 12 months; without overtime, OT and weekend pay are taken back out at the marginal rate, so it's an estimate. Hollie's is her estimated net on base pay. Bills are this month's standing shared bills (full amount) plus both of your personal bills; one-off and non-monthly bills aren't included. Tap a bucket to see its bills, and tap a bill to move it. LTT uses Welsh main-residence rates for 2026/27 — confirm figures with your lender and conveyancer. Everything here is shared between you both.
             </div>
@@ -5781,6 +6498,21 @@ const calcTimesheetTotals = days => {
               </div>)}
             </div>
 
+            {/* ── 6. BANK & TWO-STEP ── */}
+            <div style={{...card,marginBottom:12,padding:0}}>
+              <div onClick={()=>{haptic();setShowDiagBank(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🏦 Bank & two-step</div>
+                <span style={{color:"#3a4460",fontSize:14}}>{showDiagBank?"⌃":"⌄"}</span>
+              </div>
+              {showDiagBank&&(<div style={{padding:"0 14px 14px"}}>
+                <BankSettings isOwner={isOwner} mfa={mfa} onMfaChanged={checkMfa} bank={bank}
+                  onEnterCode={()=>setMfa(m=>({...m,need:true,skipped:false}))}
+                  reloadBank={()=>loadBankRef.current?loadBankRef.current({noSync:true}):Promise.resolve()}
+                  onWatch={()=>setLinkSheet({phase:"wait"})}
+                  onSigningIn={()=>setLinkSheet({phase:"signin"})}/>
+              </div>)}
+            </div>
+
           </div>
         )}
 
@@ -5796,6 +6528,10 @@ const calcTimesheetTotals = days => {
           {refreshing?"Refreshing…":pullY>70?"Release to refresh":"Pull to refresh"}
         </div>
       )}
+
+      {linkSheet&&<BankLinkSheet sheet={linkSheet} aal2={mfaAal2}
+        onEnterCode={()=>setMfa(m=>({...m,need:true,skipped:false}))}
+        onClose={()=>setLinkSheet(null)}/>}
 
       {/* Undo toast */}
       {toast&&(
