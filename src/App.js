@@ -414,6 +414,31 @@ const db = {
     reportDbError("saveMovePlan", error);
     return error ? null : { plan: next };
   },
+  // What Glyn's phone shares from Monzo with Hollie: shared bills paid this month and the
+  // house-savings pots' total (shared_settings.bank_summary). Quietly skipped before the migration.
+  // Resolves true once saved (or when the column isn't there yet), false if it failed.
+  async saveBankSummary(summary) {
+    const { error } = await supabase.from("shared_settings").upsert({ id: 1, bank_summary: summary }, { onConflict: "id" });
+    if (missingColumn(error, "bank_summary")) return true;
+    reportDbError("saveBankSummary", error);
+    return !error;
+  },
+  // Which payment pays each bill, the house-savings pots, and what Vaulted filled in: bank_prefs,
+  // readable only by its owner from a two-step session. null = the read failed.
+  async getBankPrefs(userId) {
+    const { data, error } = await jwtRetry(() => supabase.from("bank_prefs").select("links,house_pots,fills").eq("user_id", userId).maybeSingle());
+    reportDbError("getBankPrefs", error);
+    if (error) return null;
+    return { links: (data && data.links) || {}, house_pots: (data && Array.isArray(data.house_pots) && data.house_pots) || [], fills: (data && data.fills) || {} };
+  },
+  // Change bank_prefs against the latest saved copy (so another phone's changes aren't lost), and
+  // write only the parts that changed. fn(prefs) returns those parts, e.g. {links}.
+  async patchBankPrefs(userId, fn) {
+    const cur = await db.getBankPrefs(userId);
+    if (!cur) return;   // couldn't read it: better not to write over it
+    const { error } = await supabase.from("bank_prefs").upsert({ user_id: userId, ...fn(cur), updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    reportDbError("saveBankPrefs", error);
+  },
   async getSettlements() {
     const { data, error } = await jwtRetry(() => supabase.from("settlements").select("*").order("created_at", { ascending: false }));
     reportDbError("getSettlements", error);
@@ -721,7 +746,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.14.0";
+const APP_VERSION = "1.15.0";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -1081,7 +1106,7 @@ async function bankCall(action, extra = {}) {
 }
 // Transactions since a time, oldest first, in pages of 1,000. null = the read failed.
 async function bankTxSince(userId, since) {
-  const cols = "tx_id,account_id,created,amount,description,merchant,merchant_id,counterparty,category,scheme,pot_id,dd_id";
+  const cols = "tx_id,account_id,created,amount,description,merchant,merchant_id,counterparty,category,scheme,pot_id,dd_id,include_in_spending";
   const out = [];
   for (let from = 0; from < 20000; from += 1000) {
     const { data, error } = await supabase.from("bank_transactions").select(cols).eq("user_id", userId).gte("created", since).order("created", { ascending: true }).order("tx_id", { ascending: true }).range(from, from + 999);
@@ -1112,18 +1137,46 @@ const isPotMove = t => !!t.pot_id || t.scheme === "uk_retail_pot";
 const txWhen = t => new Date(t.created);
 const txName = t => t.merchant || t.counterparty || t.description || "Payment";
 // The same payee each time: its direct debit, its merchant, or its name without numbers.
+// Flex repayments get a new merchant every month and overdraft fees are named after the
+// month ("June overdraft fees"), so each of those is one payee.
 function txKey(t) {
+  if (t.scheme === "monzo_flex") return "flex";
+  if (t.scheme === "overdraft") return "overdraft-fees";
   if (t.dd_id) return "dd:" + t.dd_id;
   if (t.merchant_id) return "m:" + t.merchant_id;
   const n = String(t.counterparty || t.description || "").toLowerCase().replace(/[0-9]+/g, "").replace(/\s+/g, " ").trim();
   return n ? "n:" + n : null;
 }
 const medianOf = a => { const s = [...a].sort((x, y) => x - y); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+// The usual day of the month for some dates (the 31st one month and the 1st the next count as close).
+function usualDay(dates) {
+  if (!dates.length) return null;
+  const days = dates.map(d => d.getDate());
+  const wraps = Math.max(...days) - Math.min(...days) > 15;
+  let dom = Math.round(medianOf(wraps ? days.map(d => (d < 15 ? d + 31 : d)) : days));
+  if (dom > 31) dom -= 31;
+  return dom;
+}
+// Payments a pot paid for: a payment out with a matching amount taken from a pot on the same
+// account within 15 minutes (Monzo's "pay bills from a pot"). They don't touch the main balance.
+function potCovered(txns) {
+  const out = new Set();
+  const draws = txns.filter(t => isPotMove(t) && Number(t.amount) > 0);
+  if (!draws.length) return out;
+  for (const t of txns) {
+    if (isPotMove(t) || !(Number(t.amount) < 0)) continue;
+    const ms = txWhen(t).getTime();
+    if (draws.some(w => w.account_id === t.account_id && Number(w.amount) === -Number(t.amount) && Math.abs(txWhen(w).getTime() - ms) <= 15 * 60000)) out.add(t.tx_id);
+  }
+  return out;
+}
 // Regular payments out of one account: seen in at least 2 of the last 3 pay cycles and no more
 // than twice a cycle (card payments: once a cycle at a steady amount, so shopping isn't counted).
+// Regular top-ups of a pot count too (its main top-up each cycle; small extras are ignored),
+// while payments a pot paid for don't, as they leave the main balance alone.
 // Each comes with its usual day of the month, its latest amount, and whether it's gone out yet
-// this cycle. Moves to and from pots are left out. txns must be oldest first.
-function regularOutgoings(txns, accountId, now = new Date()) {
+// this cycle. txns must be oldest first.
+function regularOutgoings(txns, accountId, now = new Date(), pots = null) {
   const cyc = payCycle(now);
   const starts = [cyc.start];
   for (let k = 1; k <= 3; k++) starts.push(getPayday(cyc.start.getFullYear(), cyc.start.getMonth() - k));
@@ -1132,61 +1185,287 @@ function regularOutgoings(txns, accountId, now = new Date()) {
     for (let k = 0; k < starts.length; k++) if (d >= starts[k]) return k;
     return -1;
   };
+  const covered = potCovered(txns.filter(t => t.account_id === accountId));
   const groups = new Map();
   for (const t of txns) {
-    if (t.account_id !== accountId || !(Number(t.amount) < 0) || isPotMove(t)) continue;
+    if (t.account_id !== accountId || !(Number(t.amount) < 0) || covered.has(t.tx_id)) continue;
     const c = cycleOf(txWhen(t));
-    const key = c < 0 ? null : txKey(t);
+    const pot = isPotMove(t);
+    const key = c < 0 ? null : pot ? (t.pot_id ? "pot:" + t.pot_id : null) : txKey(t);
     if (!key) continue;
     let g = groups.get(key);
-    if (!g) groups.set(key, g = { per: [[], [], [], []], card: false });
+    if (!g) groups.set(key, g = { per: [[], [], [], []], card: false, pot: pot ? t.pot_id : null });
     g.per[c].push(t);
-    if (t.scheme === "mastercard" || (t.merchant_id && !t.dd_id)) g.card = true;
+    if (!pot && (t.scheme === "mastercard" || (t.merchant_id && !t.dd_id))) g.card = true;
   }
+  const potName = new Map((pots || []).map(p => [p.pot_id, p.name]));
   const out = [];
   for (const [key, g] of groups) {
+    if (g.pot) {   // a pot's main top-up each cycle: at least half its usual biggest
+      const maxes = g.per.map(p => Math.max(0, ...p.map(t => -Number(t.amount)))).filter(Boolean);
+      const floor = medianOf(maxes) / 2;
+      g.per = g.per.map(p => p.filter(t => -Number(t.amount) >= floor));
+    }
     const past = [g.per[1], g.per[2], g.per[3]];
     if (past.filter(p => p.length).length < 2) continue;
     if (past.some(p => p.length > (g.card ? 1 : 2))) continue;
     const amounts = past.filter(p => p.length).map(p => -Number(p[p.length - 1].amount));
     if (g.card) { const m = medianOf(amounts); if (amounts.some(a => Math.abs(a - m) > Math.max(100, m * 0.15))) continue; }
     // Due on its usual day of the month, placed inside this cycle.
-    const days = past.flatMap(p => p.map(t => txWhen(t).getDate()));
-    const wraps = Math.max(...days) - Math.min(...days) > 15;   // e.g. 31st one month, 1st the next
-    let dom = Math.round(medianOf(wraps ? days.map(d => (d < 15 ? d + 31 : d)) : days));
-    if (dom > 31) dom -= 31;
+    const dom = usualDay(past.flatMap(p => p.map(txWhen)));
     const onDay = (y, m) => new Date(y, m, Math.min(dom, new Date(y, m + 1, 0).getDate()));
     let due = onDay(cyc.start.getFullYear(), cyc.start.getMonth());
     if (due < cyc.start) due = onDay(cyc.start.getFullYear(), cyc.start.getMonth() + 1);
     const last = past.find(p => p.length);
     const latest = last[last.length - 1];
-    out.push({ key, name: txName(latest), amount: -Number(latest.amount), due, paid: g.per[0].length > 0 });
+    const name = g.pot ? "Into " + (potName.get(g.pot) || "a") + " pot" : txName(latest);
+    out.push({ key, name, amount: -Number(latest.amount), due, paid: g.per[0].length > 0, pot: g.pot });
   }
   return out.sort((a, b) => a.due - b.due);
 }
 // What's still to go out of one account before the next payday.
-function stillToGo(txns, accountId, now = new Date()) {
+function stillToGo(txns, accountId, now = new Date(), pots = null) {
   const { next } = payCycle(now);
-  return regularOutgoings(txns, accountId, now).filter(r => !r.paid && r.due < next);
+  return regularOutgoings(txns, accountId, now, pots).filter(r => !r.paid && r.due < next);
+}
+// The wage around one payday (3 days either side): £500+ into one of `accounts` (the personal
+// ones) from JLI, or else one Monzo files as income. Transfers from people never count.
+function wageNear(txns, pd, accounts = null) {
+  const from = pd.getTime() - 3 * DAY_MS, to = pd.getTime() + 3 * DAY_MS;
+  const c = txns.filter(t => Number(t.amount) >= 50000 && !isPotMove(t) && (!accounts || accounts.includes(t.account_id)) && txWhen(t).getTime() >= from && txWhen(t).getTime() < to);
+  const jli = c.filter(t => /\bjli\b/i.test((t.counterparty || "") + " " + (t.description || "")));
+  const pool = jli.length ? jli : c.filter(t => t.category === "income");
+  if (!pool.length) return null;
+  return pool.reduce((a, b) => (Number(b.amount) > Number(a.amount) ? b : a));
 }
 // The wage that landed around the latest payday (within a week of it), or a few days early
-// for the next one: £500+ into one of `accounts` (the personal ones) from JLI, or else one Monzo
-// files as income. Transfers from people (Hollie into the joint account, say) never count.
+// for the next one.
 function findPay(txns, now = new Date(), accounts = null) {
   const { start, next } = payCycle(now);
-  const pick = pd => {
-    const from = pd.getTime() - 3 * DAY_MS, to = pd.getTime() + 3 * DAY_MS;
-    const c = txns.filter(t => Number(t.amount) >= 50000 && !isPotMove(t) && (!accounts || accounts.includes(t.account_id)) && txWhen(t).getTime() >= from && txWhen(t).getTime() < to);
-    const jli = c.filter(t => /\bjli\b/i.test((t.counterparty || "") + " " + (t.description || "")));
-    const pool = jli.length ? jli : c.filter(t => t.category === "income");
-    if (!pool.length) return null;
-    return pool.reduce((a, b) => (Number(b.amount) > Number(a.amount) ? b : a));
-  };
-  const early = pick(next);
+  const early = wageNear(txns, next, accounts);
   if (early) return { tx: early, payday: next };
   if (now.getTime() - start.getTime() > 8 * DAY_MS) return null;
-  const t = pick(start);
+  const t = wageNear(txns, start, accounts);
   return t ? { tx: t, payday: start } : null;
+}
+
+// -- Bills against Monzo payments ------------------------------------------------
+// Each Budget bill is matched to who it's paid to (or the pot it's paid into), so the Budget
+// tab can tick it off. Names are compared as plain words: accents, emoji and filler gone, "L&G"
+// as "lg", and a short bill name can be a payee's initials ("UW" for Utility Warehouse).
+const MATCH_STOP = new Set(["the", "and", "of", "for", "to", "from", "ltd", "limited", "plc", "llp", "inc", "co", "com", "www", "uk", "gb", "gbr", "london", "payment", "payments", "dd", "so", "ref", "monthly", "standard"]);
+// Words too common to identify a payee on their own ("Pet Insurance" and "Car Insurance").
+const MATCH_WEAK = new Set(["insurance", "finance", "mobile", "phone", "tv", "water", "gas", "electric", "electricity", "energy", "broadband", "tax", "council", "loan", "credit", "card", "bank", "savings", "saving", "subscription", "membership", "fee", "fees", "one", "plus", "prime", "home", "car", "bill", "bills", "account", "pot", "shop"]);
+function matchWords(s) {
+  return String(s || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
+    .replace(/\b([a-z])\s*&\s*([a-z])\b/g, "$1$2")
+    .split(/[^a-z0-9]+/).filter(w => w.length >= 2 && !/^\d+$/.test(w) && !MATCH_STOP.has(w));
+}
+const initialsOf = words => (words.length > 1 ? words.map(w => w[0]).join("") : "");
+// How many of a bill's words a payee shares: strong ones and generic ones.
+function nameHits(billWords, g) {
+  let strong = 0, weak = 0;
+  for (const w of new Set(billWords)) {
+    const hit = g.words.some(p => p === w || (w.length >= 4 && p.length >= 4 && (p.startsWith(w) || w.startsWith(p))))
+      || (w.length <= 4 && w === g.initials);
+    if (hit) { if (MATCH_WEAK.has(w)) weak++; else strong++; }
+  }
+  return { strong, weak };
+}
+// Where a payment counts: the month whose usual day it's within a week of, otherwise its own month.
+function billMonthOf(d, dom) {
+  if (dom) for (const k of [-1, 0, 1]) {
+    const y = d.getFullYear(), m = d.getMonth() + k;
+    const e = new Date(y, m, Math.min(dom, new Date(y, m + 1, 0).getDate()));
+    if (Math.abs(d.getTime() - e.getTime()) <= 7 * DAY_MS) return monthKeyOf(e.getFullYear(), e.getMonth() + 1);
+  }
+  return monthKeyOf(d.getFullYear(), d.getMonth() + 1);
+}
+// Everyone paid from the linked accounts this month and the three before, one group per payee
+// per account; "pot:" groups are the money put into each pot. A group knows its usual day,
+// whether it's regular (its main payments, at least half its usual biggest, come at most twice a
+// month in two months or more) and its latest main payment. txns must be oldest first.
+function payeeGroups(txns, pots, now = new Date()) {
+  const potName = new Map((pots || []).map(p => [p.pot_id, p.name || "a"]));
+  const y0 = now.getFullYear(), m0 = now.getMonth();
+  const ago = d => (y0 - d.getFullYear()) * 12 + m0 - d.getMonth();   // 0 = this month
+  const out = new Map();
+  for (const t of txns) {
+    if (!(Number(t.amount) < 0)) continue;
+    const mi = ago(txWhen(t));
+    if (mi < 0 || mi > 3) continue;
+    const pot = isPotMove(t);
+    const k = pot ? (t.pot_id ? "pot:" + t.pot_id : null) : txKey(t);
+    if (!k) continue;
+    const key = t.account_id + "|" + k;
+    let g = out.get(key);
+    if (!g) out.set(key, g = { key, accountId: t.account_id, pot: pot ? t.pot_id : null, txs: [] });
+    g.txs.push(t);
+  }
+  for (const g of out.values()) {
+    const last = g.txs[g.txs.length - 1];
+    g.name = g.pot ? potName.get(g.pot) || "a" : txName(last);
+    g.words = matchWords(g.pot ? g.name : [...new Set(g.txs.slice(-3).flatMap(t => [t.merchant, t.counterparty, t.description]))].join(" "));
+    g.initials = initialsOf(matchWords(g.name));
+    g.isDD = g.txs.some(t => t.dd_id);
+    const maxBy = [0, 0, 0, 0];
+    for (const t of g.txs) { const mi = ago(txWhen(t)); maxBy[mi] = Math.max(maxBy[mi], -Number(t.amount)); }
+    const floor = medianOf(maxBy.filter(Boolean)) / 2;
+    g.main = g.txs.filter(t => -Number(t.amount) >= floor);
+    const per = [0, 0, 0, 0];
+    for (const t of g.main) per[ago(txWhen(t))]++;
+    g.months = per.filter(Boolean).length;
+    g.regular = g.months >= 2 && per.every(n => n <= 2);
+    g.day = usualDay(g.main.map(txWhen));
+    g.latest = -Number(g.main[g.main.length - 1].amount);
+    g.last = txWhen(last);
+    g.exact = pence => new Set(g.txs.filter(t => -Number(t.amount) === pence).map(t => ago(txWhen(t)))).size;
+  }
+  return out;
+}
+// Which payee (or pot) pays each bill. bills: [{ref, name, pence (null when it varies), home:
+// [the account ids it's paid from: the joint account for shared bills, your own for yours]}].
+// Only payees on those accounts are considered, so a shared bill is never matched to your own
+// spending. Strongest first: a shared name and the exact amount; a shared name on a regular
+// direct debit, or a regular payment within half of the amount (any regular payment for a bill
+// that varies); a generic shared word ("insurance") with the exact amount in two months; or,
+// with no shared name, a distinctive exact amount in two months that nobody else is paid. Each
+// payee pays one bill; a bill has two payees only when both are a shared name with the exact
+// amount (its merchant changed).
+function autoLinks(bills, groups) {
+  const list = [...groups.values()];
+  const cands = [];
+  for (const b of bills) {
+    const bw = matchWords(b.name);
+    if (!bw.length) continue;
+    for (const g of list) {
+      if (!b.home.includes(g.accountId)) continue;
+      const nh = nameHits(bw, g);
+      const ex = b.pence ? g.exact(b.pence) : 0;
+      let rule = 0;
+      if (b.pence == null) { if (nh.strong && (g.regular || g.months >= 2)) rule = 4; }
+      else if (nh.strong && ex >= 1) rule = 5;
+      else if (nh.strong && g.regular && (g.isDD || Math.abs(g.latest - b.pence) <= b.pence * 0.5)) rule = 4;
+      else if (nh.weak && ex >= 2) rule = 3;
+      else if (!nh.strong && !nh.weak && ex >= 2 && g.regular && (b.pence >= 2000 || b.pence % 100)
+        && !list.some(o => o !== g && o.accountId === g.accountId && o.exact(b.pence) >= 2)) rule = 2;
+      if (rule) cands.push({ ref: b.ref, key: g.key, rule, score: rule * 10 + nh.strong * 2 + nh.weak + Math.min(ex, 3) * 0.1 + Math.min(g.months, 4) * 0.01 });
+    }
+  }
+  cands.sort((a, b) => b.score - a.score || (a.key < b.key ? -1 : 1));
+  const taken = new Set(), out = new Map();
+  for (const c of cands) {
+    if (taken.has(c.key)) continue;
+    const cur = out.get(c.ref);
+    if (cur) { if (c.rule !== 5 || cur.rule !== 5) continue; cur.keys.push(c.key); }
+    else out.set(c.ref, { rule: c.rule, keys: [c.key] });
+    taken.add(c.key);
+  }
+  return out;
+}
+// A linked bill in one Budget month ("YYYY-MM"): paid (latest date, total, how many), due (its
+// usual day is still to come, or within 3 days), late (a monthly payment not seen 3 days after
+// its usual day) or none (paid now and then; `last` is when). Direct debits count every payment;
+// otherwise a bill with a set amount leaves out payments well off it (round-ups, extra top-ups),
+// and one that varies, paid into a pot, leaves out the round-ups.
+function billStatus(keys, groups, mk, pence, now = new Date()) {
+  const gs = keys.map(k => groups.get(k)).filter(Boolean);
+  if (!gs.length) return null;
+  const pays = [];
+  for (const g of gs) {
+    // Paid into a pot, a bill that varies still leaves out round-ups (under a tenth of its usual top-up).
+    const small = pence > 0 || !g.pot ? 0 : medianOf(g.main.map(t => -Number(t.amount))) * 0.1;
+    for (const t of g.txs) {
+      const p = -Number(t.amount);
+      if (pence > 0 && !g.isDD && (p < pence * 0.4 || p > pence * 2.5)) continue;
+      if (p < small) continue;
+      if (billMonthOf(txWhen(t), g.day) === mk) pays.push(t);
+    }
+  }
+  const g0 = gs[0];
+  const pot = g0.pot ? g0.name : null;
+  if (pays.length) {
+    pays.sort((a, b) => txWhen(a) - txWhen(b));
+    return { state: "paid", date: txWhen(pays[pays.length - 1]), amount: pays.reduce((s, t) => s - Number(t.amount), 0), n: pays.length, pot };
+  }
+  const [y, m] = mk.split("-").map(Number);
+  const e = new Date(y, m - 1, Math.min(g0.day, new Date(y, m, 0).getDate()));
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (gs.some(g => g.months >= 2)) return { state: today.getTime() <= e.getTime() + 3 * DAY_MS ? "due" : "late", date: e, pot };
+  return { state: "none", last: gs.reduce((a, g) => (g.last > a ? g.last : a), g0.last), pot };
+}
+// The main balance just before one transaction (pence), worked back from today's balance.
+function balanceBefore(txns, account, tx) {
+  const i = txns.indexOf(tx);
+  if (i < 0) return null;
+  let bal = Number(account.balance) || 0;
+  for (let j = txns.length - 1; j >= i; j--) if (txns[j].account_id === account.account_id) bal -= Number(txns[j].amount);
+  return bal;
+}
+// An "Overdraft" bill in a Budget month: how far overdrawn the account was when that month's
+// wage landed (it clears it), or due at payday.
+function overdraftStatus(txns, account, mk) {
+  const [y, m] = mk.split("-").map(Number);
+  const pd = getPayday(y, m - 1);
+  const w = wageNear(txns, pd, [account.account_id]);
+  if (!w) return { state: "due", date: pd, od: true };
+  const bal = balanceBefore(txns, account, w);
+  return bal == null ? null : { state: "paid", date: txWhen(w), amount: bal < 0 ? -bal : 0, n: 1, od: true };
+}
+// Money spent from one account between two times, by Monzo category (pence; refunds count off).
+// Transfers, savings, income and pot moves aren't spending; your own categories go together.
+const SPEND_SKIP = new Set(["transfers", "savings", "income"]);
+function spendByCategory(txns, accountId, from, to) {
+  const out = new Map();
+  for (const t of txns) {
+    if (t.account_id !== accountId || isPotMove(t) || t.include_in_spending === false) continue;
+    const c = String(t.category || "general").startsWith("category_") ? "custom" : (t.category || "general");
+    if (SPEND_SKIP.has(c)) continue;
+    const d = txWhen(t);
+    if (d < from || d >= to) continue;
+    out.set(c, (out.get(c) || 0) - Number(t.amount));
+  }
+  return out;
+}
+const CAT_LABEL = { eating_out: "🍔 Eating out", groceries: "🛒 Groceries", shopping: "🛍️ Shopping", transport: "🚗 Transport", bills: "🧾 Bills", entertainment: "🎬 Entertainment", general: "📦 General", personal_care: "💆 Personal care", holidays: "✈️ Holidays", family: "👪 Family", charity: "❤️ Charity", gifts: "🎁 Gifts", cash: "💵 Cash", expenses: "💼 Expenses", finances: "💳 Finances", custom: "🏷️ Your own categories" };
+const catLabel = c => CAT_LABEL[c] || "📦 " + String(c || "Other").replace(/_/g, " ");
+// The payday transfers into the joint account: everything of £100 or more from each of you,
+// from 3 days before payday to a week after.
+function paydayTransfers(txns, jointId, payday, now = new Date()) {
+  const from = payday.getTime() - 3 * DAY_MS, to = Math.min(now.getTime(), payday.getTime() + 8 * DAY_MS);
+  const out = { glyn: 0, hollie: 0, when: {} };
+  for (const t of txns) {
+    if (t.account_id !== jointId || isPotMove(t) || !(Number(t.amount) >= 10000)) continue;
+    const ms = txWhen(t).getTime();
+    if (ms < from || ms > to) continue;
+    const n = String(t.counterparty || t.description || "").trim().toLowerCase();
+    const k = /^glyn\b/.test(n) ? "glyn" : /^hollie\b/.test(n) ? "hollie" : null;
+    if (k) { out[k] += Number(t.amount); out.when[k] = txWhen(t); }
+  }
+  return out;
+}
+// The same JSON whatever order the keys come back in (Postgres reorders jsonb keys).
+function stableJson(v) {
+  if (Array.isArray(v)) return "[" + v.map(stableJson).join(",") + "]";
+  if (v && typeof v === "object") return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + stableJson(v[k])).join(",") + "}";
+  return JSON.stringify(v === undefined ? null : v);
+}
+// The line under a bill on the Budget tab: paid (amber when it isn't what the budget says,
+// expectPence), due, or not seen yet.
+function tickLine(st, expectPence) {
+  if (!st) return null;
+  const day = d => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  if (st.state === "paid") {
+    const off = expectPence != null && Math.abs(st.amount - expectPence) > 50;
+    const what = st.od ? (st.amount ? "Cleared " + day(st.date) + " · " + fmt(pounds(st.amount)) + " overdrawn" : "Not overdrawn when pay landed " + day(st.date))
+      : st.pot ? day(st.date) + " · " + fmt(pounds(st.amount)) + " into " + st.pot + " pot"
+      : "Paid " + day(st.date) + " · " + fmt(pounds(st.amount)) + (st.n > 1 ? " (" + st.n + " payments)" : "");
+    return { text: "✓ " + what, color: off ? "#ffb84a" : "#00c88c" };
+  }
+  if (st.state === "due" && st.date) return { text: st.od ? "Clears when pay lands ~" + day(st.date) : "Due ~" + day(st.date), color: "#5a6480" };
+  if (st.state === "late" && st.date) return { text: "Not seen yet · usually ~" + day(st.date), color: "#ffb84a" };
+  if (st.state === "none" && st.last) return { text: "Last paid " + day(st.last), color: "#5a6480" };
+  return null;
 }
 const lnkStyle = { background: "none", border: "none", color: "#5a6480", fontSize: 11.5, textDecoration: "underline", cursor: "pointer", padding: 0 };
 const miniBtn = { background: "#1e2535", border: "1px solid #2a3050", borderRadius: 6, color: "#8ec5ff", fontSize: 11, fontWeight: 700, padding: "7px 10px", cursor: "pointer", flexShrink: 0 };
@@ -1494,7 +1773,7 @@ function TwoStepSetup({ onDone, onCancel }) {
 }
 
 // Diag → Bank & two-step. Everything bank-related starts from here; nothing is pushed at anyone.
-function BankSettings({ isOwner, mfa, onMfaChanged, onEnterCode, bank, reloadBank, onWatch, onSigningIn }) {
+function BankSettings({ isOwner, mfa, onMfaChanged, onEnterCode, bank, reloadBank, onWatch, onSigningIn, onUnlinked }) {
   const [st, setSt] = useState(null);          // the bank function's status
   const [busy, setBusy] = useState("");        // which button is working
   const [msg, setMsg] = useState(null);        // {ok, text}
@@ -1534,6 +1813,7 @@ function BankSettings({ isOwner, mfa, onMfaChanged, onEnterCode, bank, reloadBan
     run("unlink", async () => {
       const r = await bankCall("unlink");
       if (r.error) { setMsg({ ok: false, text: bankErrText(r.error) }); return; }
+      if (onUnlinked) onUnlinked();
       setMsg({ ok: true, text: "Unlinked. Vaulted has forgotten your bank details." });
       await reloadBank(); await loadStatus();
     });
@@ -1547,6 +1827,7 @@ function BankSettings({ isOwner, mfa, onMfaChanged, onEnterCode, bank, reloadBan
       if (linked) {
         const r = await bankCall("unlink");
         if (r.error) { setMsg({ ok: false, text: "Couldn't unlink Monzo, so two-step is still on. " + bankErrText(r.error) }); return; }
+        if (onUnlinked) onUnlinked();
       }
       let failed = false;
       try {
@@ -1717,6 +1998,19 @@ function BankCards({ left, pay, locked, attention, onDismissPay, onUnlock, onOpe
       <span style={{ fontSize: 18 }}>🏦</span>
       <div style={{ flex: 1, fontSize: 12.5, color: "#ffb84a" }}>{attention}</div>
     </div>}
+    {left && left.rows.filter(r => r.shortAt).map(r => (
+      <div key={"short" + r.id} data-short="1" style={{ ...card, background: "#1a0a0a", border: "1px solid #ff4a6a", display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <span style={{ fontSize: 18 }}>⚠️</span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#ff6b8a" }}>{r.label} account is {fmt(pounds(-r.left))} short before payday</div>
+          <div style={{ fontSize: 11.5, color: "#b06070", marginTop: 3, lineHeight: 1.5 }}>
+            {r.balance < 0
+              ? `It's already ${fmt(pounds(-r.balance))} overdrawn, with ${fmt(pounds(r.dueTotal))} still to go out.`
+              : `${r.shortAt.name} (${fmt(pounds(r.shortAt.amount))}) on ${dshort(r.shortAt.due)} is the first payment it won't cover.`}
+          </div>
+        </div>
+      </div>
+    ))}
     {payBox}
     {left && <div style={{ ...card, cursor: "pointer" }} onClick={() => { haptic(); setOpen(o => !o); }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
@@ -1744,9 +2038,120 @@ function BankCards({ left, pay, locked, attention, onDismissPay, onUnlock, onOpe
           ))}
         </div>
       ))}
-      <div style={{ fontSize: 10, color: "#3a4460", marginTop: 8 }}>Monzo · updated {agoText(left.updated)} · regular payments spotted over the last 3 months</div>
+      <div style={{ fontSize: 10, color: "#3a4460", marginTop: 8 }}>Monzo · updated {agoText(left.updated)} · regular payments and pot top-ups spotted over the last 3 months</div>
     </div>}
   </>);
+}
+
+// Joint account check: both payday transfers against the split, and whether the joint account
+// covers what's still to go out of it before the next payday.
+function JointCard({ check }) {
+  if (!check) return null;
+  const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
+  const lab = { fontSize: 11, color: "#5a6480", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
+  const dshort = d => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const mon = check.month.toLocaleDateString("en-GB", { month: "long" });
+  const line = (who, got, want, theirs) => {
+    const diff = got - want;
+    const ok = got > 0 && Math.abs(diff) <= 100;
+    const note = !got ? (check.late ? "Not seen yet" : "Not in yet")
+      : ok ? "✓ " + (theirs ? "her" : "your") + " share"
+      : fmt(pounds(Math.abs(diff))) + (diff > 0 ? " more" : " less") + " than " + (theirs ? "her" : "your") + " share";
+    return (
+      <div key={who} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, padding: "5px 0" }}>
+        <span style={{ fontSize: 12.5, color: "#8892b0", fontWeight: 600 }}>{who}</span>
+        <span style={{ textAlign: "right" }}>
+          <span style={{ fontSize: 14, fontWeight: 800, color: got ? "#e8eaf0" : "#3a4460" }}>{got ? fmt(pounds(got)) : "—"}</span>
+          <span style={{ display: "block", fontSize: 10.5, fontWeight: 600, color: !got ? (check.late ? "#ffb84a" : "#5a6480") : ok ? "#00c88c" : "#ffb84a" }}>{note}{!ok || !got ? " (" + fmt(pounds(want)) + ")" : ""}</span>
+        </span>
+      </div>
+    );
+  };
+  const r = check.row;
+  return (
+    <div data-joint="1" style={card}>
+      <div style={lab}>🤝 Joint account · payday {dshort(check.payday)}</div>
+      <div style={{ marginTop: 6 }}>
+        {line("Glyn in", check.glyn, check.want.glyn, false)}
+        {line("Hollie in", check.hollie, check.want.hollie, true)}
+      </div>
+      {r && <div style={{ borderTop: "1px solid #1a1f2e", marginTop: 6, paddingTop: 8, fontSize: 12, lineHeight: 1.5 }}>
+        {r.left >= 0
+          ? <span style={{ color: "#00c88c", fontWeight: 600 }}>✓ Covers the {fmt(pounds(r.dueTotal))} still to go, with {fmt(pounds(r.left))} spare</span>
+          : <span style={{ color: "#ff6b8a", fontWeight: 700 }}>⚠ {fmt(pounds(-r.left))} short of the {fmt(pounds(r.dueTotal))} still to go</span>}
+        <div style={{ fontSize: 10.5, color: "#3a4460", marginTop: 2 }}>Shares are your split for {mon}'s shared bills · {fmt(pounds(r.balance))} in the joint account now</div>
+      </div>}
+    </div>
+  );
+}
+
+// Spending by category, this pay month so far against last, per account, plus the allowances
+// that go into pots with what's left in each.
+function SpendCard({ data }) {
+  const [acc, setAcc] = useState(0);
+  const [all, setAll] = useState(false);
+  if (!data || !data.accs.length) return null;
+  const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
+  const lab = { fontSize: 11, color: "#5a6480", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
+  const dshort = d => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const a = data.accs[Math.min(acc, data.accs.length - 1)];
+  const rows = all ? a.cats : a.cats.slice(0, 6);
+  const top = Math.max(1, ...a.cats.map(r => Math.max(r.now, r.last)));
+  const allow = data.allow.filter(x => x.accountId === a.id);
+  const lastEnd = new Date(data.start.getTime() - DAY_MS);
+  return (
+    <div data-spend="1" style={card}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <div style={lab}>📊 Spending</div>
+        {data.accs.length > 1 && <div style={{ display: "flex", gap: 4 }}>
+          {data.accs.map((x, i) => (
+            <button key={x.id} onClick={() => { haptic(); setAcc(i); setAll(false); }} style={{ background: i === acc ? "#4a9eff" : "#0d1117", color: i === acc ? "#fff" : "#5a6480", border: "1px solid " + (i === acc ? "#4a9eff" : "#1e2535"), borderRadius: 7, fontSize: 11, fontWeight: 700, padding: "5px 10px", cursor: "pointer" }}>{x.label}</button>
+          ))}
+        </div>}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 78px 78px", gap: 6, fontSize: 9.5, color: "#5a6480", fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", marginTop: 10, paddingBottom: 4, borderBottom: "1px solid #1a1f2e" }}>
+        <span></span><span style={{ textAlign: "right" }}>This month</span><span style={{ textAlign: "right" }}>Last month</span>
+      </div>
+      {rows.map(r => (
+        <div key={r.c} style={{ padding: "6px 0", borderBottom: "1px solid #161b28" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 78px 78px", gap: 6, alignItems: "baseline", fontSize: 12.5 }}>
+            <span style={{ color: "#c8cee0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{catLabel(r.c)}</span>
+            <span style={{ textAlign: "right", fontWeight: 700, color: r.last && r.now > r.last ? "#ffb84a" : "#e8eaf0" }}>{fmt(pounds(r.now))}</span>
+            <span style={{ textAlign: "right", color: "#5a6480" }}>{fmt(pounds(r.last))}</span>
+          </div>
+          <div style={{ position: "relative", height: 4, borderRadius: 2, background: "#1e2535", marginTop: 5, overflow: "hidden" }}>
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: (r.last / top * 100) + "%", background: "#2a3050" }} />
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: (r.now / top * 100) + "%", background: r.last && r.now > r.last ? "#ffb84a" : "#4a9eff", opacity: 0.9 }} />
+          </div>
+        </div>
+      ))}
+      {a.cats.length === 0 && <div style={{ fontSize: 12, color: "#5a6480", padding: "10px 0" }}>No spending on this account in the last two months.</div>}
+      {a.cats.length > 6 && <button onClick={() => { haptic(); setAll(v => !v); }} style={{ ...lnkStyle, marginTop: 8, color: "#4a9eff", textDecoration: "none" }}>{all ? "▾ Show less" : "▸ Show all " + a.cats.length}</button>}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 78px 78px", gap: 6, fontSize: 12.5, fontWeight: 800, marginTop: 8 }}>
+        <span style={{ color: "#8892b0" }}>Total</span>
+        <span style={{ textAlign: "right", color: "#e8eaf0" }}>{fmt(pounds(a.now))}</span>
+        <span style={{ textAlign: "right", color: "#5a6480" }}>{fmt(pounds(a.last))}</span>
+      </div>
+      {allow.length > 0 && <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #1e2535" }}>
+        <div style={{ ...lab, fontSize: 10, marginBottom: 4 }}>Allowances · left in the pot</div>
+        {allow.map(x => {
+          const pct = x.amount > 0 ? Math.max(0, Math.min(100, x.left / x.amount * 100)) : 0;
+          return (
+            <div key={x.ref} style={{ padding: "6px 0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
+                <span style={{ color: "#c8cee0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.name} <span style={{ color: "#5a6480", fontSize: 10.5 }}>· {x.pot} pot</span></span>
+                <span style={{ flexShrink: 0 }}><b style={{ color: x.left > 0 ? "#e8eaf0" : "#ff6b8a" }}>{fmt(pounds(x.left))}</b><span style={{ color: "#5a6480" }}> of {fmt(pounds(x.amount))}</span></span>
+              </div>
+              <div style={{ height: 4, borderRadius: 2, background: "#1e2535", marginTop: 5, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: pct + "%", background: pct < 15 ? "#ff6b8a" : pct < 40 ? "#ffb84a" : "#00c88c" }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>}
+      <div style={{ fontSize: 10, color: "#3a4460", marginTop: 8 }}>Monzo's categories · this month is since payday ({dshort(data.start)}), last month {dshort(data.prevStart)} – {dshort(lastEnd)} · transfers, savings and pots not counted</div>
+    </div>
+  );
 }
 
 export default function App() {
@@ -1900,25 +2305,44 @@ export default function App() {
   const [linkSheet,setLinkSheet]=useState(null);   // Monzo linking progress
   const [bankReturn,setBankReturn]=useState(()=>{try{const v=new URLSearchParams(window.location.search).get("bank");return v&&/^[a-z]{2,12}$/.test(v)?v:null;}catch(e){return null;}});
   const [paySeen,setPaySeen]=useState(()=>loadText(SK.paySeen));
+  // Which payment pays each bill, the house-savings pots, and what Vaulted filled in (bank_prefs).
+  const [bankPrefs,setBankPrefs]=useState(null);
+  const bankPrefsRef=useRef(null);
+  bankPrefsRef.current=bankPrefs;
+  const prefsChangedAt=useRef(0);                   // last change made on this phone
+  const prefsQueue=useRef(Promise.resolve());       // its saves, one after another
+  const prefsPending=useRef(0);                     // …and how many are still going
+  // What Glyn's phone shares from Monzo (shared bills paid this month, house pots' total).
+  const [bankSummary,setBankSummary]=useState(null);
+  const bankSummaryRef=useRef(null);
+  bankSummaryRef.current=bankSummary;
+  const summarySent=useRef(null);                   // what this phone last shared ({key,src}), or when to retry
+  const sharedOk=useRef(false);                     // shared bills came from the database
+  const [linkPick,setLinkPick]=useState(null);      // {ref,name,shared,pence} -> choose the payment for a bill
+  const [linkQuery,setLinkQuery]=useState("");      // search in that list
+  const [linkReview,setLinkReview]=useState(false); // the bills with no Monzo payment yet
   // Bank details for whoever's signed in, only with two-step on and a Monzo link. When what's
   // stored is over half an hour old it quietly asks the server to fetch from Monzo.
   const loadBank=useCallback(async(opts={})=>{
     if(!user)return;
     let aal=null;
     try{aal=(await supabase.auth.mfa.getAuthenticatorAssuranceLevel()).data;}catch(e){}
-    if(!aal||aal.nextLevel!=="aal2"){setBank({accounts:[],pots:[],txns:[],link:null});return;}   // no two-step, no bank
+    if(!aal||aal.nextLevel!=="aal2"){setBank({accounts:[],pots:[],txns:[],link:null});setBankPrefs(null);return;}   // no two-step, no bank
     const st=await bankCall("status");
     if(st&&st.error){   // couldn't check: keep what's showing
       if(aal.currentLevel!=="aal2")return;
     }
     const link=st&&!st.error?st:null;
-    if(aal.currentLevel!=="aal2"||(link&&!link.linked)){setBank({accounts:[],pots:[],txns:[],link});return;}
+    if(aal.currentLevel!=="aal2"||(link&&!link.linked)){setBank({accounts:[],pots:[],txns:[],link});setBankPrefs(null);return;}
     const since=new Date(Date.now()-130*DAY_MS).toISOString();
-    const [acc,pots,txns]=await Promise.all([
+    const asked=Date.now();
+    const [acc,pots,txns,prefs]=await Promise.all([
       supabase.from("bank_accounts").select("account_id,type,balance,total_balance,closed,updated_at").eq("user_id",user.id),
       supabase.from("bank_pots").select("pot_id,account_id,name,balance,goal_amount,deleted,updated_at").eq("user_id",user.id),
       bankTxSince(user.id,since),
+      db.getBankPrefs(user.id),
     ]);
+    if(prefs&&prefsChangedAt.current<asked&&!prefsPending.current){bankPrefsRef.current=prefs;setBankPrefs(prefs);}   // not over a change made meanwhile
     if(acc.error||pots.error||!txns){setBank(b=>({...b,link:link||b.link}));return;}
     const accounts=(acc.data||[]).filter(a=>!a.closed&&BANK_LABEL[a.type]).sort((a,b)=>(a.type==="uk_retail"?0:1)-(b.type==="uk_retail"?0:1));
     setBank(b=>({accounts,pots:(pots.data||[]).filter(p=>!p.deleted),txns,link:link||b.link}));
@@ -1931,8 +2355,45 @@ export default function App() {
     }
   },[user]);
   loadBankRef.current=loadBank;
+  // Changing a link, the house pots or a fill: shown straight away, and saved against the latest
+  // copy in the background. fn(prefs) returns just the parts that change. Nothing happens until
+  // the saved copy has loaded, so a failed read can never be written over the real thing.
+  const updateBankPrefs=(fn)=>{
+    if(!user||!bankPrefsRef.current)return;
+    const next={...bankPrefsRef.current,...fn(bankPrefsRef.current)};
+    bankPrefsRef.current=next;
+    prefsChangedAt.current=Date.now();
+    setBankPrefs(next);
+    const uid=user.id;
+    prefsPending.current++;
+    const run=prefsQueue.current.then(()=>db.patchBankPrefs(uid,fn)).catch(()=>{}).finally(()=>{prefsPending.current--;});
+    prefsQueue.current=run;
+    trackSave(run);
+  };
+  // Share (or take back) the Monzo summary for Hollie. Shown here straight away; if saving fails,
+  // what's really saved is put back and it's tried again two minutes later.
+  const sendSummary=(next,key,src)=>{
+    const prev=bankSummaryRef.current||null;
+    summarySent.current={key,src};
+    bankSummaryRef.current=next;
+    setBankSummary(next);
+    trackSave(db.saveBankSummary(next).then(done=>{
+      if(done)return;
+      summarySent.current={retry:Date.now()+120000};
+      if(bankSummaryRef.current===next){bankSummaryRef.current=prev;setBankSummary(prev);}
+    }));
+  };
+  // Unlinking Monzo takes back what this login shared with Hollie, and forgets the bank details
+  // on this phone at once so nothing is shared again before it reloads.
+  const clearBankSummary=()=>{
+    setBank({accounts:[],pots:[],txns:[],link:{linked:false}});
+    bankPrefsRef.current=null;setBankPrefs(null);
+    const cur=bankSummaryRef.current;
+    if(!user||!cur||(cur.by&&cur.by!==user.id))return;
+    sendSummary(null,"cleared",null);
+  };
   React.useEffect(()=>{
-    if(!user){setMfa({checked:false,level:null,hasFactor:false,factorId:null,need:false,skipped:false});setBank({accounts:[],pots:[],txns:[],link:null});setLinkSheet(null);return;}
+    if(!user){setMfa({checked:false,level:null,hasFactor:false,factorId:null,need:false,skipped:false});setBank({accounts:[],pots:[],txns:[],link:null});setBankPrefs(null);setLinkSheet(null);return;}
     checkMfa();
   },[user,checkMfa]);
   React.useEffect(()=>{
@@ -2041,6 +2502,7 @@ export default function App() {
     if (ss.bill_tags) setBillTags(ss.bill_tags);
     if ("move_plan" in ss) { setMoveMissing(false); setMovePlan(ss.move_plan || {}); }
     else setMoveMissing(true);
+    if ("bank_summary" in ss) setBankSummary(ss.bank_summary || null);
   };
 
   // One loader for the first load and every refresh, fetching everything at once.
@@ -2062,7 +2524,7 @@ export default function App() {
       // A null from any fetch means it failed: keep what's on screen, never blank it.
       if (role) setIsOwner(role === "owner");
       if (payslips) setHistory(sortH(payslips));
-      if (sBills) setSharedBills(sBills.map(mapSharedBillRow));
+      if (sBills) { setSharedBills(sBills.map(mapSharedBillRow)); sharedOk.current = true; }
       if (gBills) { setGlynBills(gBills.map(mapGlynBillRow)); personalOk.current = true; }
       if (lLogs) setLeaveLogs(lLogs);
       if (lSettings) setLeaveSettings(lSettings);
@@ -3875,14 +4337,202 @@ const calcTimesheetTotals = days => {
     if(!bank.accounts.length)return null;
     const now=new Date(nowTick);
     const rows=bank.accounts.map(a=>{
-      const due=stillToGo(bank.txns,a.account_id,now);
+      const due=stillToGo(bank.txns,a.account_id,now,bank.pots);
       const dueTotal=due.reduce((s,r)=>s+r.amount,0);
       const balance=Number(a.balance)||0;
-      return {id:a.account_id,label:BANK_LABEL[a.type],balance,due,dueTotal,left:balance-dueTotal};
+      // Going through what's due in date order: the first payment the balance won't cover.
+      let run=balance,shortAt=null;
+      for(const d of due){run-=d.amount;if(run<0&&!shortAt)shortAt=d;}
+      return {id:a.account_id,type:a.type,label:BANK_LABEL[a.type],balance,due,dueTotal,left:balance-dueTotal,shortAt};
     });
     const updated=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
     return {rows,next:payCycle(now).next,updated};
   },[bank,nowTick]);
+
+  // Budget bills against Monzo: which payment pays each bill (matched automatically unless
+  // you've picked one) and how each stands this month. "od" = an Overdraft bill, cleared by
+  // the wage. Keys: "s:<id>" shared bills, "g:<id>" your own.
+  const bankMatch=useMemo(()=>{
+    if(!bankPrefs||!bank.accounts.length||!bank.txns.length)return null;   // links not loaded: no ticks rather than wrong ones
+    const now=new Date(nowTick);
+    const personal=bank.accounts.filter(a=>a.type==="uk_retail");
+    const pIds=personal.map(a=>a.account_id);
+    const jIds=bank.accounts.filter(a=>a.type==="uk_retail_joint").map(a=>a.account_id);
+    const groups=payeeGroups(bank.txns,bank.pots,now);
+    const links=bankPrefs.links||{};
+    const mk=monthKeyOf(now.getFullYear(),now.getMonth()+1);
+    const all=[...sharedBills.map(b=>({ref:"s:"+b.id,b,shared:true})),...glynBills.map(b=>({ref:"g:"+b.id,b,shared:false}))];
+    const isOd=x=>!x.shared&&isVariable(x.b)&&/\boverdraft\b/i.test(x.b.name||"")&&personal.length>0;
+    const penceOf=b=>isVariable(b)?null:Math.round((Number(b.total)||0)*100);
+    // Payees you've picked for a bill (that still exists) aren't matched to another one.
+    const taken=new Set(all.map(x=>links[x.ref]&&links[x.ref].k).filter(k=>k&&groups.has(k)));
+    const auto=autoLinks(all.filter(x=>!links[x.ref]&&!isOd(x)).map(x=>({ref:x.ref,name:x.b.name,pence:penceOf(x.b),
+      home:x.shared&&jIds.length?jIds:pIds})),new Map([...groups].filter(([k])=>!taken.has(k))));
+    const byRef={};
+    for(const x of all){
+      const man=links[x.ref];
+      let kind=null,keys=[],isAuto=false;
+      if(man&&man.k==="none")kind="none";
+      else if((man&&man.k==="od")||(!man&&isOd(x))){kind="od";isAuto=!man;}
+      else if(man&&man.k){kind="tx";keys=[man.k];}
+      else{const a=auto.get(x.ref);if(a){kind="tx";keys=a.keys;isAuto=true;}}
+      let status=null;
+      if(kind==="tx")status=billStatus(keys,groups,mk,penceOf(x.b),now);
+      else if(kind==="od"&&personal[0])status=overdraftStatus(bank.txns,personal[0],mk);
+      const g=keys.length?groups.get(keys[0]):null;
+      const name=kind==="od"?"Overdrawn when pay lands":g?(g.pot?"Into "+g.name+" pot":g.name):man&&man.n?man.n:null;
+      byRef[x.ref]={kind,keys,auto:isAuto,status,name,accountId:g?g.accountId:null,joint:!!(g&&jIds.includes(g.accountId))};
+    }
+    return {byRef,groups,mk};
+  },[bank,bankPrefs,sharedBills,glynBills,nowTick]);
+  const nowMkBank=(()=>{const d=new Date(nowTick);return monthKeyOf(d.getFullYear(),d.getMonth()+1);})();
+  // How a bill stands this month: live on the phone with the Monzo link, or, for shared bills,
+  // what Glyn's phone last shared.
+  const billTick=(ref)=>{
+    if(bankMatch){const m=bankMatch.byRef[ref];return m?m.status:null;}
+    if(ref.startsWith("s:")&&bankSummary&&bankSummary.mk===nowMkBank&&bankSummary.ticks){
+      const t=bankSummary.ticks[ref];
+      if(!t)return null;
+      const d=t.d?new Date(t.d+"T12:00:00"):null;
+      return {state:t.s,date:d,last:t.s==="none"?d:null,amount:Number(t.a)||0,n:t.n||1,pot:t.pot||null};
+    }
+    return null;
+  };
+  // Bills with nothing matched and not set aside as "don't track".
+  const unlinkedBills=bankMatch?[...sharedBills.map(b=>({ref:"s:"+b.id,b,shared:true})),...glynBills.map(b=>({ref:"g:"+b.id,b,shared:false}))]
+    .filter(x=>{const m=bankMatch.byRef[x.ref];return m&&!m.kind;}):[];
+
+  // Bills that vary (Lloyds, Ocean, Flex, Overdraft…) take this month's actual payment when their
+  // amount is blank or £0, and keep up with it while it's still the figure Vaulted put in.
+  useEffect(()=>{
+    if(!bankMatch||!bankPrefs||dataLoading)return;
+    const mk=bankMatch.mk;
+    const fills=bankPrefs.fills||{};
+    const noted={};
+    const fill=(list,prefix,shared)=>{
+      let changed=false;
+      const next=list.map(b=>{
+        if(!isVariable(b))return b;
+        const ref=prefix+b.id,m=bankMatch.byRef[ref],st=m&&m.status;
+        if(!st||st.state!=="paid"||!(st.amount>0))return b;
+        if(shared&&m.auto&&!m.joint)return b;   // a shared bill only takes the joint account's payments
+        const val=Math.round(st.amount)/100;
+        const cur=b.amounts[mk],was=fills[ref]&&fills[ref][mk];
+        const blank=cur===undefined||cur===null||Number(cur)===0;
+        if(!blank&&!(was!=null&&Number(cur)===Number(was)))return b;   // typed by you: left alone
+        if(Number(cur)===val)return b;
+        const mine={...(fills[ref]||{}),[mk]:val};
+        Object.keys(mine).sort().slice(0,-3).forEach(k=>{delete mine[k];});   // the last few months will do
+        noted[ref]=mine;changed=true;
+        return {...b,amounts:{...b.amounts,[mk]:val}};
+      });
+      return changed?next:null;
+    };
+    const g=fill(glynBills,"g:",false),s=fill(sharedBills,"s:",true);
+    if(g)updGB(g);
+    if(s)updSB(s);
+    if(Object.keys(noted).length)updateBankPrefs(p=>({fills:{...(p.fills||{}),...noted}}));
+  });
+
+  // Glyn's phone shares, for Hollie: how the shared bills stand this month (joint-account payments,
+  // or ones he picked) and the house pots' total, with when the figures came from Monzo (src).
+  // Each phone compares with what it last sent itself, so two of Glyn's devices can't keep
+  // answering each other, and none overwrites newer figures from another. It's re-sent when
+  // something changes or the figures are 3+ hours newer; unlinking takes it back.
+  useEffect(()=>{
+    if(!isOwner||!user||dataLoading)return;
+    const cur=bankSummary||null;
+    const sent=summarySent.current;
+    if(sent&&sent.retry&&Date.now()<sent.retry)return;   // the last write failed: wait a bit
+    if(bank.link&&bank.link.linked===false){
+      if(cur&&(!cur.by||cur.by===user.id)&&!(sent&&sent.key==="cleared"))sendSummary(null,"cleared",null);
+      return;
+    }
+    if(!bankMatch||!bankPrefs||!sharedOk.current)return;   // nothing (or not everything) loaded: leave what's there
+    const ticks={};
+    for(const b of sharedBills){
+      const m=bankMatch.byRef["s:"+b.id]||{};
+      const st=m.status;
+      if(!st||(m.auto&&!m.joint))continue;
+      const t={s:st.state};
+      const when=st.date||st.last;
+      if(when)t.d=localISO(new Date(when));
+      if(st.state==="paid"){t.a=Math.round(st.amount);t.n=st.n;}
+      if(st.pot&&m.joint)t.pot=st.pot;
+      ticks["s:"+b.id]=t;
+    }
+    const ids=bankPrefs.house_pots||[];
+    const hp=bank.pots.filter(p=>ids.includes(p.pot_id));
+    const body={v:1,by:user.id,mk:bankMatch.mk,ticks,house:hp.length?{total:hp.reduce((s,p)=>s+(Number(p.balance)||0),0),n:hp.length}:null};
+    const src=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&Date.parse(a.updated_at)>Date.parse(m))?a.updated_at:m,null);
+    const key=stableJson(body);
+    const newer=s=>!s||(src&&Date.parse(src)-Date.parse(s)>3*3600000);
+    const mine=cur&&cur.by===user.id;
+    if(mine&&cur.src&&src&&Date.parse(cur.src)>Date.parse(src))return;   // another of your devices has newer figures
+    if(mine&&stableJson({v:cur.v,by:cur.by,mk:cur.mk,ticks:cur.ticks,house:cur.house})===key&&!newer(cur.src)){summarySent.current={key,src:cur.src};return;}
+    if(sent&&sent.key===key&&!newer(sent.src))return;   // this phone already shared it (so no two phones can keep answering each other)
+    sendSummary({...body,src,at:new Date().toISOString()},key,src);
+  });
+
+  // Joint account check: both payday transfers against your split (for the month the joint bills
+  // they pay go out), and whether the joint account covers what's still to go.
+  // A bill that varies and isn't filled in for that month yet counts at the payday month's amount.
+  const splitFor=(yr,m,fallbackMk)=>{
+    const mk=monthKeyOf(yr,m);
+    let glyn=0,hollie=0;
+    for(const b of sharedBills){
+      const use=fallbackMk&&notSetFor(b,mk)?fallbackMk:mk;
+      const s=billShares(withAmount(b,use));glyn+=s.glyn;hollie+=s.hollie;
+    }
+    for(const b of scheduledBills){
+      const ms=Array.isArray(b.months)?b.months:[];
+      if(b.scope!=="shared"||!ms.includes(m)||(b.freq==="once"&&(b.year||0)!==yr))continue;
+      const s=schedShares(b);glyn+=s.glyn;hollie+=s.hollie;
+    }
+    return {glyn,hollie};
+  };
+  const jointCheck=(()=>{
+    if(!isOwner||!bankLeft)return null;
+    const j=bank.accounts.find(a=>a.type==="uk_retail_joint");
+    if(!j)return null;
+    const now=new Date(nowTick);
+    const cyc=payCycle(now);
+    const tr=paydayTransfers(bank.txns,j.account_id,cyc.start,now);
+    const nm=new Date(cyc.start.getFullYear(),cyc.start.getMonth()+1,1);
+    const want=splitFor(nm.getFullYear(),nm.getMonth()+1,monthKeyOf(cyc.start.getFullYear(),cyc.start.getMonth()+1));
+    return {payday:cyc.start,month:nm,glyn:tr.glyn,hollie:tr.hollie,
+      want:{glyn:Math.round(want.glyn*100),hollie:Math.round(want.hollie*100)},
+      row:bankLeft.rows.find(r=>r.id===j.account_id),late:now.getTime()-cyc.start.getTime()>3*DAY_MS};
+  })();
+
+  // Spending by category, this pay month so far against last, on each account; and the
+  // allowances paid into pots, with what's left in each pot.
+  const spending=useMemo(()=>{
+    if(!isOwner||!bank.accounts.length||!bank.txns.length)return null;
+    const now=new Date(nowTick);
+    const cyc=payCycle(now);
+    const prevStart=getPayday(cyc.start.getFullYear(),cyc.start.getMonth()-1);
+    const accs=bank.accounts.map(a=>{
+      const cur=spendByCategory(bank.txns,a.account_id,cyc.start,cyc.next);
+      const last=spendByCategory(bank.txns,a.account_id,prevStart,cyc.start);
+      const cats=[...new Set([...cur.keys(),...last.keys()])].map(c=>({c,now:Math.max(0,cur.get(c)||0),last:Math.max(0,last.get(c)||0)}))
+        .filter(r=>r.now>0||r.last>0).sort((x,y)=>(y.now-x.now)||(y.last-x.last));
+      return {id:a.account_id,label:BANK_LABEL[a.type],cats,
+        now:cats.reduce((s,r)=>s+r.now,0),last:cats.reduce((s,r)=>s+r.last,0)};
+    });
+    const allow=[];
+    if(bankMatch){
+      const mk=bankMatch.mk;
+      for(const [ref,b] of [...sharedBills.map(b=>["s:"+b.id,b]),...glynBills.map(b=>["g:"+b.id,b])]){
+        const m=bankMatch.byRef[ref];
+        const g=m&&m.kind==="tx"&&m.keys.length?bankMatch.groups.get(m.keys[0]):null;
+        const pot=g&&g.pot?bank.pots.find(p=>p.pot_id===g.pot):null;
+        if(!pot)continue;
+        allow.push({ref,name:b.name,amount:Math.round(amountOf(b,mk)*100),left:Number(pot.balance)||0,pot:pot.name,accountId:pot.account_id});
+      }
+    }
+    return {start:cyc.start,prevStart,accs,allow};
+  },[isOwner,bank,bankMatch,sharedBills,glynBills,nowTick]);
   const bankPay=useMemo(()=>{
     if(!isOwner||!bank.txns.length)return null;
     const personal=bank.accounts.filter(a=>a.type==="uk_retail").map(a=>a.account_id);
@@ -3977,7 +4627,7 @@ const calcTimesheetTotals = days => {
     :null;
   const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Pay Calc","Settle Up","Gifts"];
   const secondaryTabs = isOwner ? [...SECONDARY_TABS, ...(showHiddenTabs ? HIDDEN_TABS : [])] : ["Move","Diag"];
-  const sheetOpen = showMore||!!moveBill||catsOpen||schedOpen||giftOpen||settleOpen||moveCatsOpen;
+  const sheetOpen = showMore||!!moveBill||catsOpen||schedOpen||giftOpen||settleOpen||moveCatsOpen||!!linkPick||linkReview;
 
   return (
     <ErrorBoundary>
@@ -4067,6 +4717,8 @@ const calcTimesheetTotals = days => {
               onDismissPay={()=>{haptic();if(bankPay){setPaySeen(bankPay.id);save(SK.paySeen,bankPay.id);}}}
               onUnlock={()=>{haptic();setMfa(m=>({...m,need:true,skipped:false}));}}
               onOpenBank={()=>{haptic();setShowDiagBank(true);setTab("Diag");window.scrollTo(0,0);}}/>
+            <JointCard check={jointCheck}/>
+            <SpendCard data={spending}/>
             {missingMonths.length>0&&(
               <div style={{background:"#1a0f1a",border:"1px solid #c84aff",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
@@ -4261,7 +4913,7 @@ const calcTimesheetTotals = days => {
           };
 
           // One row, used for standing bills and for this month's scheduled ones.
-          const row=(key,{name,sub,amt,her,onName,onAmount,drag,tag,neg,first,tags})=>(
+          const row=(key,{name,sub,amt,her,onName,onAmount,drag,tag,neg,first,tags,tick})=>(
             <div key={key} draggable={!!drag} onDragStart={drag}
               style={{display:"flex",alignItems:"center",gap:10,padding:"11px 13px",borderTop:"1px solid #171d2b",
                 ...(first?{borderTop:"none"}:{})}}>
@@ -4271,6 +4923,7 @@ const calcTimesheetTotals = days => {
                   {tag&&<span style={{display:"inline-block",fontSize:9,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#1d1608",color:"#ffb84a",marginLeft:6,verticalAlign:1}}>{tag}</span>}
                 </div>
                 {sub&&<div style={{fontSize:10.5,color:"#3a4460",marginTop:2}}>{sub}</div>}
+                {tick&&<div data-tick="1" style={{fontSize:10.5,color:tick.color,marginTop:2,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tick.text}</div>}
                 {tags&&tags.length>0&&(
                   <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:4}}>
                     {tags.map(t=>(
@@ -4298,11 +4951,18 @@ const calcTimesheetTotals = days => {
           );
 
           const tagsFor=b=>(isG?glynBillTags:billTags)[b.id]||[];
+          // Ticks: only for this month, against the bill's full amount (or what's typed in, if it varies).
+          const tickFor=b=>{
+            if(!selIsNow)return null;
+            const typed=isVariable(b)?Number(b.amounts[selKey])||0:Number(b.total)||0;
+            return tickLine(billTick((isG?"g:":"s:")+b.id),typed?Math.round(typed*100):null);
+          };
           const billRows=list=>list.map((b,bi)=>editingId===b.id?editRow(b,bi===0):row(b.id,{
             first:bi===0,
             tags:tagsFor(b),
             name:b.name,
             sub:isG?(isVariable(b)?"Varies each month":null):splitNote(b),
+            tick:tickFor(b),
             amt:isG?amt1(b):mineOf(b),
             her:isG?null:themOf(b),
             onName:()=>{haptic();setMoveBill({id:b.id,isGlyn:isG});},
@@ -4451,6 +5111,19 @@ const calcTimesheetTotals = days => {
                 setCollapsed(n);save(SK.collapsed,n);
               }} style={{flex:"0 0 auto",background:"transparent",border:"1px solid #1e2535",borderRadius:7,color:"#5a6480",fontSize:11,fontWeight:700,padding:"6px 9px",cursor:"pointer"}}>⇕</button>
             </div>
+
+            {/* ── Monzo: bills with no payment matched yet, or where Hollie's ticks come from ── */}
+            {selIsNow&&unlinkedBills.length>0&&(
+              <div onClick={()=>{haptic();setLinkReview(true);}} style={{background:"#0f1a2b",border:"1px solid #2a4a7a",borderRadius:10,padding:"10px 12px",
+                fontSize:11.5,color:"#8ec5ff",display:"flex",alignItems:"center",gap:8,cursor:"pointer",marginTop:-2}}>
+                <span>🔗</span>
+                <span style={{flex:1}}>{unlinkedBills.length} bill{unlinkedBills.length===1?"":"s"} not matched to a Monzo payment yet</span>
+                <span style={{fontWeight:700,flexShrink:0}}>Review →</span>
+              </div>
+            )}
+            {selIsNow&&!isG&&!bankMatch&&bankSummary&&bankSummary.mk===nowMkBank&&bankSummary.at&&(
+              <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px",marginTop:-4}}>✓ Paid ticks come from Glyn's Monzo · checked {agoText(bankSummary.src||bankSummary.at)}</div>
+            )}
 
             {/* ── the bills ── */}
             <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -5676,6 +6349,13 @@ const calcTimesheetTotals = days => {
           const perMonth=monthsLeft>0?need/monthsLeft:need;
           const savT=mpIncome*mpTargets.savings/100;
           const depPct=goal>0?Math.min(100,cash/goal*100):0;
+          // Money in the Monzo pots picked as house savings: live on the phone with the Monzo
+          // link, otherwise what Glyn's phone last shared.
+          const houseIds=(bankPrefs&&bankPrefs.house_pots)||[];
+          const housePots=bankPrefs?bank.pots.filter(p=>houseIds.includes(p.pot_id)):[];
+          const bankNewest=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
+          const house=housePots.length?{total:housePots.reduce((s,p)=>s+(Number(p.balance)||0),0),n:housePots.length,at:bankNewest}
+            :(!bankPrefs&&bankSummary&&bankSummary.house)?{...bankSummary.house,at:bankSummary.src||bankSummary.at}:null;
 
           // Device-local fold state for the MoveCalc cards, like the bill categories.
           const shut=k=>!!collapsed["mv_"+k];
@@ -5943,6 +6623,21 @@ const calcTimesheetTotals = days => {
               ):(
                 <div style={note}>Set how much cash you want by moving day. Progress uses "Cash available" from Buying.</div>
               )}
+              {house&&(
+                <div data-house="1" style={{background:"#0d1117",borderRadius:8,padding:"10px 11px"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11.5,color:"#8892b0"}}>
+                    <span>🏦 Saved in house pots</span><span style={{color:"#e8eaf0",fontWeight:700}}>{fmt(pounds(house.total))}</span>
+                  </div>
+                  {goal>0&&(()=>{const pct=Math.min(100,pounds(house.total)/goal*100);return(<>
+                    <div style={{height:6,borderRadius:3,background:"#1e2535",marginTop:7,overflow:"hidden"}}><div style={{height:"100%",width:pct+"%",background:"#4a9eff"}}/></div>
+                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:5}}>{Math.round(pct)}% of your {fmt0(goal)} target</div>
+                  </>);})()}
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginTop:6}}>
+                    <span style={{fontSize:10,color:"#3a4460"}}>{house.n} Monzo pot{house.n===1?"":"s"}{house.at?" · checked "+agoText(house.at):""}</span>
+                    {Math.round(pounds(house.total))!==cash&&<button onClick={()=>{if(window.confirm("Set Cash available to "+fmt0(pounds(house.total))+"?")){haptic();setMc("savings",Math.round(pounds(house.total)));}}} style={lnkStyle}>Use as cash available</button>}
+                  </div>
+                </div>
+              )}
             </>)}
 
             {/* ── Monzo pots (only on the phone of whoever linked them) ── */}
@@ -5951,19 +6646,26 @@ const calcTimesheetTotals = days => {
               const shown=bank.pots.filter(p=>accs.some(a=>a.account_id===p.account_id));
               const total=shown.reduce((s,p)=>s+(Number(p.balance)||0),0);
               const newest=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
+              const ids=(bankPrefs&&bankPrefs.house_pots)||[];
+              const flip=id=>{haptic();const on=!ids.includes(id);updateBankPrefs(p=>{const cur=(p.house_pots||[]).filter(x=>x!==id);return {house_pots:on?[...cur,id]:cur};});};
               return mvCard("pots","🏦 Monzo pots",fmt0(pounds(total)),<>
                 {accs.map(a=>(
                   <div key={a.account_id}>
                     {accs.length>1&&<div style={{...lbl,marginBottom:4}}>{BANK_LABEL[a.type]}</div>}
-                    {shown.filter(p=>p.account_id===a.account_id).sort((x,y)=>(Number(y.balance)||0)-(Number(x.balance)||0)).map(p=>(
-                      <div key={p.pot_id} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"3px 0"}}>
-                        <span style={{color:"#8892b0",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
-                        <span style={{fontWeight:700,color:"#e8eaf0",flexShrink:0}}>{fmt(pounds(p.balance))}{p.goal_amount?<span style={{color:"#5a6480",fontWeight:500}}> of {fmt0(pounds(p.goal_amount))}</span>:null}</span>
-                      </div>
-                    ))}
+                    {shown.filter(p=>p.account_id===a.account_id).sort((x,y)=>(Number(y.balance)||0)-(Number(x.balance)||0)).map(p=>{
+                      const on=ids.includes(p.pot_id);
+                      return (
+                        <div key={p.pot_id} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,padding:"3px 0"}}>
+                          {bankPrefs&&<button onClick={()=>flip(p.pot_id)} aria-label={(on?"Stop counting ":"Count ")+p.name+" as house savings"} aria-pressed={on}
+                            style={{flexShrink:0,width:30,height:26,borderRadius:6,border:"1px solid "+(on?"#4a9eff":"#2a3050"),background:on?"#15203a":"transparent",fontSize:13,cursor:"pointer",opacity:on?1:0.45,padding:0}}>🏡</button>}
+                          <span style={{flex:1,color:on?"#c8cee0":"#8892b0",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                          <span style={{fontWeight:700,color:"#e8eaf0",flexShrink:0}}>{fmt(pounds(p.balance))}{p.goal_amount?<span style={{color:"#5a6480",fontWeight:500}}> of {fmt0(pounds(p.goal_amount))}</span>:null}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 ))}
-                <div style={note}>Straight from Monzo. Only you can see these. Updated {agoText(newest)}.</div>
+                <div style={note}>Straight from Monzo, updated {agoText(newest)}. Tap 🏡 on the pots that are house savings: their total shows under Saving for the move for you both. The pots themselves are only shown to you.</div>
               </>);
             })()}
 
@@ -6509,7 +7211,8 @@ const calcTimesheetTotals = days => {
                   onEnterCode={()=>setMfa(m=>({...m,need:true,skipped:false}))}
                   reloadBank={()=>loadBankRef.current?loadBankRef.current({noSync:true}):Promise.resolve()}
                   onWatch={()=>setLinkSheet({phase:"wait"})}
-                  onSigningIn={()=>setLinkSheet({phase:"signin"})}/>
+                  onSigningIn={()=>setLinkSheet({phase:"signin"})}
+                  onUnlinked={clearBankSummary}/>
               </div>)}
             </div>
 
@@ -6706,6 +7409,28 @@ const calcTimesheetTotals = days => {
                   </>
                 );
               })()}
+              {bill&&bankMatch&&(()=>{
+                const ref=(isG?"g:":"s:")+bill.id;
+                const m=bankMatch.byRef[ref]||{};
+                const tk=tickLine(m.status,null);
+                const on=m.kind&&m.kind!=="none";
+                return (
+                  <>
+                    <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Monzo payment</div>
+                    <div style={{display:"flex",alignItems:"center",gap:10,padding:"0 4px 6px"}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:600,color:on?"#c8cee0":"#5a6480",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                          {m.kind==="none"?"Not tracked":on?(m.name||"Linked"):"Not matched yet"}
+                        </div>
+                        {on&&<div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>{m.auto?"Matched automatically":"You picked this"}{m.accountId?" · "+(BANK_LABEL[(bank.accounts.find(a=>a.account_id===m.accountId)||{}).type]||""):""}</div>}
+                        {tk&&<div style={{fontSize:11,color:tk.color,marginTop:3,fontWeight:600}}>{tk.text}</div>}
+                      </div>
+                      <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref,name:bill.name,shared:!isG,pence:isVariable(bill)?null:Math.round((Number(bill.total)||0)*100)});}} style={miniBtn}>{on?"Change":"Link"}</button>
+                    </div>
+                    <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>Ticks the bill off on the Budget tab once the payment goes out{isVariable(bill)?", and fills in a blank month's amount from it":""}.</div>
+                  </>
+                );
+              })()}
               {(()=>{
                 const cur=(isG?glynBillTags:billTags)[moveBill.id]||[];
                 const known=allTags(isG).filter(t=>!cur.includes(t));
@@ -6789,6 +7514,98 @@ const calcTimesheetTotals = days => {
                 width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:10,color:"#ff6b8a",
                 fontSize:13,fontWeight:600,padding:"12px",cursor:"pointer",marginTop:14
               }}>Delete bill</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Bills with no Monzo payment matched yet ── */}
+      {linkReview&&(()=>{
+        const setLink=(ref,val)=>{haptic();updateBankPrefs(p=>{const nl={...(p.links||{})};if(val)nl[ref]=val;else delete nl[ref];return {links:nl};});};
+        return (
+          <div onClick={()=>setLinkReview(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:220,background:"rgba(0,0,0,0.6)"}}>
+            <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"80vh",overflowY:"auto"}}>
+              <SheetGrab onClose={()=>setLinkReview(false)}/>
+              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 6px"}}>Match bills to Monzo payments</div>
+              <div style={{fontSize:11,color:"#5a6480",padding:"0 4px 10px",lineHeight:1.5}}>Vaulted matched the rest itself. Pick the payment for each of these, or choose Don't track for one that isn't paid from Monzo (or isn't a payment, like headroom).</div>
+              {unlinkedBills.map(x=>(
+                <div key={x.ref} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 4px",borderTop:"1px solid #1a1f2e"}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.b.name}</div>
+                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>{x.shared?"Shared":"Mine"} · {isVariable(x.b)?"varies":fmt(x.b.total)}</div>
+                  </div>
+                  <button onClick={()=>setLink(x.ref,{k:"none"})} style={{...miniBtn,background:"transparent",color:"#5a6480",border:"1px solid #1e2535"}}>Don't track</button>
+                  <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref:x.ref,name:x.b.name,shared:x.shared,pence:isVariable(x.b)?null:Math.round((Number(x.b.total)||0)*100)});}} style={miniBtn}>Pick</button>
+                </div>
+              ))}
+              {unlinkedBills.length===0&&<div style={{fontSize:12.5,color:"#00c88c",padding:"14px 4px",textAlign:"center",fontWeight:600}}>✓ Every bill is matched or set aside</div>}
+              <div style={{fontSize:10.5,color:"#3a4460",padding:"10px 4px 0",lineHeight:1.5}}>To change a bill later, tap its name on the Budget tab.</div>
+              <button onClick={()=>setLinkReview(false)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Which Monzo payment pays a bill ── */}
+      {linkPick&&bankMatch&&(()=>{
+        const links=(bankPrefs&&bankPrefs.links)||{};
+        const cur=bankMatch.byRef[linkPick.ref]||{};
+        const bw=matchWords(linkPick.name);
+        const pIds=bank.accounts.filter(a=>a.type==="uk_retail").map(a=>a.account_id);
+        const jIds=bank.accounts.filter(a=>a.type==="uk_retail_joint").map(a=>a.account_id);
+        const home=linkPick.shared&&jIds.length?jIds:pIds;
+        const q=linkQuery.trim().toLowerCase();
+        const accLabel=id=>BANK_LABEL[(bank.accounts.find(a=>a.account_id===id)||{}).type]||"";
+        const nth=d=>d+(d%10===1&&d!==11?"st":d%10===2&&d!==12?"nd":d%10===3&&d!==13?"rd":"th");
+        const day=d=>d.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+        const list=[...bankMatch.groups.values()].map(g=>{
+          const nh=nameHits(bw,g);
+          const off=linkPick.pence?Math.abs(g.latest-linkPick.pence)/linkPick.pence:1;
+          return {g,label:g.pot?"Into "+g.name+" pot":g.name,rank:nh.strong*4+nh.weak*2+(home.includes(g.accountId)?1:0)+(off<0.02?3:off<0.25?1:0)};
+        }).filter(x=>!q||x.label.toLowerCase().includes(q))
+          .sort((a,b)=>b.rank-a.rank||b.g.last-a.g.last).slice(0,40);
+        const close=()=>{setLinkPick(null);setLinkQuery("");};
+        const pick=(val)=>{
+          haptic();
+          const ref=linkPick.ref;
+          updateBankPrefs(p=>{const nl={...(p.links||{})};if(val)nl[ref]=val;else delete nl[ref];return {links:nl};});
+          close();
+        };
+        const opt={display:"flex",alignItems:"center",gap:10,width:"100%",textAlign:"left",background:"transparent",border:"none",borderTop:"1px solid #1a1f2e",padding:"11px 6px",cursor:"pointer",color:"#e8eaf0"};
+        return (
+          <div onClick={close} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:230,background:"rgba(0,0,0,0.6)"}}>
+            <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"85vh",overflowY:"auto"}}>
+              <SheetGrab onClose={close}/>
+              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 8px"}}>Which payment is {linkPick.name}?</div>
+              <input value={linkQuery} onChange={e=>setLinkQuery(e.target.value)} placeholder="Search payees and pots"
+                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:14,padding:"10px 12px",marginBottom:6}}/>
+              {list.map(x=>{
+                const on=cur.kind==="tx"&&cur.keys.includes(x.g.key);
+                return (
+                  <button key={x.g.key} onClick={()=>pick({k:x.g.key,n:x.label})} style={{...opt,background:on?"#15203a":"transparent"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13.5,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.label}</div>
+                      <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>{accLabel(x.g.accountId)} · {fmt(pounds(x.g.latest))}{x.g.months>=2?" · usually the "+nth(x.g.day):""} · last {day(x.g.last)}</div>
+                    </div>
+                    {on&&<span style={{color:"#4a9eff",fontWeight:700}}>✓</span>}
+                  </button>
+                );
+              })}
+              {list.length===0&&<div style={{fontSize:12,color:"#5a6480",padding:"12px 6px"}}>Nothing paid by that name in the last few months.</div>}
+              {!linkPick.shared&&!q&&(
+                <button onClick={()=>pick({k:"od"})} style={{...opt,background:cur.kind==="od"?"#15203a":"transparent"}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13.5,fontWeight:600}}>Overdrawn when pay lands</div>
+                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>For an overdraft: how far overdrawn you were when your wage came in</div>
+                  </div>
+                  {cur.kind==="od"&&<span style={{color:"#4a9eff",fontWeight:700}}>✓</span>}
+                </button>
+              )}
+              <div style={{display:"flex",gap:8,marginTop:12}}>
+                {links[linkPick.ref]&&<button onClick={()=>pick(null)} style={{flex:1,background:"#1a2535",border:"1px solid #2a5a8a",borderRadius:9,color:"#8ec5ff",fontSize:12.5,fontWeight:700,padding:"11px 6px",cursor:"pointer"}}>Match automatically</button>}
+                <button onClick={()=>pick({k:"none"})} style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:9,color:"#8892b0",fontSize:12.5,fontWeight:700,padding:"11px 6px",cursor:"pointer"}}>Don't track this bill</button>
+              </div>
+              <button onClick={close} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Cancel</button>
             </div>
           </div>
         );
