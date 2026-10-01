@@ -433,10 +433,11 @@ const db = {
   // Which payment pays each bill, the house-savings pots, and what Vaulted filled in: bank_prefs,
   // readable only by its owner from a two-step session. null = the read failed.
   async getBankPrefs(userId) {
-    const { data, error } = await jwtRetry(() => supabase.from("bank_prefs").select("links,house_pots,fills").eq("user_id", userId).maybeSingle());
+    const { data, error } = await jwtRetry(() => supabase.from("bank_prefs").select("links,house_pots,fills,payees").eq("user_id", userId).maybeSingle());
     reportDbError("getBankPrefs", error);
     if (error) return null;
-    return { links: (data && data.links) || {}, house_pots: (data && Array.isArray(data.house_pots) && data.house_pots) || [], fills: (data && data.fills) || {} };
+    return { links: (data && data.links) || {}, house_pots: (data && Array.isArray(data.house_pots) && data.house_pots) || [], fills: (data && data.fills) || {},
+      payees: (data && data.payees && typeof data.payees === "object" && !Array.isArray(data.payees) && data.payees) || {} };
   },
   // Change bank_prefs against the latest saved copy (so another phone's changes aren't lost), and
   // write only the parts that changed. fn(prefs) returns those parts, e.g. {links}.
@@ -753,7 +754,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.15.3";
+const APP_VERSION = "1.15.4";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -1209,8 +1210,10 @@ function paidFromPot(txns) {
 // Regular top-ups of a pot count too (its main top-up each cycle; small extras are ignored),
 // while payments a pot paid for don't, as they leave the main balance alone.
 // Each comes with its usual day of the month, its latest amount, and whether it's gone out yet
-// this cycle. txns must be oldest first.
-function regularOutgoings(txns, accountId, now = new Date(), pots = null) {
+// this cycle. payees (from bank_prefs, by payee key): {regular: false} for one that only looks
+// regular (Lidl now and then), {name} to call it something else ("Simon" for a payment to Angie).
+// txns must be oldest first.
+function regularOutgoings(txns, accountId, now = new Date(), pots = null, payees = null) {
   const cyc = payCycle(now);
   const starts = [cyc.start];
   for (let k = 1; k <= 3; k++) starts.push(getPayday(cyc.start.getFullYear(), cyc.start.getMonth() - k));
@@ -1235,6 +1238,8 @@ function regularOutgoings(txns, accountId, now = new Date(), pots = null) {
   const potName = new Map((pots || []).map(p => [p.pot_id, p.name]));
   const out = [];
   for (const [key, g] of groups) {
+    const own = (payees && payees[key]) || {};
+    if (own.regular === false) continue;
     if (g.pot) {   // a pot's main top-up each cycle: at least half its usual biggest
       const maxes = g.per.map(p => Math.max(0, ...p.map(t => -Number(t.amount)))).filter(Boolean);
       const floor = medianOf(maxes) / 2;
@@ -1252,15 +1257,15 @@ function regularOutgoings(txns, accountId, now = new Date(), pots = null) {
     if (due < cyc.start) due = onDay(cyc.start.getFullYear(), cyc.start.getMonth() + 1);
     const last = past.find(p => p.length);
     const latest = last[last.length - 1];
-    const name = g.pot ? "Into " + (potName.get(g.pot) || "a") + " pot" : txName(latest);
+    const name = (typeof own.name === "string" && own.name.trim()) || (g.pot ? "Into " + (potName.get(g.pot) || "a") + " pot" : txName(latest));
     out.push({ key, name, amount: -Number(latest.amount), due, paid: g.per[0].length > 0, pot: g.pot });
   }
   return out.sort((a, b) => a.due - b.due);
 }
 // What's still to go out of one account before the next payday.
-function stillToGo(txns, accountId, now = new Date(), pots = null) {
+function stillToGo(txns, accountId, now = new Date(), pots = null, payees = null) {
   const { next } = payCycle(now);
-  return regularOutgoings(txns, accountId, now, pots).filter(r => !r.paid && r.due < next);
+  return regularOutgoings(txns, accountId, now, pots, payees).filter(r => !r.paid && r.due < next);
 }
 // The wage around one payday (3 days either side): £500+ into one of `accounts` (the personal
 // ones) from JLI, or else one Monzo files as income. Transfers from people never count.
@@ -4533,8 +4538,9 @@ const calcTimesheetTotals = days => {
   const bankLeft=useMemo(()=>{
     if(!bank.accounts.length)return null;
     const now=new Date(nowTick);
+    const payees=(bankPrefs&&bankPrefs.payees)||null;   // ones you've said aren't regular, or renamed
     const rows=bank.accounts.map(a=>{
-      const all=stillToGo(bank.txns,a.account_id,now,bank.pots);
+      const all=stillToGo(bank.txns,a.account_id,now,bank.pots,payees);
       // Money Monzo has already taken but not listed: the payments due by today it most likely
       // is aren't counted again.
       const unlisted=unlistedOf(a);
@@ -4549,7 +4555,7 @@ const calcTimesheetTotals = days => {
     });
     const updated=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
     return {rows,next:payCycle(now).next,updated};
-  },[bank,nowTick]);
+  },[bank,bankPrefs,nowTick]);
 
   // Budget bills against Monzo: which payment pays each bill (matched automatically unless
   // you've picked one) and how each stands this month. "od" = an Overdraft bill, cleared by
