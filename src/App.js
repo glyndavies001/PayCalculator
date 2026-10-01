@@ -295,8 +295,15 @@ const isNetworkError = (error) => /failed to fetch|networkerror|load failed|netw
 const jwtRetry = async (run) => {
   let res = await run();
   const msg = (res.error && res.error.message) || "";
-  if ((/issued/i.test(msg) && /future/i.test(msg)) || isNetworkError(res.error)) {
+  if (/issued/i.test(msg) && /future/i.test(msg)) {
     await new Promise(r => setTimeout(r, 1500));
+    return run();
+  }
+  // A dropped connection: try again a few times while the phone gets its signal back (not when
+  // it says it's offline: coming back online refreshes everything anyway).
+  for (const wait of [1500, 3000, 6000]) {
+    if (!isNetworkError(res.error) || (typeof navigator !== "undefined" && navigator.onLine === false)) break;
+    await new Promise(r => setTimeout(r, wait));
     res = await run();
   }
   return res;
@@ -746,7 +753,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.15.1";
+const APP_VERSION = "1.15.2";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -1116,6 +1123,18 @@ async function bankTxSince(userId, since) {
   }
   return out;
 }
+// The pots' balances at each check since a time (for card payments straight from a pot), oldest
+// first, in pages of 1,000. null = the read failed.
+async function bankPotHistSince(userId, since) {
+  const out = [];
+  for (let from = 0; from < 20000; from += 1000) {
+    const { data, error } = await supabase.from("bank_pot_history").select("pot_id,balance,first_seen,last_seen").eq("user_id", userId).gte("last_seen", since).order("first_seen", { ascending: true }).order("id", { ascending: true }).range(from, from + 999);
+    if (error) return null;
+    out.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return out;
+}
 // "5 min ago".
 function agoText(t, now = Date.now()) {
   if (!t) return "never";
@@ -1167,6 +1186,21 @@ function potCovered(txns) {
     if (isPotMove(t) || !(Number(t.amount) < 0)) continue;
     const ms = txWhen(t).getTime();
     if (draws.some(w => w.account_id === t.account_id && Number(w.amount) === -Number(t.amount) && Math.abs(txWhen(w).getTime() - ms) <= 15 * 60000)) out.add(t.tx_id);
+  }
+  return out;
+}
+// Payments Monzo paid from a pot by itself (a bill set to come out of the Bills pot, say): the same
+// amount taken from a pot on the same account within a few seconds. tx_id -> pot_id. (Money you
+// move out of a pot yourself to cover a payment takes longer, so it isn't counted.)
+function paidFromPot(txns) {
+  const out = new Map();
+  const draws = txns.filter(t => isPotMove(t) && t.pot_id && Number(t.amount) > 0);
+  if (!draws.length) return out;
+  for (const t of txns) {
+    if (isPotMove(t) || !(Number(t.amount) < 0)) continue;
+    const ms = txWhen(t).getTime();
+    const w = draws.find(d => d.account_id === t.account_id && Number(d.amount) === -Number(t.amount) && Math.abs(txWhen(d).getTime() - ms) <= 5000);
+    if (w) out.set(t.tx_id, w.pot_id);
   }
   return out;
 }
@@ -1284,9 +1318,11 @@ function billMonthOf(d, dom) {
 // Everyone paid from the linked accounts this month and the three before, one group per payee
 // per account; "pot:" groups are the money put into each pot. A group knows its usual day,
 // whether it's regular (its main payments, at least half its usual biggest, come at most twice a
-// month in two months or more) and its latest main payment. txns must be oldest first.
+// month in two months or more), its latest main payment, and (fromPot) the pot Monzo paid its
+// latest payment from, if it did. txns must be oldest first.
 function payeeGroups(txns, pots, now = new Date()) {
   const potName = new Map((pots || []).map(p => [p.pot_id, p.name || "a"]));
+  const fromPot = paidFromPot(txns);
   const y0 = now.getFullYear(), m0 = now.getMonth();
   const ago = d => (y0 - d.getFullYear()) * 12 + m0 - d.getMonth();   // 0 = this month
   const out = new Map();
@@ -1319,6 +1355,8 @@ function payeeGroups(txns, pots, now = new Date()) {
     g.day = usualDay(g.main.map(txWhen));
     g.latest = -Number(g.main[g.main.length - 1].amount);
     g.last = txWhen(last);
+    // (Only while that's recent: a bill that's stopped coming from a pot leaves its group.)
+    g.fromPot = g.pot || now.getTime() - g.last.getTime() > 45 * DAY_MS ? null : fromPot.get(last.tx_id) || null;
     g.exact = pence => new Set(g.txs.filter(t => -Number(t.amount) === pence).map(t => ago(txWhen(t)))).size;
   }
   return out;
@@ -1393,6 +1431,103 @@ function billStatus(keys, groups, mk, pence, now = new Date()) {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   if (gs.some(g => g.months >= 2)) return { state: today.getTime() <= e.getTime() + 3 * DAY_MS ? "due" : "late", date: e, pot };
   return { state: "none", last: gs.reduce((a, g) => (g.last > a ? g.last : a), g0.last), pot };
+}
+// Money that left a pot without Monzo listing it: a card payment taken straight from the pot.
+// Found from the pot's balance at each check (hist rows: balance, first_seen, last_seen; the
+// server notes them) against the moves in and out of the pot that Monzo does list. A drop that's
+// put back within two days (a check that ran before Monzo listed a move) doesn't count.
+// Oldest first: [{amount (pence), after, at}], paid between the checks at `after` and `at`.
+function potSpends(hist, txns, potId) {
+  const rows = (hist || []).filter(h => h.pot_id === potId).sort((a, b) => Date.parse(a.first_seen) - Date.parse(b.first_seen));
+  const moves = txns.filter(t => t.pot_id === potId && isPotMove(t) && t.scheme !== "mastercard").map(t => [txWhen(t).getTime(), -Number(t.amount)]);
+  const listed = ms => moves.reduce((s, [at, into]) => (at <= ms ? s + into : s), 0);
+  const pts = [];
+  for (const r of rows) {
+    const f = Date.parse(r.first_seen), l = Date.parse(r.last_seen);
+    pts.push([f, Number(r.balance) - listed(f)]);
+    if (l > f) pts.push([l, Number(r.balance) - listed(l)]);
+  }
+  const ev = [];
+  for (let i = 1; i < pts.length; i++) {
+    const d = pts[i][1] - pts[i - 1][1];
+    if (d) ev.push({ amount: -d, after: pts[i - 1][0], at: pts[i][0] });
+  }
+  for (let i = 0; i < ev.length; i++) {
+    if (ev[i].gone) continue;
+    for (let j = i + 1; j < ev.length && ev[j].at - ev[i].at <= 2 * DAY_MS; j++)
+      if (!ev[j].gone && ev[j].amount === -ev[i].amount) { ev[i].gone = ev[j].gone = true; break; }
+  }
+  return ev.filter(e => !e.gone && e.amount > 0).map(e => ({ amount: e.amount, after: new Date(e.after), at: new Date(e.at) }));
+}
+// Which bills each pot payment was: the bills not seen yet whose amounts add up to it exactly,
+// fewest bills first (Disney and Prime's ad-free going out on the same day come as one drop).
+// bills: [{ref, pence}]; spends oldest first. Returns {paid: Map(ref -> spend), unmatched}.
+function matchPotSpends(bills, spends) {
+  const paid = new Map(), unmatched = [];
+  for (const s of spends) {
+    const open = bills.filter(b => !paid.has(b.ref) && b.pence > 0).slice(0, 12);
+    let best = 0, bestN = 99;
+    for (let mask = 1; mask < (1 << open.length); mask++) {
+      let sum = 0, n = 0;
+      for (let i = 0; i < open.length; i++) if (mask & (1 << i)) { sum += open[i].pence; n++; }
+      if (sum === s.amount && n < bestN) { best = mask; bestN = n; }
+    }
+    if (!best) { unmatched.push(s); continue; }
+    open.forEach((b, i) => { if (best & (1 << i)) paid.set(b.ref, s); });
+  }
+  return { paid, unmatched };
+}
+// Headroom is money set aside, never paid to anyone.
+const isHeadroom = name => /\bhead\s*room\b|\bbuffer\b/i.test(String(name || ""));
+// Bills paid into the same pot (two or more) go together. The pot's top-up each month puts them
+// all in the pot; each is then paid when it leaves: a direct debit Monzo pays from the pot (its
+// own payment, which Monzo lists), or a card payment straight from the pot (from the pot's
+// balance, matched by amount). bills: [{ref, name, pence (null when it varies), month (pence
+// this month), key (its link: a pot's top-up or a payee), status (its own)}]. Returns the
+// group bills' statuses by ref, and this month's pot payments (12+ hours old) that match no bill.
+function potGroupTicks(bills, groups, hist, txns, mk, now = new Date()) {
+  const byPot = new Map();
+  for (const b of bills) {
+    const g = groups.get(b.key);
+    if (!g) continue;
+    const potKey = g.pot ? g.key : g.fromPot ? g.accountId + "|pot:" + g.fromPot : null;
+    const pg = potKey && groups.get(potKey);
+    if (!pg) continue;
+    // The pot's own allowance (Food's £300 into the Food shop pot) isn't a bill inside the pot.
+    if (g.pot && b.month > 0 && Math.abs(b.month - pg.latest) <= pg.latest * 0.1) continue;
+    if (!byPot.has(potKey)) byPot.set(potKey, []);
+    byPot.get(potKey).push({ ...b, card: !!g.pot });
+  }
+  const [y, m] = mk.split("-").map(Number);
+  const start = new Date(y, m - 1, 1), prevStart = new Date(y, m - 2, 1), end = new Date(y, m, 1);
+  // A month's card payments: in it, or in the last three days of the month before (a bill due on
+  // the 1st taken the night before), unless that month's bills took them.
+  const within = (s, from, to) => s.at.getTime() >= from.getTime() - 3 * DAY_MS && s.at < to;
+  const status = new Map(), unmatched = [];
+  for (const [potKey, members] of byPot) {
+    if (members.length < 2) continue;
+    const pg = groups.get(potKey);
+    const top = billStatus([potKey], groups, mk, null, now);
+    const total = members.reduce((s, x) => s + (x.month || 0), 0);
+    const short = top && top.state === "paid" && total - top.amount > 50 ? total - top.amount : 0;
+    const all = potSpends(hist, txns, pg.pot);
+    const cards = members.filter(x => x.card && x.pence > 0 && !isHeadroom(x.name)).map(x => ({ ref: x.ref, pence: x.pence }));
+    const before = matchPotSpends(cards, all.filter(s => within(s, prevStart, start)));
+    const used = new Set(before.paid.values());
+    const res = matchPotSpends(cards, all.filter(s => within(s, start, end) && !used.has(s)));
+    for (const s of res.unmatched) if (now.getTime() - s.at.getTime() >= 12 * 3600000) unmatched.push({ ...s, pot: pg.name });
+    for (const x of members) {
+      const own = x.status, sp = res.paid.get(x.ref);
+      let st;
+      if (!x.card && own && own.state === "paid") st = { ...own, pot: null, via: pg.name };
+      else if (sp) st = { state: "paid", date: sp.at, amount: x.pence, n: 1, via: pg.name, approx: true };
+      else if (top && top.state === "paid") st = { state: "inpot", date: top.date, pot: pg.name, short };
+      else if (top && (top.state === "due" || top.state === "late")) st = { ...top, pot: pg.name, group: true };
+      else st = own;   // the pot isn't topped up every month: the bill's own status
+      status.set(x.ref, st);
+    }
+  }
+  return { status, unmatched };
 }
 // Money Monzo has taken from an account but not listed yet (pence). Monzo takes some direct debits
 // off the balance early in the morning and only lists them later; the server keeps track of the
@@ -1478,20 +1613,26 @@ function stableJson(v) {
   return JSON.stringify(v === undefined ? null : v);
 }
 // The line under a bill on the Budget tab: paid (amber when it isn't what the budget says,
-// expectPence), due, or not seen yet.
+// expectPence), in its pot (with the other bills paid into it), due, or not seen yet.
 function tickLine(st, expectPence) {
   if (!st) return null;
   const day = d => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const into = st.group && st.pot ? " · into " + st.pot + " pot" : "";
   if (st.state === "paid") {
     const off = expectPence != null && Math.abs(st.amount - expectPence) > 50;
     const what = st.od ? (st.amount ? "Cleared " + day(st.date) + " · " + fmt(pounds(st.amount)) + " overdrawn" : "Not overdrawn when pay landed " + day(st.date))
+      : st.via ? "Paid " + (st.approx ? "~" : "") + day(st.date) + " from " + st.via + " pot · " + fmt(pounds(st.amount)) + (st.n > 1 ? " (" + st.n + " payments)" : "")
       : st.pot ? day(st.date) + " · " + fmt(pounds(st.amount)) + " into " + st.pot + " pot"
       : "Paid " + day(st.date) + " · " + fmt(pounds(st.amount)) + (st.n > 1 ? " (" + st.n + " payments)" : "");
     return { text: "✓ " + what, color: off ? "#ffb84a" : "#00c88c" };
   }
+  if (st.state === "inpot" && st.date) {
+    const what = (st.pot ? "In " + st.pot + " pot " : "Set aside ") + day(st.date);
+    return st.short > 0 ? { text: "✓ " + what + " · top-up " + fmt(pounds(st.short)) + " short", color: "#ffb84a" } : { text: "✓ " + what, color: "#00c88c" };
+  }
   if (st.state === "live") return st.amount > 0 ? { text: "Overdrawn now · " + fmt(pounds(st.amount)), color: "#ffb84a" } : { text: "✓ Not overdrawn now", color: "#00c88c" };
-  if (st.state === "due" && st.date) return { text: st.od ? "Clears when pay lands ~" + day(st.date) : "Due ~" + day(st.date), color: "#5a6480" };
-  if (st.state === "late" && st.date) return { text: "Not seen yet · usually ~" + day(st.date), color: "#ffb84a" };
+  if (st.state === "due" && st.date) return { text: st.od ? "Clears when pay lands ~" + day(st.date) : "Due ~" + day(st.date) + into, color: "#5a6480" };
+  if (st.state === "late" && st.date) return { text: "Not seen yet · usually ~" + day(st.date) + into, color: "#ffb84a" };
   if (st.state === "none" && st.last) return { text: "Last paid " + day(st.last), color: "#5a6480" };
   return null;
 }
@@ -2328,8 +2469,9 @@ export default function App() {
     }catch(e){}
     setMfa(m=>({checked:true,level,hasFactor,factorId,need:hasFactor&&level!=="aal2"&&!m.skipped,skipped:m.skipped}));
   },[]);
-  const [bank,setBank]=useState({accounts:[],pots:[],txns:[],link:null});
+  const [bank,setBank]=useState({accounts:[],pots:[],txns:[],potHist:[],link:null});
   const bankSyncAt=useRef(0);
+  const bankRetry=useRef({n:0,timer:null});         // looking again after a failed read
   const loadBankRef=useRef(null);
   const [linkSheet,setLinkSheet]=useState(null);   // Monzo linking progress
   const [bankReturn,setBankReturn]=useState(()=>{try{const v=new URLSearchParams(window.location.search).get("bank");return v&&/^[a-z]{2,12}$/.test(v)?v:null;}catch(e){return null;}});
@@ -2356,25 +2498,40 @@ export default function App() {
     if(!user)return;
     let aal=null;
     try{aal=(await supabase.auth.mfa.getAuthenticatorAssuranceLevel()).data;}catch(e){}
-    if(!aal||aal.nextLevel!=="aal2"){setBank({accounts:[],pots:[],txns:[],link:null});setBankPrefs(null);return;}   // no two-step, no bank
+    if(!aal||aal.nextLevel!=="aal2"){setBank({accounts:[],pots:[],txns:[],potHist:[],link:null});setBankPrefs(null);return;}   // no two-step, no bank
     const st=await bankCall("status");
     if(st&&st.error){   // couldn't check: keep what's showing
       if(aal.currentLevel!=="aal2")return;
     }
     const link=st&&!st.error?st:null;
-    if(aal.currentLevel!=="aal2"||(link&&!link.linked)){setBank({accounts:[],pots:[],txns:[],link});setBankPrefs(null);return;}
+    if(aal.currentLevel!=="aal2"||(link&&!link.linked)){setBank({accounts:[],pots:[],txns:[],potHist:[],link});setBankPrefs(null);return;}
     const since=new Date(Date.now()-130*DAY_MS).toISOString();
     const asked=Date.now();
-    const [acc,pots,txns,prefs]=await Promise.all([
+    const prefsRead=db.getBankPrefs(user.id);   // (shown when it comes; the rest doesn't wait for it)
+    const [acc,pots,txns,hist]=await Promise.all([
       supabase.from("bank_accounts").select("account_id,type,balance,total_balance,closed,updated_at,gap_offset,gap_base").eq("user_id",user.id),
       supabase.from("bank_pots").select("pot_id,account_id,name,balance,goal_amount,deleted,updated_at").eq("user_id",user.id),
       bankTxSince(user.id,since),
-      db.getBankPrefs(user.id),
+      // Pot balances from the start of last month (this month's card payments from pots, and the days before).
+      bankPotHistSince(user.id,new Date(new Date().getFullYear(),new Date().getMonth()-1,1).toISOString()),
     ]);
+    const bad=acc.error||pots.error||!txns||!hist;   // all or nothing: no ticks rather than wrong ones
+    if(bad)setBank(b=>({...b,link:link||b.link}));
+    else{
+      const accounts=(acc.data||[]).filter(a=>!a.closed&&BANK_LABEL[a.type]).sort((a,b)=>(a.type==="uk_retail"?0:1)-(b.type==="uk_retail"?0:1));
+      setBank(b=>({accounts,pots:(pots.data||[]).filter(p=>!p.deleted),txns,potHist:hist,link:link||b.link}));
+    }
+    const prefs=await prefsRead;
     if(prefs&&prefsChangedAt.current<asked&&!prefsPending.current){bankPrefsRef.current=prefs;setBankPrefs(prefs);}   // not over a change made meanwhile
-    if(acc.error||pots.error||!txns){setBank(b=>({...b,link:link||b.link}));return;}
-    const accounts=(acc.data||[]).filter(a=>!a.closed&&BANK_LABEL[a.type]).sort((a,b)=>(a.type==="uk_retail"?0:1)-(b.type==="uk_retail"?0:1));
-    setBank(b=>({accounts,pots:(pots.data||[]).filter(p=>!p.deleted),txns,link:link||b.link}));
+    // A read that failed (usually the phone waking before its signal is back): look again shortly.
+    const failed=bad||!prefs;
+    if(failed&&bankRetry.current.n<2&&!bankRetry.current.timer){
+      bankRetry.current.n++;
+      bankRetry.current.timer=setTimeout(()=>{bankRetry.current.timer=null;if(loadBankRef.current)loadBankRef.current({noSync:true});},20000);
+    }
+    if(!failed)bankRetry.current.n=0;
+    if(bad)return;
+    const accounts=(acc.data||[]).filter(a=>!a.closed&&BANK_LABEL[a.type]);
     const newest=Math.max(0,...accounts.map(a=>Date.parse(a.updated_at)||0));
     // Also when Monzo has taken money it hasn't listed yet: it may have listed it by now.
     const gap=accounts.some(a=>unlistedOf(a)>0);
@@ -2417,14 +2574,14 @@ export default function App() {
   // Unlinking Monzo takes back what this login shared with Hollie, and forgets the bank details
   // on this phone at once so nothing is shared again before it reloads.
   const clearBankSummary=()=>{
-    setBank({accounts:[],pots:[],txns:[],link:{linked:false}});
+    setBank({accounts:[],pots:[],txns:[],potHist:[],link:{linked:false}});
     bankPrefsRef.current=null;setBankPrefs(null);
     const cur=bankSummaryRef.current;
     if(!user||!cur||(cur.by&&cur.by!==user.id))return;
     sendSummary(null,"cleared",null);
   };
   React.useEffect(()=>{
-    if(!user){setMfa({checked:false,level:null,hasFactor:false,factorId:null,need:false,skipped:false});setBank({accounts:[],pots:[],txns:[],link:null});setBankPrefs(null);setLinkSheet(null);return;}
+    if(!user){setMfa({checked:false,level:null,hasFactor:false,factorId:null,need:false,skipped:false});setBank({accounts:[],pots:[],txns:[],potHist:[],link:null});setBankPrefs(null);setLinkSheet(null);return;}
     checkMfa();
   },[user,checkMfa]);
   React.useEffect(()=>{
@@ -2633,6 +2790,13 @@ export default function App() {
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
+  }, [refreshAll]);
+  // The connection coming back (after the phone had none): catch up quietly.
+  React.useEffect(() => {
+    let timer = null;
+    const onOnline = () => { clearTimeout(timer); timer = setTimeout(refreshAll, 2000); };
+    window.addEventListener("online", onOnline);
+    return () => { clearTimeout(timer); window.removeEventListener("online", onOnline); };
   }, [refreshAll]);
 
   // Real-time subscriptions (Supabase v2 syntax)
@@ -4419,7 +4583,14 @@ const calcTimesheetTotals = days => {
       const name=kind==="od"?"How far overdrawn":g?(g.pot?"Into "+g.name+" pot":g.name):man&&man.n?man.n:null;
       byRef[x.ref]={kind,keys,auto:isAuto,status,name,accountId:g?g.accountId:null,joint:!!(g&&jIds.includes(g.accountId))};
     }
-    return {byRef,groups,mk};
+    // Bills paid into the same pot (the Bills pot, say) tick together when it's topped up, then
+    // each as it leaves the pot.
+    const pots=potGroupTicks(all.filter(x=>byRef[x.ref].kind==="tx"&&byRef[x.ref].keys.length).map(x=>{
+      const pence=penceOf(x.b);
+      return {ref:x.ref,name:x.b.name,pence,month:pence!=null?pence:Math.round((Number((x.b.amounts||{})[mk])||0)*100),key:byRef[x.ref].keys[0],status:byRef[x.ref].status};
+    }),groups,bank.potHist||[],bank.txns,mk,now);
+    for(const [ref,st] of pots.status)byRef[ref].status=st;
+    return {byRef,groups,mk,potUnmatched:pots.unmatched};
   },[bank,bankPrefs,sharedBills,glynBills,nowTick]);
   const nowMkBank=(()=>{const d=new Date(nowTick);return monthKeyOf(d.getFullYear(),d.getMonth()+1);})();
   // How a bill stands this month: live on the phone with the Monzo link, or, for shared bills,
@@ -4430,13 +4601,15 @@ const calcTimesheetTotals = days => {
       const t=bankSummary.ticks[ref];
       if(!t)return null;
       const d=t.d?new Date(t.d+"T12:00:00"):null;
-      return {state:t.s,date:d,last:t.s==="none"?d:null,amount:Number(t.a)||0,n:t.n||1,pot:t.pot||null};
+      return {state:t.s,date:d,last:t.s==="none"?d:null,amount:Number(t.a)||0,n:t.n||1,pot:t.pot||null,via:t.via||null,approx:!!t.x,short:Number(t.sh)||0,group:!!t.g};
     }
     return null;
   };
   // Bills with nothing matched and not set aside as "don't track".
   const unlinkedBills=bankMatch?[...sharedBills.map(b=>({ref:"s:"+b.id,b,shared:true})),...glynBills.map(b=>({ref:"g:"+b.id,b,shared:false}))]
     .filter(x=>{const m=bankMatch.byRef[x.ref];return m&&!m.kind;}):[];
+  // Card payments straight from a pot that don't match any of its bills (a price that's changed).
+  const potUnmatched=bankMatch?bankMatch.potUnmatched||[]:[];
 
   // Bills that vary (Lloyds, Ocean, Flex, Overdraft…) take this month's actual payment when their
   // amount is blank or £0, and keep up with it while it's still the figure Vaulted put in.
@@ -4497,6 +4670,9 @@ const calcTimesheetTotals = days => {
       if(when)t.d=localISO(new Date(when));
       if(st.state==="paid"){t.a=Math.round(st.amount);t.n=st.n;}
       if(st.pot&&m.joint)t.pot=st.pot;
+      if(st.via&&m.joint)t.via=st.via;
+      if(st.approx)t.x=1;
+      if(st.group)t.g=1;   // (a pot's shortfall isn't shared: it can count your own bills)
       ticks["s:"+b.id]=t;
     }
     const ids=bankPrefs.house_pots||[];
@@ -5151,11 +5327,17 @@ const calcTimesheetTotals = days => {
             </div>
 
             {/* ── Monzo: bills with no payment matched yet, or where Hollie's ticks come from ── */}
-            {selIsNow&&unlinkedBills.length>0&&(
+            {selIsNow&&(unlinkedBills.length>0||potUnmatched.length>0)&&(
               <div onClick={()=>{haptic();setLinkReview(true);}} style={{background:"#0f1a2b",border:"1px solid #2a4a7a",borderRadius:10,padding:"10px 12px",
                 fontSize:11.5,color:"#8ec5ff",display:"flex",alignItems:"center",gap:8,cursor:"pointer",marginTop:-2}}>
                 <span>🔗</span>
-                <span style={{flex:1}}>{unlinkedBills.length} bill{unlinkedBills.length===1?"":"s"} not matched to a Monzo payment yet</span>
+                <span style={{flex:1}}>
+                  {unlinkedBills.length>0&&`${unlinkedBills.length} bill${unlinkedBills.length===1?"":"s"} not matched to a Monzo payment yet`}
+                  {unlinkedBills.length>0&&potUnmatched.length>0&&" · "}
+                  {potUnmatched.length>0&&(potUnmatched.length===1
+                    ?`${fmt(pounds(potUnmatched[0].amount))} from ${potUnmatched[0].pot} pot doesn't match a bill`
+                    :`${potUnmatched.length} pot payments don't match a bill`)}
+                </span>
                 <span style={{fontWeight:700,flexShrink:0}}>Review →</span>
               </div>
             )}
@@ -7577,6 +7759,18 @@ const calcTimesheetTotals = days => {
                 </div>
               ))}
               {unlinkedBills.length===0&&<div style={{fontSize:12.5,color:"#00c88c",padding:"14px 4px",textAlign:"center",fontWeight:600}}>✓ Every bill is matched or set aside</div>}
+              {potUnmatched.length>0&&(
+                <div data-pot-unmatched="1" style={{marginTop:6}}>
+                  <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"10px 4px 6px",borderTop:"1px solid #1a1f2e"}}>Paid by card from a pot</div>
+                  {potUnmatched.map((s,i)=>(
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 4px"}}>
+                      <span style={{flex:1,fontSize:13,color:"#e8eaf0",fontWeight:600}}>{fmt(pounds(s.amount))}</span>
+                      <span style={{fontSize:11,color:"#5a6480"}}>{s.pot} pot · ~{s.at.toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span>
+                    </div>
+                  ))}
+                  <div style={{fontSize:10.5,color:"#5a6480",padding:"2px 4px 0",lineHeight:1.5}}>Monzo doesn't say who these were paid to, so Vaulted matches them to the pot's bills by amount. If a price has changed, change that bill's amount to match.</div>
+                </div>
+              )}
               <div style={{fontSize:10.5,color:"#3a4460",padding:"10px 4px 0",lineHeight:1.5}}>To change a bill later, tap its name on the Budget tab.</div>
               <button onClick={()=>setLinkReview(false)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
             </div>

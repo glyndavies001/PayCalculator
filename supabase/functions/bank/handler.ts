@@ -66,7 +66,7 @@ const upsert = (table, rows, onConflict) => db("POST", `${table}?on_conflict=${o
 async function getLink(userId) { const rows = await db("GET", `bank_links?user_id=eq.${userId}&select=*`); return rows && rows[0]; }
 const patchLink = (userId, patch) => db("PATCH", `bank_links?user_id=eq.${userId}`, patch, "return=minimal");
 async function forgetData(userId) {
-  for (const t of ["bank_transactions", "bank_pots", "bank_accounts"]) await db("DELETE", `${t}?user_id=eq.${userId}`, null, "return=minimal");
+  for (const t of ["bank_pot_history", "bank_transactions", "bank_pots", "bank_accounts"]) await db("DELETE", `${t}?user_id=eq.${userId}`, null, "return=minimal");
 }
 
 export async function config() {
