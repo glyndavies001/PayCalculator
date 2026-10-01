@@ -753,7 +753,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.15.2";
+const APP_VERSION = "1.15.3";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -1355,8 +1355,10 @@ function payeeGroups(txns, pots, now = new Date()) {
     g.day = usualDay(g.main.map(txWhen));
     g.latest = -Number(g.main[g.main.length - 1].amount);
     g.last = txWhen(last);
-    // (Only while that's recent: a bill that's stopped coming from a pot leaves its group.)
-    g.fromPot = g.pot || now.getTime() - g.last.getTime() > 45 * DAY_MS ? null : fromPot.get(last.tx_id) || null;
+    // Its main payment, that is (not a small extra), and only while that's recent: a bill that's
+    // stopped coming from a pot leaves its group.
+    const lastMain = g.main[g.main.length - 1];
+    g.fromPot = g.pot || now.getTime() - txWhen(lastMain).getTime() > 45 * DAY_MS ? null : fromPot.get(lastMain.tx_id) || null;
     g.exact = pence => new Set(g.txs.filter(t => -Number(t.amount) === pence).map(t => ago(txWhen(t)))).size;
   }
   return out;
