@@ -354,24 +354,63 @@ export async function syncUser(userId, cfg, opts = {}) {
 }
 
 // ── Monzo's webhook: a new transaction on one of the linked accounts ──────
+// Monzo can send the webhook before the payment can be read back, so a miss is tried again in the
+// background (after 15 s, 45 s and 105 s); after that the account's last two days are read
+// instead, so anything Monzo lists by then is saved. Tests shorten the waits.
+export const hookTiming = { waits: [15000, 30000, 60000] };
+function background(p) {
+  const rt = globalThis.EdgeRuntime;
+  if (rt && typeof rt.waitUntil === "function") rt.waitUntil(p);
+  else p.catch(() => {});
+}
+const hookProblem = e => (e instanceof Dead ? "link expired" : e instanceof NeedsApproval ? "needs approval" : String((e && e.message) || e));
+// The webhook's payment, read back from Monzo and saved, then the balance. 0 = done, else Monzo's status.
+async function saveHookTx(link, cfg, t) {
+  const r = await call(link, cfg, "GET", `/transactions/${t.id}`, [["expand[]", "merchant"]]);
+  if (!r.ok) return r.status || 1;
+  const stamp = iso(Date.now());
+  const tx = r.data && r.data.transaction;
+  if (tx && tx.id === t.id && tx.account_id === t.account_id && keepTx(tx, t.account_id)) await upsert("bank_transactions", [rowOfTx(link.user_id, tx, stamp)], "user_id,tx_id");
+  await refreshAccount(link, cfg, { id: t.account_id }, stamp);
+  return 0;
+}
+async function retryHookTx(userId, cfg, t) {
+  const usable = async () => { const l = await getLink(userId); return l && l.status === "ok" && l.refresh_token ? l : null; };
+  for (const wait of hookTiming.waits) {
+    await sleep(wait);
+    const link = await usable();
+    if (!link) return;
+    try { if ((await saveHookTx(link, cfg, t)) === 0) return; }
+    catch (e) { console.error("hook retry", hookProblem(e)); return; }
+  }
+  const link = await usable();
+  if (!link) return;
+  try {
+    const stamp = iso(Date.now());
+    const { list } = await pullTx(link, cfg, t.account_id, iso(Date.now() - 2 * DAY));
+    const rows = list.filter(x => keepTx(x, t.account_id)).map(x => rowOfTx(userId, { ...x, account_id: t.account_id }, stamp));
+    if (rows.length) await upsert("bank_transactions", rows, "user_id,tx_id");
+    await refreshAccount(link, cfg, { id: t.account_id }, stamp);
+    console.error("hook", list.some(x => x && x.id === t.id) ? "payment found by reading the account instead" : "payment still not listed by Monzo");
+  } catch (e) { console.error("hook list", hookProblem(e)); }
+}
 export async function hook(req, cfg, secret) {
   if (!cfg.hook || !sameText(secret, cfg.hook)) return new Response("Not found", { status: 404, headers: CORS });
   const body = await req.json().catch(() => null);
   const t = body && body.type === "transaction.created" && body.data;
   if (!t || !/^tx_[A-Za-z0-9]+$/.test(String(t.id || "")) || !/^acc_[A-Za-z0-9]+$/.test(String(t.account_id || "")) || !ready(cfg)) return json({ ok: true });
   const owners = await db("GET", `bank_accounts?account_id=eq.${enc(t.account_id)}&select=user_id`) || [];
-  const stamp = iso(Date.now());
   for (const { user_id } of owners) {
     const link = await getLink(user_id);
     if (!link || link.status !== "ok" || !link.refresh_token) continue;
     try {
-      const r = await call(link, cfg, "GET", `/transactions/${t.id}`, [["expand[]", "merchant"]]);
-      if (!r.ok) continue;   // left to the next sync to judge
-      const tx = r.data && r.data.transaction;
-      if (tx && tx.id === t.id && tx.account_id === t.account_id && keepTx(tx, t.account_id)) await upsert("bank_transactions", [rowOfTx(user_id, tx, stamp)], "user_id,tx_id");
-      await refreshAccount(link, cfg, { id: t.account_id }, stamp);
+      const miss = await saveHookTx(link, cfg, { id: t.id, account_id: t.account_id });
+      if (miss) {
+        console.error("hook", `Monzo couldn't give the payment yet (${miss}); trying again shortly`);
+        background(retryHookTx(user_id, cfg, { id: t.id, account_id: t.account_id }));
+      }
     } catch (e) {
-      console.error("hook", e instanceof Dead ? "link expired" : e instanceof NeedsApproval ? "needs approval" : String(e.message || e));
+      console.error("hook", hookProblem(e));
     }
   }
   return json({ ok: true });

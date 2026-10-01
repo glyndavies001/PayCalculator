@@ -746,7 +746,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.15.0";
+const APP_VERSION = "1.15.1";
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -1394,23 +1394,50 @@ function billStatus(keys, groups, mk, pence, now = new Date()) {
   if (gs.some(g => g.months >= 2)) return { state: today.getTime() <= e.getTime() + 3 * DAY_MS ? "due" : "late", date: e, pot };
   return { state: "none", last: gs.reduce((a, g) => (g.last > a ? g.last : a), g0.last), pot };
 }
-// The main balance just before one transaction (pence), worked back from today's balance.
+// Money Monzo has taken from an account but not listed yet (pence). Monzo takes some direct debits
+// off the balance early in the morning and only lists them later; the server keeps track of the
+// balance against the payments it holds (gap_base − gap_offset). A negative difference is ignored.
+const unlistedOf = a => (a && a.gap_base != null && a.gap_offset != null ? Math.max(0, Number(a.gap_base) - Number(a.gap_offset)) : 0);
+// Which of the payments due by today that unlisted money most likely is: the set whose usual
+// amounts come closest to it without going well over (amounts can change a little).
+function takenUnlisted(due, unlisted, now = new Date()) {
+  if (!(unlisted > 0)) return [];
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const cands = due.filter(d => d.due < end).slice(0, 10);
+  const cap = unlisted * 1.25 + 100;
+  let best = [], bestSum = 0;
+  for (let mask = 1; mask < (1 << cands.length); mask++) {
+    let sum = 0;
+    const pick = [];
+    for (let i = 0; i < cands.length; i++) if (mask & (1 << i)) { sum += cands[i].amount; pick.push(cands[i]); }
+    if (sum <= cap && Math.abs(unlisted - sum) < Math.abs(unlisted - bestSum)) { best = pick; bestSum = sum; }
+  }
+  return best;
+}
+// The main balance just before one transaction (pence), worked back from today's balance (plus
+// anything taken but not listed yet, so it matches the payments we hold).
 function balanceBefore(txns, account, tx) {
   const i = txns.indexOf(tx);
   if (i < 0) return null;
-  let bal = Number(account.balance) || 0;
+  let bal = (Number(account.balance) || 0) + unlistedOf(account);
   for (let j = txns.length - 1; j >= i; j--) if (txns[j].account_id === account.account_id) bal -= Number(txns[j].amount);
   return bal;
 }
-// An "Overdraft" bill in a Budget month: how far overdrawn the account was when that month's
-// wage landed (it clears it), or due at payday.
-function overdraftStatus(txns, account, mk) {
+// An "Overdraft" bill in a Budget month: how far overdrawn the account is now ("live"), until that
+// month's wage lands; from then on, how far overdrawn it was just before the wage (it clears it).
+function overdraftStatus(txns, account, mk, now = new Date()) {
   const [y, m] = mk.split("-").map(Number);
   const pd = getPayday(y, m - 1);
   const w = wageNear(txns, pd, [account.account_id]);
-  if (!w) return { state: "due", date: pd, od: true };
-  const bal = balanceBefore(txns, account, w);
-  return bal == null ? null : { state: "paid", date: txWhen(w), amount: bal < 0 ? -bal : 0, n: 1, od: true };
+  if (w) {
+    const bal = balanceBefore(txns, account, w);
+    return bal == null ? null : { state: "paid", date: txWhen(w), amount: bal < 0 ? -bal : 0, n: 1, od: true };
+  }
+  if (mk === monthKeyOf(now.getFullYear(), now.getMonth() + 1)) {
+    const bal = Number(account.balance) || 0;
+    return { state: "live", date: now, amount: bal < 0 ? -bal : 0, od: true };
+  }
+  return { state: "due", date: pd, od: true };
 }
 // Money spent from one account between two times, by Monzo category (pence; refunds count off).
 // Transfers, savings, income and pot moves aren't spending; your own categories go together.
@@ -1462,6 +1489,7 @@ function tickLine(st, expectPence) {
       : "Paid " + day(st.date) + " · " + fmt(pounds(st.amount)) + (st.n > 1 ? " (" + st.n + " payments)" : "");
     return { text: "✓ " + what, color: off ? "#ffb84a" : "#00c88c" };
   }
+  if (st.state === "live") return st.amount > 0 ? { text: "Overdrawn now · " + fmt(pounds(st.amount)), color: "#ffb84a" } : { text: "✓ Not overdrawn now", color: "#00c88c" };
   if (st.state === "due" && st.date) return { text: st.od ? "Clears when pay lands ~" + day(st.date) : "Due ~" + day(st.date), color: "#5a6480" };
   if (st.state === "late" && st.date) return { text: "Not seen yet · usually ~" + day(st.date), color: "#ffb84a" };
   if (st.state === "none" && st.last) return { text: "Last paid " + day(st.last), color: "#5a6480" };
@@ -1998,7 +2026,7 @@ function BankCards({ left, pay, locked, attention, onDismissPay, onUnlock, onOpe
       <span style={{ fontSize: 18 }}>🏦</span>
       <div style={{ flex: 1, fontSize: 12.5, color: "#ffb84a" }}>{attention}</div>
     </div>}
-    {left && left.rows.filter(r => r.shortAt).map(r => (
+    {left && left.rows.filter(r => r.shortAt && r.type === "uk_retail_joint").map(r => (   // the joint account only
       <div key={"short" + r.id} data-short="1" style={{ ...card, background: "#1a0a0a", border: "1px solid #ff4a6a", display: "flex", alignItems: "flex-start", gap: 10 }}>
         <span style={{ fontSize: 18 }}>⚠️</span>
         <div style={{ flex: 1 }}>
@@ -2024,6 +2052,7 @@ function BankCards({ left, pay, locked, attention, onDismissPay, onUnlock, onOpe
             <span style={{ fontSize: i ? 17 : 24, fontWeight: 800, color: r.left >= 0 ? "#00c88c" : "#ff4a6a" }}>{fmtS(pounds(r.left))}</span>
           </div>
           <div style={{ fontSize: 11, color: "#5a6480", marginTop: 2, textAlign: "right" }}>{fmtS(pounds(r.balance))} now − {fmt(pounds(r.dueTotal))} still to go</div>
+          {r.unlisted > 0 && <div data-unlisted="1" style={{ fontSize: 10.5, color: "#8892b0", marginTop: 3, textAlign: "right", lineHeight: 1.45 }}>{fmt(pounds(r.unlisted))} already taken that Monzo hasn't listed yet{r.taken.length ? " (" + r.taken.map(d => d.name).join(", ") + ")" : ""}, so not counted again</div>}
         </div>
       ))}
       <div style={{ fontSize: 11.5, color: "#4a9eff", marginTop: 10 }}>{n ? `${open ? "▾" : "▸"} ${n} regular payment${n === 1 ? "" : "s"} still to go` : "Nothing regular left to go out before payday"}</div>
@@ -2077,9 +2106,9 @@ function JointCard({ check }) {
       </div>
       {r && <div style={{ borderTop: "1px solid #1a1f2e", marginTop: 6, paddingTop: 8, fontSize: 12, lineHeight: 1.5 }}>
         {r.left >= 0
-          ? <span style={{ color: "#00c88c", fontWeight: 600 }}>✓ Covers the {fmt(pounds(r.dueTotal))} still to go, with {fmt(pounds(r.left))} spare</span>
+          ? <span style={{ color: "#00c88c", fontWeight: 600 }}>{r.dueTotal > 0 ? `✓ Covers the ${fmt(pounds(r.dueTotal))} still to go, with ${fmt(pounds(r.left))} spare` : `✓ Nothing else due before payday · ${fmt(pounds(r.left))} spare`}</span>
           : <span style={{ color: "#ff6b8a", fontWeight: 700 }}>⚠ {fmt(pounds(-r.left))} short of the {fmt(pounds(r.dueTotal))} still to go</span>}
-        <div style={{ fontSize: 10.5, color: "#3a4460", marginTop: 2 }}>Shares are your split for {mon}'s shared bills · {fmt(pounds(r.balance))} in the joint account now</div>
+        <div style={{ fontSize: 10.5, color: "#3a4460", marginTop: 2 }}>Shares are your split for {mon}'s shared bills · {fmt(pounds(r.balance))} in the joint account now{r.unlisted > 0 ? ", after " + fmt(pounds(r.unlisted)) + " Monzo has taken but not listed yet" : ""}</div>
       </div>}
     </div>
   );
@@ -2337,7 +2366,7 @@ export default function App() {
     const since=new Date(Date.now()-130*DAY_MS).toISOString();
     const asked=Date.now();
     const [acc,pots,txns,prefs]=await Promise.all([
-      supabase.from("bank_accounts").select("account_id,type,balance,total_balance,closed,updated_at").eq("user_id",user.id),
+      supabase.from("bank_accounts").select("account_id,type,balance,total_balance,closed,updated_at,gap_offset,gap_base").eq("user_id",user.id),
       supabase.from("bank_pots").select("pot_id,account_id,name,balance,goal_amount,deleted,updated_at").eq("user_id",user.id),
       bankTxSince(user.id,since),
       db.getBankPrefs(user.id),
@@ -2347,7 +2376,9 @@ export default function App() {
     const accounts=(acc.data||[]).filter(a=>!a.closed&&BANK_LABEL[a.type]).sort((a,b)=>(a.type==="uk_retail"?0:1)-(b.type==="uk_retail"?0:1));
     setBank(b=>({accounts,pots:(pots.data||[]).filter(p=>!p.deleted),txns,link:link||b.link}));
     const newest=Math.max(0,...accounts.map(a=>Date.parse(a.updated_at)||0));
-    if(!opts.noSync&&link&&link.status==="ok"&&Date.now()-newest>30*60000&&Date.now()-bankSyncAt.current>10*60000){
+    // Also when Monzo has taken money it hasn't listed yet: it may have listed it by now.
+    const gap=accounts.some(a=>unlistedOf(a)>0);
+    if(!opts.noSync&&link&&link.status==="ok"&&(Date.now()-newest>30*60000||gap)&&Date.now()-bankSyncAt.current>10*60000){
       bankSyncAt.current=Date.now();
       const r=await bankCall("sync");
       if(r&&r.status==="ok"&&loadBankRef.current)loadBankRef.current({noSync:true});
@@ -4337,13 +4368,18 @@ const calcTimesheetTotals = days => {
     if(!bank.accounts.length)return null;
     const now=new Date(nowTick);
     const rows=bank.accounts.map(a=>{
-      const due=stillToGo(bank.txns,a.account_id,now,bank.pots);
+      const all=stillToGo(bank.txns,a.account_id,now,bank.pots);
+      // Money Monzo has already taken but not listed: the payments due by today it most likely
+      // is aren't counted again.
+      const unlisted=unlistedOf(a);
+      const taken=takenUnlisted(all,unlisted,now);
+      const due=all.filter(d=>!taken.includes(d));
       const dueTotal=due.reduce((s,r)=>s+r.amount,0);
       const balance=Number(a.balance)||0;
       // Going through what's due in date order: the first payment the balance won't cover.
       let run=balance,shortAt=null;
       for(const d of due){run-=d.amount;if(run<0&&!shortAt)shortAt=d;}
-      return {id:a.account_id,type:a.type,label:BANK_LABEL[a.type],balance,due,dueTotal,left:balance-dueTotal,shortAt};
+      return {id:a.account_id,type:a.type,label:BANK_LABEL[a.type],balance,due,dueTotal,left:balance-dueTotal,shortAt,unlisted,taken};
     });
     const updated=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
     return {rows,next:payCycle(now).next,updated};
@@ -4378,9 +4414,9 @@ const calcTimesheetTotals = days => {
       else{const a=auto.get(x.ref);if(a){kind="tx";keys=a.keys;isAuto=true;}}
       let status=null;
       if(kind==="tx")status=billStatus(keys,groups,mk,penceOf(x.b),now);
-      else if(kind==="od"&&personal[0])status=overdraftStatus(bank.txns,personal[0],mk);
+      else if(kind==="od"&&personal[0])status=overdraftStatus(bank.txns,personal[0],mk,now);
       const g=keys.length?groups.get(keys[0]):null;
-      const name=kind==="od"?"Overdrawn when pay lands":g?(g.pot?"Into "+g.name+" pot":g.name):man&&man.n?man.n:null;
+      const name=kind==="od"?"How far overdrawn":g?(g.pot?"Into "+g.name+" pot":g.name):man&&man.n?man.n:null;
       byRef[x.ref]={kind,keys,auto:isAuto,status,name,accountId:g?g.accountId:null,joint:!!(g&&jIds.includes(g.accountId))};
     }
     return {byRef,groups,mk};
@@ -4414,11 +4450,13 @@ const calcTimesheetTotals = days => {
       const next=list.map(b=>{
         if(!isVariable(b))return b;
         const ref=prefix+b.id,m=bankMatch.byRef[ref],st=m&&m.status;
-        if(!st||st.state!=="paid"||!(st.amount>0))return b;
+        // Paid this month, or (Overdraft) how far overdrawn the account is now.
+        if(!st||!(st.state==="paid"||st.state==="live"))return b;
         if(shared&&m.auto&&!m.joint)return b;   // a shared bill only takes the joint account's payments
         const val=Math.round(st.amount)/100;
         const cur=b.amounts[mk],was=fills[ref]&&fills[ref][mk];
         const blank=cur===undefined||cur===null||Number(cur)===0;
+        if(blank&&!(val>0))return b;   // nothing to fill in
         if(!blank&&!(was!=null&&Number(cur)===Number(was)))return b;   // typed by you: left alone
         if(Number(cur)===val)return b;
         const mine={...(fills[ref]||{}),[mk]:val};
@@ -7595,8 +7633,8 @@ const calcTimesheetTotals = days => {
               {!linkPick.shared&&!q&&(
                 <button onClick={()=>pick({k:"od"})} style={{...opt,background:cur.kind==="od"?"#15203a":"transparent"}}>
                   <div style={{flex:1}}>
-                    <div style={{fontSize:13.5,fontWeight:600}}>Overdrawn when pay lands</div>
-                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>For an overdraft: how far overdrawn you were when your wage came in</div>
+                    <div style={{fontSize:13.5,fontWeight:600}}>How far overdrawn</div>
+                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>For an overdraft: how far overdrawn your account is, until your wage clears it</div>
                   </div>
                   {cur.kind==="od"&&<span style={{color:"#4a9eff",fontWeight:700}}>✓</span>}
                 </button>
