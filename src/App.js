@@ -266,6 +266,7 @@ const SK = {
   pickerEvent:  "vaulted_picker_event",  // ms timestamp of last change event received
   loadCount:    "vaulted_load_count",    // app load counter (picker-death diagnostics)
   paySeen:      "vaulted_pay_seen",      // the wage payment whose payday card was dismissed
+  seenVersion:  "vaulted_seen_version",  // the version whose What's new this phone has seen
   // Below kept for backward compat - falls back to defaults if missing
   collapsed:    "vaulted_cat_collapsed", // which category cards are folded (device-local)
   billSort:     "vaulted_bill_sort",      // how bills are ordered inside a category
@@ -754,7 +755,21 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.15.4";
+const APP_VERSION = "1.16.0";
+// What's new: after an update, a note of what's changed shows once on each phone (every version
+// since it was last opened; not on a new install), and again from Diag → App & Status.
+// Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
+const WHATS_NEW = [
+  { v: "1.16.0", date: "3 Oct 2026", items: [
+    { b: "What's new", t: " — after each update, a note like this says what's changed. See it again any time in Diag → App & Status." },
+  ] },
+];
+const NEWS_FROM = "1.15.4";   // a phone that had the app before these notes started sees everything after this
+function verCmp(a, b) {
+  const x = String(a).split(".").map(Number), y = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; }
+  return 0;
+}
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
@@ -2430,6 +2445,7 @@ export default function App() {
   const [showAllTimeTotals,setShowAllTimeTotals]=useState(false);
 
   // -- Supabase Auth --------------------------------------------------------
+  const bootSignedIn = useRef(false);
   const [sessionWarning, setSessionWarning] = useState(false);
   React.useEffect(() => {
     const checkExpiry = (session) => {
@@ -2445,6 +2461,7 @@ export default function App() {
     // otherwise everything reloads from scratch on each return to the app.
     const keepUser = (next) => setUser(prev => (prev && next && prev.id === next.id) ? prev : (next || null));
     supabase.auth.getSession().then(({ data: { session } }) => {
+      bootSignedIn.current = !!session;   // already signed in = not a new install (What's new)
       keepUser(session?.user);
       setAuthLoading(false);
       checkExpiry(session);
@@ -2594,6 +2611,21 @@ export default function App() {
   React.useEffect(()=>{
     if(user&&mfa.checked&&!mfa.need&&loadBankRef.current)loadBankRef.current();
   },[user,mfa.checked,mfa.need,mfa.level,mfa.hasFactor]);
+  // -- What's new: once the app is showing, anything new since this phone last opened it --------
+  const [news,setNews]=useState(null);          // the notes being shown
+  const newsChecked=useRef(false);
+  const markNewsSeen=()=>{try{localStorage.setItem(SK.seenVersion,APP_VERSION);}catch(e){}};
+  const closeNews=()=>{setNews(null);markNewsSeen();};
+  useEffect(()=>{
+    if(newsChecked.current||!user||!mfa.checked||mfa.need||dataLoading)return;
+    newsChecked.current=true;
+    let seen="";try{seen=localStorage.getItem(SK.seenVersion)||"";}catch(e){}
+    if(seen===APP_VERSION)return;
+    if(!seen&&!bootSignedIn.current){markNewsSeen();return;}   // a new install: nothing has changed for them
+    const notes=WHATS_NEW.filter(n=>verCmp(n.v,seen||NEWS_FROM)>0&&verCmp(n.v,APP_VERSION)<=0);
+    if(!notes.length){markNewsSeen();return;}
+    setNews(notes);
+  },[user,mfa.checked,mfa.need,dataLoading]);
   // Back from Monzo's sign-in (?bank=…): tidy the address, then act on it once signed in.
   React.useEffect(()=>{
     if(!bankReturn)return;
@@ -7047,7 +7079,8 @@ const calcTimesheetTotals = days => {
                   const fmtD=(d)=>d.toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
                   return(
                     <>
-                      <div style={row}><span style={{color:"#5a6480"}}>Version</span><span style={{color:"#c8cee0",fontWeight:700}}>v{APP_VERSION}</span></div>
+                      <div style={row}><span style={{color:"#5a6480"}}>Version</span><span style={{display:"flex",alignItems:"center",gap:8}}><span style={{color:"#c8cee0",fontWeight:700}}>v{APP_VERSION}</span>
+                        <button onClick={()=>{haptic();setNews(WHATS_NEW);}} style={{background:"#1e2535",border:"1px solid #2a3050",borderRadius:6,color:"#a0c0ff",fontSize:11,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>What's new</button></span></div>
                       {isOwner&&<div style={row}><span style={{color:"#5a6480"}}>Show hidden tabs <span style={{color:"#3a4460"}}>(Pay Info, Tax Year, Leave)</span></span>
                         <button onClick={()=>{haptic();const v=!showHiddenTabs;setShowHiddenTabs(v);try{localStorage.setItem("vaulted_show_hidden_tabs",v?"1":"0");}catch(e){}}}
                           style={{background:showHiddenTabs?"#1a3a2a":"#1e2535",border:"1px solid "+(showHiddenTabs?"#00c88c":"#2a3050"),borderRadius:6,color:showHiddenTabs?"#00c88c":"#5a6480",fontSize:11,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>{showHiddenTabs?"On":"Off"}</button></div>}
@@ -7487,6 +7520,25 @@ const calcTimesheetTotals = days => {
           borderTop:"2px solid "+((showMore||secondaryTabs.includes(tab))?"#a0c0ff":"transparent")
         }}>More ⋯</button>
       </div>
+
+      {/* What's new -- after an update, once per phone */}
+      {news&&(
+        <div onClick={closeNews} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:220,background:"rgba(0,0,0,0.6)"}}>
+          <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 16px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"80vh",overflowY:"auto"}}>
+            <SheetGrab onClose={closeNews}/>
+            <div style={{fontSize:16,color:"#e8eaf0",fontWeight:800,padding:"2px 0 12px"}}>What's new</div>
+            {news.map(n=>(
+              <div key={n.v} style={{marginBottom:14}}>
+                <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Version {n.v} · {n.date}</div>
+                <ul style={{margin:"7px 0 0",paddingLeft:18}}>
+                  {n.items.map((it,i)=>(<li key={i} style={{fontSize:13.5,lineHeight:1.45,color:"#c8cee0",marginBottom:7}}><b style={{color:"#e8eaf0"}}>{it.b}</b>{it.t}</li>))}
+                </ul>
+              </div>
+            ))}
+            <button onClick={closeNews} style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:10,color:"#000",fontSize:14,fontWeight:700,padding:"12px 14px",cursor:"pointer",marginTop:4}}>Got it</button>
+          </div>
+        </div>
+      )}
 
       {/* "More" sheet -- secondary tabs */}
       {showMore&&(
