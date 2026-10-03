@@ -755,11 +755,17 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.16.0";
+const APP_VERSION = "1.17.0";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.17.0", date: "3 Oct 2026", items: [
+    { b: "Current mortgage", t: " — a new card in the Move tab for your balance, rate, payment and when the fixed rate ends. It works out what you'll still owe on moving day and uses that for your equity." },
+    { b: "Early repayment check", t: " — moving before your fixed rate ends shows a warning and adds the charge to your costs, unless you switch on Porting. Near the end of the fixed rate, it reminds you." },
+    { b: "Price check", t: " — house prices around yours with the deposit, loan-to-value, monthly payment and what's left each month. Tap a price to use it." },
+    { b: "Now vs after", t: " — the monthly mortgage shows the change from what you pay now, and the lender's estimate of your house sits under the sale price." },
+  ] },
   { v: "1.16.0", date: "3 Oct 2026", items: [
     { b: "What's new", t: " — after each update, a note like this says what's changed. See it again any time in Diag → App & Status." },
   ] },
@@ -813,6 +819,17 @@ function mortgagePmt(loan, annualPct, years) {
   const r = annualPct / 100 / 12, n = years * 12;
   return r === 0 ? loan / n : loan * r / (1 - Math.pow(1 + r, -n));
 }
+// What's still owed on a repayment mortgage after n more monthly payments.
+function balanceAfter(bal, annualPct, pay, n) {
+  let b = Number(bal) || 0;
+  const r = (Number(annualPct) || 0) / 1200, p = Number(pay) || 0;
+  for (let i = 0; i < n && b > 0; i++) b = Math.max(0, b * (1 + r) - p);
+  return b;
+}
+// Whole months from one "YYYY-MM" to another (negative when `to` is earlier).
+const monthsFromTo = (from, to) => { const [a, b] = from.split("-").map(Number), [c, d] = to.split("-").map(Number); return (c - a) * 12 + (d - b); };
+const monthName = k => { const [y, m] = String(k).split("-").map(Number); return MONTHS[m - 1] + " " + y; };   // "2028-07" → "Jul 2028"
+const dayName = s => { const [y, m, d] = String(s).split("-").map(Number); return d + " " + MONTHS[m - 1] + " " + y; };   // "2028-06-30" → "30 Jun 2028"
 const MOVE_DEAL_DEFAULT = { rate: null, term: 25, fee: null, fix: 5 };
 const RANGES = ["3M","6M","12M","2Y","All"];
 const SL_START_YEAR = 2019;
@@ -3804,8 +3821,9 @@ export default function App() {
   const mpResolve=(billKey,catKey)=>{const k=mpBillBucket[billKey];return mpValid(k)?k:mpBucketOf(catKey);};
   const mpZero=()=>MOVE_BUCKETS.reduce((o,b)=>{o[b.k]=0;return o;},{});
   // My personal bills as published to the other phone: names, this month's amount, category.
+  // v marks a variable bill (credit cards and the like), which the Price check leaves out.
   const mpMyBills=glynBills.map(b=>{const cid=glynBillCats[b.id];
-    return {id:b.id,name:b.name,amt:Math.round(amountOf(b,mpCurKey)*100)/100,cat:cid==null?null:cid};});
+    return {id:b.id,name:b.name,amt:Math.round(amountOf(b,mpCurKey)*100)/100,cat:cid==null?null:cid,...(isVariable(b)?{v:1}:{})};});
   const mpMe={who:isOwner?"Glyn":"Hollie",bills:mpMyBills};
   const mpPersonalAll={...(mp.personal||{})};
   if(myId)mpPersonalAll[myId]=mpMe;
@@ -3813,12 +3831,12 @@ export default function App() {
   const mpRows=(()=>{
     const out=[];
     sharedBills.forEach(b=>{const cid=billCats[b.id];
-      out.push({key:"s:"+b.id,name:b.name,who:"Shared",amt:amountOf(b,mpCurKey),
+      out.push({key:"s:"+b.id,name:b.name,who:"Shared",amt:amountOf(b,mpCurKey),v:isVariable(b),
         bucket:mpResolve("s:"+b.id,"s:"+(cid==null?"un":cid)),own:mpValid(mpBillBucket["s:"+b.id])});});
     Object.entries(mpPersonalAll).forEach(([uid,x])=>{
       if(!x||!Array.isArray(x.bills))return;   // old totals-only format: skip until that phone republishes
       x.bills.forEach(b=>{const bk="p:"+uid+":"+b.id;
-        out.push({key:bk,name:b.name,who:x.who||"",amt:Number(b.amt)||0,
+        out.push({key:bk,name:b.name,who:x.who||"",amt:Number(b.amt)||0,v:!!b.v,
           bucket:mpResolve(bk,"p:"+uid+":"+(b.cat==null?"un":b.cat)),own:mpValid(mpBillBucket[bk])});});
     });
     return out;
@@ -3843,7 +3861,7 @@ export default function App() {
     // Compare field by field: Postgres jsonb reorders keys, so a plain JSON.stringify
     // never matches and the phone would rewrite the plan in a loop.
     const same=cur&&cur.who===mpMe.who&&Array.isArray(cur.bills)&&cur.bills.length===mpMe.bills.length
-      &&cur.bills.every((x,i)=>{const y=mpMe.bills[i];return x.id===y.id&&x.name===y.name&&Number(x.amt)===y.amt&&(x.cat==null?null:x.cat)===y.cat;});
+      &&cur.bills.every((x,i)=>{const y=mpMe.bills[i];return x.id===y.id&&x.name===y.name&&Number(x.amt)===y.amt&&(x.cat==null?null:x.cat)===y.cat&&!!x.v===!!y.v;});
     if(same)return;
     const mine=mpMe,id=myId;
     savePlan(p=>({...p,personal:{...(p.personal||{}),[id]:mine}}));
@@ -6564,25 +6582,48 @@ const calcTimesheetTotals = days => {
           const mc=mp.mc||{};
           const n=k=>Number(mc[k])||0;
           const setMc=(k,v)=>savePlan(p=>({...p,mc:{...(p.mc||{}),[k]:numOrNull(v)}}));
-          const sale=n("salePrice"), bal=n("mortBal");
+
+          // ── Current mortgage: what's still owed on moving day, worked forward month by month
+          // from the balance, rate and payment, and whether the fixed rate has ended by then. ──
+          const cur=mp.cur||{};
+          const cn=k=>Number(cur[k])||0;
+          const nowKey=monthKeyOf(new Date().getFullYear(),new Date().getMonth()+1);
+          const setCur=(k,v,extra)=>savePlan(p=>({...p,cur:{...(p.cur||{}),[k]:v,...(extra||{})}}));
+          const d=mp.deposit||{};
+          const moveKey=d.moveDate&&/^\d{4}-\d{2}$/.test(d.moveDate)?d.moveDate:null;
+          const curOn=cn("bal")>0&&cn("pay")>0&&cn("rate")>0;
+          const asOf=/^\d{4}-\d{2}$/.test(cur.asOf||"")?cur.asOf:nowKey;   // the balance is after that month's payment
+          const owedAt=k=>balanceAfter(cn("bal"),cn("rate"),cn("pay"),Math.max(0,monthsFromTo(asOf,k)));
+          const owedNow=curOn?owedAt(nowKey):0;
+          const owedOnMove=curOn?owedAt(moveKey||nowKey):0;
+          const offEachMonth=curOn?Math.max(0,cn("pay")-owedNow*cn("rate")/1200):0;
+          const fixEnd=/^\d{4}-\d{2}-\d{2}$/.test(cur.fixEnd||"")?cur.fixEnd:null;
+          const fixEndKey=fixEnd?fixEnd.slice(0,7):null;
+          const fixMonthsLeft=fixEndKey?monthsFromTo(nowKey,fixEndKey):null;
+          const moveEarly=!!(fixEndKey&&moveKey&&moveKey<=fixEndKey);   // completing before the fixed rate ends
+          const ercAmt=curOn?(moveEarly&&!cur.port?owedOnMove*cn("ercPct")/100:0):n("erc");
+
+          const sale=n("salePrice"), bal=curOn?owedOnMove:n("mortBal");
           const agentFee=sale*n("agentPct")/100;
-          const sellCosts=agentFee+n("erc")+n("solSale")+n("epc");
+          const sellCosts=agentFee+ercAmt+n("solSale")+n("epc");
           const equity=sale-bal-sellCosts;
           const price=n("newPrice");
           const tax=lttWales(price);
           const cash=n("savings");
           const baseCosts=tax+n("solBuy")+n("survey")+n("otherBuy");
           const deals=Array.isArray(mp.deals)&&mp.deals.length?mp.deals:[MOVE_DEAL_DEFAULT];
-          const res=deals.map(dl=>{
+          // One deal at one price: buying costs come out of the cash, the rest plus equity is the deposit.
+          const dealAt=(dl,p)=>{
             const rate=Number(dl.rate)||0, dterm=Number(dl.term)||0, fee=Number(dl.fee)||0, fix=Number(dl.fix)||0;
-            const costs=baseCosts+fee;
+            const costs=lttWales(p)+n("solBuy")+n("survey")+n("otherBuy")+fee;
             const cashLeft=cash-costs;
             const deposit=Math.max(0,equity)+cashLeft;
-            const loan=Math.max(0,price-Math.max(0,deposit));
+            const loan=Math.max(0,p-Math.max(0,deposit));
             const monthly=mortgagePmt(loan,rate,dterm);
             const fixCost=fix&&monthly?monthly*fix*12+fee:null;
             return {rate,term:dterm,fee,fix,costs,cashLeft,deposit,loan,monthly,fixCost};
-          });
+          };
+          const res=deals.map(dl=>dealAt(dl,price));
           let cheap=-1,cheapVal=Infinity,nFix=0;
           res.forEach((r,i)=>{if(r.fixCost!==null){nFix++;if(r.fixCost<cheapVal){cheapVal=r.fixCost;cheap=i;}}});
           if(nFix<2)cheap=-1;
@@ -6597,8 +6638,18 @@ const calcTimesheetTotals = days => {
           const payShare=mpIncome>0?sd.monthly/mpIncome*100:0;
           const payCol=sd.monthly<=housingT?"#00c88c":sd.monthly<=housingT*1.1?"#ffb84a":"#ff4a6a";
 
+          // Price check: prices around the house price with the deal in use. "Left" is take-home
+          // minus regular monthly bills (not variable ones like credit cards, not savings, not the
+          // current mortgage), extra running costs in the new home, and the new mortgage.
+          const regularOut=mpRows.filter(r=>!r.v&&r.bucket!=="housing"&&r.bucket!=="savings").reduce((s,r)=>s+r.amt,0);
+          const extraRun=n("extraRun");
+          const keepFor=mpIncome*(mpTargets.savings+mpTargets.fun)/100;
+          const checkRows=price>0&&sd.rate>0&&sd.term>0
+            ?[-75000,-50000,-25000,0,25000].map(o=>price+o).filter(p=>p>0).map(p=>{const r=dealAt(deals[sel],p);return {...r,p,left:mpIncome-regularOut-extraRun-r.monthly};})
+            :[];
+          const fmtK=v=>{const k=v/1000;return "£"+(Math.abs(k-Math.round(k))<0.05?Math.round(k):k.toFixed(1))+"K";};
+
           // Saving towards moving day: cash available is what's saved so far.
-          const d=mp.deposit||{};
           const goal=Number(d.goal)||0;
           let monthsLeft=null;
           if(d.moveDate&&/^\d{4}-\d{2}$/.test(d.moveDate)){
@@ -6647,6 +6698,18 @@ const calcTimesheetTotals = days => {
           );
           const warn=t=><div style={{background:"#1d160833",border:"1px solid #4a3a1a",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#ffb84a",lineHeight:1.5}}>{t}</div>;
           const grid2={display:"grid",gridTemplateColumns:"1fr 1fr",gap:8};
+          const fieldBox=(label,value,onSave,opts)=>(
+            <div style={{minWidth:0}}><div style={{...lbl,marginBottom:4}}>{label}</div>{field(value,onSave,opts)}</div>
+          );
+          // A worked-out value shown where an input would be (dashed, so it doesn't look editable).
+          const roBox=(label,v)=>(
+            <div style={{minWidth:0}}>
+              <div style={{...lbl,marginBottom:4}}>{label}</div>
+              <div style={{...inp,color:"#8892b0",background:"#141a28",border:"1px dashed #2a3050"}}>{v}</div>
+            </div>
+          );
+          const good=t=><div style={{fontSize:11.5,color:"#00c88c",lineHeight:1.5}}>{t}</div>;
+          const pcCols="1fr 1fr .8fr 1fr 1fr";
 
           return (
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -6763,6 +6826,7 @@ const calcTimesheetTotals = days => {
               {sd.monthly>0?(
                 <>
                   <div style={{fontSize:11,color:"#5a6480"}}>{fmt0(sd.loan)} over {sd.term} yrs @ {sd.rate}%</div>
+                  {cn("pay")>0&&<div style={{fontSize:11,color:"#5a6480"}}>{fmt(Math.abs(sd.monthly-cn("pay")))} {sd.monthly>=cn("pay")?"more":"less"} a month than the {fmt(cn("pay"))} you pay now</div>}
                   <div style={{background:"#0d1117",borderRadius:8,padding:"9px 11px",fontSize:11.5,color:"#8892b0",lineHeight:1.5}}>
                     <b style={{color:payCol}}>{payShare.toFixed(0)}% of take-home.</b>{" "}
                     {sd.monthly<=housingT
@@ -6775,10 +6839,102 @@ const calcTimesheetTotals = days => {
               )}
             </div>
 
+            {/* ── price check: other prices with the deal in use; tap one to use it ── */}
+            {mvCard("check","Price check",checkRows.length?"Deal "+letter(sel)+" · "+sd.rate+"%":null,<>
+              {checkRows.length?(<>
+                <div>
+                  <div style={{display:"grid",gridTemplateColumns:pcCols,gap:6,padding:"0 6px 6px"}}>
+                    {["Price","Deposit","LTV","Monthly","Left"].map((h,i)=><div key={h} style={{...lbl,fontSize:8.5,textAlign:i?"right":"left"}}>{h}</div>)}
+                  </div>
+                  {checkRows.map(r=>{
+                    const on=Math.round(r.p)===Math.round(price), ltv=r.p?r.loan/r.p:0;
+                    const leftCol=!mpGlyn?"#5a6480":r.left>=keepFor?"#00c88c":r.left>=0?"#ffb84a":"#ff4a6a";
+                    const ltvCol=ltv>0.95?"#ff4a6a":ltv>0.9?"#ffb84a":"#c8cee0";
+                    const use=()=>{if(on)return;haptic();setMc("newPrice",r.p);};
+                    return (
+                      <div key={r.p} role="button" tabIndex={0} aria-pressed={on} aria-label={"Use "+fmt0(r.p)}
+                        onClick={use} onKeyDown={e=>{if(e.key==="Enter")use();}}
+                        style={{display:"grid",gridTemplateColumns:pcCols,gap:6,alignItems:"center",padding:"9px 6px",borderTop:"1px solid #1e2535",
+                          background:on?"#15203a":"transparent",cursor:on?"default":"pointer",fontSize:12.5,fontWeight:on?800:600}}>
+                        <span style={{color:on?"#8ec5ff":"#e8eaf0"}}>{fmtK(r.p)}</span>
+                        <span style={{textAlign:"right",color:r.deposit<0?"#ff4a6a":"#c8cee0"}}>{fmtK(r.deposit)}</span>
+                        <span style={{textAlign:"right",color:ltvCol}}>{(ltv*100).toFixed(1)}%</span>
+                        <span style={{textAlign:"right",color:"#e8eaf0"}}>{fmt0(r.monthly)}</span>
+                        <span style={{textAlign:"right",color:leftCol}}>{mpGlyn?(r.left<0?"−":"")+fmt0(Math.abs(r.left)):"—"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={note}>
+                  Tap a price to use it. <b style={{color:"#5a6480"}}>Left</b> is what's left each month for saving and spending: take-home{mpBasis==="withOt"?" with overtime":""} ({fmt0(mpIncome)}) minus regular bills ({fmt0(regularOut)} — not credit cards, savings or your current mortgage), extra running costs and the new mortgage. Green leaves enough for your Savings + Fun targets ({fmt0(keepFor)}).
+                </div>
+                {inField("Extra running costs in the new home £/month","extraRun","150")}
+              </>):(
+                <div style={note}>Fill in the house price and a mortgage deal (rate and term) to compare prices.</div>
+              )}
+            </>)}
+
+            {/* ── the mortgage you have now: owed on moving day, and the fixed rate ── */}
+            {mvCard("cur","Current mortgage",curOn?fmt0(moveKey?owedOnMove:owedNow):null,<>
+              <div style={grid2}>
+                {fieldBox("Balance £",cur.bal,v=>setCur("bal",numOrNull(v),{asOf:nowKey}),{ph:"110000"})}
+                {fieldBox("Rate %",cur.rate,v=>setCur("rate",numOrNull(v)),{ph:"4.5"})}
+              </div>
+              <div style={grid2}>
+                {fieldBox("Monthly payment £",cur.pay,v=>setCur("pay",numOrNull(v)),{ph:"500"})}
+                {fieldBox("Fixed rate ends",cur.fixEnd,v=>setCur("fixEnd",v||null),{type:"date"})}
+              </div>
+              <div style={grid2}>
+                {fieldBox("Lender's estimate £",cur.hpi,v=>setCur("hpi",numOrNull(v),{hpiAt:nowKey}),{ph:"0"})}
+                {fieldBox("Early repayment %",cur.ercPct,v=>setCur("ercPct",numOrNull(v)),{ph:"0"})}
+              </div>
+              {curOn?(
+                <div>
+                  {kv("Comes off the balance each month",fmt(offEachMonth))}
+                  {asOf!==nowKey&&kv("Owed now (estimate)",fmt0(owedNow))}
+                  {moveKey&&kv("Owed on moving day · "+monthName(moveKey),fmt0(owedOnMove),null,true)}
+                </div>
+              ):(
+                <div style={note}>Copy the balance, rate and monthly payment from your lender's app to work out what you'll still owe when you move.</div>
+              )}
+              {fixEnd&&(()=>{
+                if(moveEarly){
+                  const early=monthsFromTo(moveKey,fixEndKey);
+                  return (<>
+                    {warn(<>Moving {early>0?<b>{early} month{early===1?"":"s"} before</b>:<b>in the month</b>} your fixed rate ends ({dayName(fixEnd)}). Expect an early repayment charge unless you port the deal to the new house{early===0?" or complete after "+dayName(fixEnd):""}.</>)}
+                    <button onClick={()=>{haptic();setCur("port",!cur.port);}} aria-pressed={!!cur.port}
+                      style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:"#0d1117",border:"1px solid "+(cur.port?"#4a9eff":"#2a3050"),borderRadius:8,padding:"10px 11px",color:"#c8cee0",fontSize:12,fontWeight:600,cursor:"pointer",textAlign:"left"}}>
+                      <span>Porting the deal to the new house</span>
+                      <span style={{fontSize:11,fontWeight:700,color:cur.port?"#8ec5ff":"#5a6480"}}>{cur.port?"ON":"OFF"}</span>
+                    </button>
+                    {cur.port
+                      ?<div style={note}>No charge while porting — your lender has to agree, and any extra borrowing goes on one of its current rates.</div>
+                      :!curOn?<div style={note}>Fill in the balance, rate and payment to work out the charge.</div>
+                      :cn("ercPct")>0?kv("Early repayment charge ("+cn("ercPct")+"%)","−"+fmt0(ercAmt),"neg")
+                      :<div style={note}>Add the early repayment % from your mortgage offer to include the charge in your costs.</div>}
+                  </>);
+                }
+                if(fixMonthsLeft<0) return warn("Your fixed rate ended on "+dayName(fixEnd)+", so you may be on the lender's standard rate. Update the rate and date when you pick a new deal.");
+                return (<>
+                  {moveKey?good("✓ Your fixed rate ends on "+dayName(fixEnd)+", before you move in "+monthName(moveKey)+" — no early repayment charge.")
+                    :<div style={{fontSize:11.5,color:"#8892b0"}}>Fixed rate ends {dayName(fixEnd)}{fixMonthsLeft>0?" (in "+fixMonthsLeft+" month"+(fixMonthsLeft===1?"":"s")+")":""}.</div>}
+                  {fixMonthsLeft<=6&&warn("Your fixed rate ends in "+(fixMonthsLeft<1?"less than a month":fixMonthsLeft+" month"+(fixMonthsLeft===1?"":"s"))+". After that you'll pay the lender's standard rate until you move or pick a new deal — check what it is.")}
+                </>);
+              })()}
+              {!fixEnd&&<div style={note}>Add when the fixed rate ends to check for an early repayment charge.</div>}
+            </>)}
+
             {mvCard("sell","Selling your house",sale?fmt0(equity):null,<>
-              <div style={grid2}>{inField("Sale price £","salePrice","220000")}{inField("Mortgage left £","mortBal","120000")}</div>
+              <div style={grid2}>{inField("Sale price £","salePrice","220000")}{curOn?roBox("Mortgage left £",Math.round(bal).toLocaleString("en-GB")):inField("Mortgage left £","mortBal","120000")}</div>
+              {curOn&&<div style={note}>Mortgage left is worked out in Current mortgage{moveKey?" for "+monthName(moveKey):""}.</div>}
+              {cn("hpi")>0&&Math.round(cn("hpi"))!==Math.round(sale)&&(
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,fontSize:11.5,color:"#8892b0"}}>
+                  <span>Lender's estimate <b style={{color:"#e8eaf0"}}>{fmt0(cn("hpi"))}</b>{/^\d{4}-\d{2}$/.test(cur.hpiAt||"")?" ("+monthName(cur.hpiAt)+")":""}</span>
+                  <button onClick={()=>{if(window.confirm("Set the sale price to "+fmt0(cn("hpi"))+"?")){haptic();setMc("salePrice",Math.round(cn("hpi")));}}} style={lnkStyle}>Use it</button>
+                </div>
+              )}
               {sale>0&&<div>
-                {[["Agent fee",agentFee],["Early repayment charge",n("erc")],["Solicitor (sale)",n("solSale")],["EPC",n("epc")]]
+                {[["Agent fee",agentFee],["Early repayment charge",ercAmt],["Solicitor (sale)",n("solSale")],["EPC",n("epc")]]
                   .filter(x=>x[1]>0).map(x=>kv(x[0],"−"+fmt0(x[1]),"neg"))}
                 {kv("Mortgage repaid","−"+fmt0(bal),"neg")}
                 {kv("Equity released",fmt0(equity),equity<0?"neg":null,true)}
@@ -6803,8 +6959,8 @@ const calcTimesheetTotals = days => {
             </>)}
 
             {mvCard("costs","Costs",(sellCosts+baseCosts)>0?fmt0(sellCosts+baseCosts):null,<>
-              <div style={note}>Selling costs come off your equity; buying costs come out of your cash. Product fees are per deal.</div>
-              <div style={grid2}>{inField("Agent fee %","agentPct","1.2")}{inField("Early repayment £","erc","0")}</div>
+              <div style={note}>Selling costs come off your equity; buying costs come out of your cash. Product fees are per deal.{curOn?" The early repayment charge is worked out in Current mortgage.":""}</div>
+              <div style={grid2}>{inField("Agent fee %","agentPct","1.2")}{curOn?roBox("Early repayment £",Math.round(ercAmt).toLocaleString("en-GB")):inField("Early repayment £","erc","0")}</div>
               <div style={grid2}>{inField("Solicitor (sale) £","solSale","1000")}{inField("EPC £","epc","80")}</div>
               <div style={grid2}>{inField("Solicitor + searches £","solBuy","1500")}{inField("Survey £","survey","500")}</div>
               {inField("Broker / valuation / other £","otherBuy","0")}
