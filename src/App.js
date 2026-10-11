@@ -193,11 +193,18 @@ function calcPay({ stdHrs, otHrs, weekendOtHrs, holidayHrs, bonus, perfAllowance
 const HOLLIE_RATE = 14.71;
 const HOLLIE_FLAT_GROSS = 2390.38;
 const HOLLIE_BASE_PENSION = 89.08;   // NOW Pension on the flat base
-function calcHolliePay(otHrs) {
+// Sick days come off the same month's pay: a day's pay out (7.5 h × £14.71, the same as her
+// salary ÷ 260 working days), £30 sick pay in. Pension moves by 5% of the change, like overtime.
+const HOLLIE_DAY_PAY = 110.33;
+const HOLLIE_SICK_PAY = 30;
+function calcHolliePay(otHrs, sickDays) {
   const stdPay = HOLLIE_FLAT_GROSS;
   const otPay = (Number(otHrs) || 0) * (HOLLIE_RATE * 1.5);
-  const gross = stdPay + otPay;
-  const pension = HOLLIE_BASE_PENSION + otPay * 0.05;   // salary sacrifice; OT pensionable at 5%
+  const sick = Math.max(0, Number(sickDays) || 0);
+  const toPence = v => Math.round((v + Number.EPSILON) * 100) / 100;   // half a day: £55.165 → £55.17
+  const sickOff = toPence(sick * HOLLIE_DAY_PAY), sickPay = toPence(sick * HOLLIE_SICK_PAY);
+  const gross = stdPay + otPay - sickOff + sickPay;
+  const pension = Math.max(0, HOLLIE_BASE_PENSION + (otPay - sickOff + sickPay) * 0.05);   // salary sacrifice; pay above or below the base moves it by 5%
   const taxable = gross - pension;                       // pension off the top, before tax/NI/SL
   const tax = Math.max(0, taxable - PAY.taxFreeMonthly) * 0.20;
   const niLower = Math.max(0, Math.min(taxable, PAY.niUpperThreshold) - PAY.niPrimaryThreshold);
@@ -206,7 +213,7 @@ function calcHolliePay(otHrs) {
   const sl = Math.floor(Math.max(0, taxable - slThresholdFor(payDateForKey(getCurrentPayPeriodKey()))) * 0.09);
   const deductions = pension + tax + ni + sl;
   const net = gross - deductions;
-  return { stdPay, otPay, gross, pension, taxable, tax, ni, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
+  return { stdPay, otPay, sick, sickOff, sickPay, gross, pension, taxable, tax, ni, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
 }
 
 // Split modes for shared bills: undefined/"even" = 50/50, "pct" = your % of the
@@ -755,11 +762,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.17.0";
+const APP_VERSION = "1.18.0";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.0", date: "11 Oct 2026", items: [
+    { b: "Sick days", t: " — Hollie's Pay Calc has a box for days off sick this month (half days too). Each day takes off a day's pay (£110.33) and adds £30 sick pay, and her net pay and surplus update straight away." },
+  ] },
   { v: "1.17.0", date: "3 Oct 2026", items: [
     { b: "Current mortgage", t: " — a new card in the Move tab for your balance, rate, payment and when the fixed rate ends. It works out what you'll still owe on moving day and uses that for your equity." },
     { b: "Early repayment check", t: " — moving before your fixed rate ends shows a warning and adds the charge to your costs, unless you switch on Porting. Near the end of the fixed rate, it reminds you." },
@@ -3778,7 +3788,22 @@ export default function App() {
       return n;
     });
   };
-  const hollieCalc=calcHolliePay(hollieOtForPay);
+  // Sick days: off sick this month -> off this month's pay (unlike overtime).
+  const hollieSickMap=(ci.hollieSick && typeof ci.hollieSick==="object") ? ci.hollieSick : {};
+  const hollieSickNow=Number(hollieSickMap[hollieCalKey])||0;
+  const setHollieSick=(days)=>{
+    setCi(p=>{
+      const base=(p.hollieSick && typeof p.hollieSick==="object") ? p.hollieSick : {};
+      const next={...base,[hollieCalKey]:days};
+      const keys=Object.keys(next).sort();
+      while(keys.length>6){ delete next[keys.shift()]; }
+      const n={...p,hollieSick:next};
+      if(user)trackSave(db.saveAppSettings(user.id,{calc_inputs:n}));
+      return n;
+    });
+  };
+  const hollieCalc=calcHolliePay(hollieOtForPay,hollieSickNow);
+  const hollieYear=calcHolliePay(hollieOtForPay,0);   // the yearly figures leave this month's sick days out
   const hollieOut=shHollie+glOnly;
   const hollieSurplus=hollieCalc.net+incomeNow-hollieOut;
   // Whoever is signed in: their own net, and their surplus for the month in view.
@@ -5606,7 +5631,7 @@ const calcTimesheetTotals = days => {
                 <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after bills: <span style={{color:hollieSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(hollieSurplus)}</span></div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                {[["Annual Gross",fmt(hollieCalc.annualGross)],["Annual Net",fmt(hollieCalc.annualNet)]].map(([l,v])=>(
+                {[["Annual Gross",fmt(hollieYear.annualGross)],["Annual Net",fmt(hollieYear.annualNet)]].map(([l,v])=>(
                   <div key={l} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
                     <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
                     <div style={{fontSize:14,fontWeight:700,color:"#c8cee0"}}>{v}</div>
@@ -5625,10 +5650,24 @@ const calcTimesheetTotals = days => {
             </div>
 
             <div style={card}>
+              <SectionLabel>Sick days this month</SectionLabel>
+              <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <span>Days off sick <span style={{color:"#3a4460"}}>(half days are fine)</span></span><span style={{color:"#c84aff",fontWeight:700}}>{hollieSickNow}</span>
+              </label>
+              <input type="number" inputMode="decimal" step="0.5" min="0" value={hollieSickNow} aria-label="Days off sick this month"
+                onChange={e=>setHollieSick(Math.max(0,Math.min(31,parseFloat(e.target.value)||0)))} style={numI}/>
+              <div style={{fontSize:10,color:"#3a4460",marginTop:6}}>Comes off <b style={{color:"#5a6480"}}>this month's</b> pay: each day takes off a day's pay ({fmt(HOLLIE_DAY_PAY)}) and adds {fmt(HOLLIE_SICK_PAY)} sick pay{hollieSickNow>0?<> — {fmt(hollieCalc.sickOff-hollieCalc.sickPay)} less before tax</>:null}.</div>
+            </div>
+
+            <div style={card}>
               <SectionLabel>This month</SectionLabel>
               {[
                 [`Base pay (flat monthly)`, fmt(hollieCalc.stdPay), "#c8cee0", false],
                 [`Overtime (worked ${holliePrevName})`, fmt(hollieCalc.otPay), "#c84aff", false],
+                ...(hollieCalc.sick>0?[
+                  [`Sick days (${hollieCalc.sick})`, "−"+fmt(hollieCalc.sickOff), "#ff6b8a", false],
+                  ["Sick pay", "+"+fmt(hollieCalc.sickPay), "#00c88c", false],
+                ]:[]),
                 ["Gross", fmt(hollieCalc.gross), "#e8eaf0", true],
                 ["NOW Pension (salary sacrifice)", "−"+fmt(hollieCalc.pension), "#00c88c", false],
                 ["Taxable pay", fmt(hollieCalc.taxable), "#5a6480", false],
@@ -5657,7 +5696,7 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
 
-            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on a flat {fmt(HOLLIE_FLAT_GROSS)}/month gross plus overtime at £{(HOLLIE_RATE*1.5).toFixed(2)}/h, with NOW Pension taken as salary sacrifice (before tax, NI &amp; student loan), then tax, NI and Plan 2 student loan on what's left.</p>
+            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on a flat {fmt(HOLLIE_FLAT_GROSS)}/month gross plus overtime at £{(HOLLIE_RATE*1.5).toFixed(2)}/h, with NOW Pension taken as salary sacrifice (before tax, NI &amp; student loan), then tax, NI and Plan 2 student loan on what's left. Each sick day takes off {fmt(HOLLIE_DAY_PAY)} (7.5 hours) and adds {fmt(HOLLIE_SICK_PAY)} sick pay.</p>
           </div>
         )}
 
