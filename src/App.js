@@ -194,15 +194,27 @@ const HOLLIE_RATE = 14.71;
 const HOLLIE_FLAT_GROSS = 2390.38;
 const HOLLIE_BASE_PENSION = 89.08;   // NOW Pension on the flat base
 // Sick days come off the same month's pay: a day's pay out (7.5 h × £14.71, the same as her
-// salary ÷ 260 working days), £30 sick pay in. Pension moves by 5% of the change, like overtime.
+// salary ÷ 260 working days), Statutory Sick Pay in. Pension moves by 5% of the change, like overtime.
 const HOLLIE_DAY_PAY = 110.33;
-const HOLLIE_SICK_PAY = 30;
+const HOLLIE_WORK_DAYS = 5;   // days she works in a week (SSP's "qualifying days")
+// SSP weekly rate by tax year (from 6 April) — [first tax year, £/week]. Add each April's new rate.
+// From April 2026 it's paid from the first day off sick, for whole days only, at the weekly rate ÷
+// qualifying days (her 80% of earnings is far above it, so the flat rate applies).
+const SSP_WEEKLY = [[2026, 123.25], [2025, 118.75]];
+function sspDailyFor(date) {
+  const d = date ? new Date(date) : new Date();
+  const ty = d.getMonth() > 3 || (d.getMonth() === 3 && d.getDate() >= 6) ? d.getFullYear() : d.getFullYear() - 1;
+  const row = SSP_WEEKLY.find(([y]) => ty >= y) || SSP_WEEKLY[SSP_WEEKLY.length - 1];
+  return row[1] / HOLLIE_WORK_DAYS;
+}
 function calcHolliePay(otHrs, sickDays) {
   const stdPay = HOLLIE_FLAT_GROSS;
   const otPay = (Number(otHrs) || 0) * (HOLLIE_RATE * 1.5);
   const sick = Math.max(0, Number(sickDays) || 0);
   const toPence = v => Math.round((v + Number.EPSILON) * 100) / 100;   // half a day: £55.165 → £55.17
-  const sickOff = toPence(sick * HOLLIE_DAY_PAY), sickPay = toPence(sick * HOLLIE_SICK_PAY);
+  const sspDay = sspDailyFor(payDateForKey(getCurrentPayPeriodKey()));
+  const sickOff = toPence(sick * HOLLIE_DAY_PAY);
+  const sickPay = Math.ceil(Math.round(Math.floor(sick) * sspDay * 1e6) / 1e4) / 100;   // whole days; SSP rounds up to the penny
   const gross = stdPay + otPay - sickOff + sickPay;
   const pension = Math.max(0, HOLLIE_BASE_PENSION + (otPay - sickOff + sickPay) * 0.05);   // salary sacrifice; pay above or below the base moves it by 5%
   const taxable = gross - pension;                       // pension off the top, before tax/NI/SL
@@ -213,7 +225,7 @@ function calcHolliePay(otHrs, sickDays) {
   const sl = Math.floor(Math.max(0, taxable - slThresholdFor(payDateForKey(getCurrentPayPeriodKey()))) * 0.09);
   const deductions = pension + tax + ni + sl;
   const net = gross - deductions;
-  return { stdPay, otPay, sick, sickOff, sickPay, gross, pension, taxable, tax, ni, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
+  return { stdPay, otPay, sick, sickOff, sickPay, sspDay, gross, pension, taxable, tax, ni, sl, deductions, net, annualGross: gross*12, annualNet: net*12 };
 }
 
 // Split modes for shared bills: undefined/"even" = 50/50, "pct" = your % of the
@@ -762,13 +774,16 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.0";
+const APP_VERSION = "1.18.1";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.1", date: "11 Oct 2026", items: [
+    { b: "Sick pay follows SSP", t: " — each whole day off sick now adds Statutory Sick Pay (£24.65 a day, from £123.25 a week) instead of a flat £30. Half days take off half a day's pay with no SSP." },
+  ] },
   { v: "1.18.0", date: "11 Oct 2026", items: [
-    { b: "Sick days", t: " — Hollie's Pay Calc has a box for days off sick this month (half days too). Each day takes off a day's pay (£110.33) and adds £30 sick pay, and her net pay and surplus update straight away." },
+    { b: "Sick days", t: " — Hollie's Pay Calc has a box for days off sick this month (half days too). Each day takes off a day's pay (£110.33) and adds sick pay, and her net pay and surplus update straight away." },
   ] },
   { v: "1.17.0", date: "3 Oct 2026", items: [
     { b: "Current mortgage", t: " — a new card in the Move tab for your balance, rate, payment and when the fixed rate ends. It works out what you'll still owe on moving day and uses that for your equity." },
@@ -5656,7 +5671,7 @@ const calcTimesheetTotals = days => {
               </label>
               <input type="number" inputMode="decimal" step="0.5" min="0" value={hollieSickNow} aria-label="Days off sick this month"
                 onChange={e=>setHollieSick(Math.max(0,Math.min(31,parseFloat(e.target.value)||0)))} style={numI}/>
-              <div style={{fontSize:10,color:"#3a4460",marginTop:6}}>Comes off <b style={{color:"#5a6480"}}>this month's</b> pay: each day takes off a day's pay ({fmt(HOLLIE_DAY_PAY)}) and adds {fmt(HOLLIE_SICK_PAY)} sick pay{hollieSickNow>0?<> — {fmt(hollieCalc.sickOff-hollieCalc.sickPay)} less before tax</>:null}.</div>
+              <div style={{fontSize:10,color:"#3a4460",marginTop:6}}>Comes off <b style={{color:"#5a6480"}}>this month's</b> pay: each day takes off a day's pay ({fmt(HOLLIE_DAY_PAY)}) and adds Statutory Sick Pay ({fmt(hollieCalc.sspDay)} a day, whole days only){hollieSickNow>0?<> — {fmt(hollieCalc.sickOff-hollieCalc.sickPay)} less before tax</>:null}.</div>
             </div>
 
             <div style={card}>
@@ -5664,10 +5679,8 @@ const calcTimesheetTotals = days => {
               {[
                 [`Base pay (flat monthly)`, fmt(hollieCalc.stdPay), "#c8cee0", false],
                 [`Overtime (worked ${holliePrevName})`, fmt(hollieCalc.otPay), "#c84aff", false],
-                ...(hollieCalc.sick>0?[
-                  [`Sick days (${hollieCalc.sick})`, "−"+fmt(hollieCalc.sickOff), "#ff6b8a", false],
-                  ["Sick pay", "+"+fmt(hollieCalc.sickPay), "#00c88c", false],
-                ]:[]),
+                ...(hollieCalc.sick>0?[[`Sick days (${hollieCalc.sick})`, "−"+fmt(hollieCalc.sickOff), "#ff6b8a", false]]:[]),
+                ...(hollieCalc.sickPay>0?[["Sick pay (SSP)", "+"+fmt(hollieCalc.sickPay), "#00c88c", false]]:[]),
                 ["Gross", fmt(hollieCalc.gross), "#e8eaf0", true],
                 ["NOW Pension (salary sacrifice)", "−"+fmt(hollieCalc.pension), "#00c88c", false],
                 ["Taxable pay", fmt(hollieCalc.taxable), "#5a6480", false],
@@ -5696,7 +5709,7 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
 
-            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on a flat {fmt(HOLLIE_FLAT_GROSS)}/month gross plus overtime at £{(HOLLIE_RATE*1.5).toFixed(2)}/h, with NOW Pension taken as salary sacrifice (before tax, NI &amp; student loan), then tax, NI and Plan 2 student loan on what's left. Each sick day takes off {fmt(HOLLIE_DAY_PAY)} (7.5 hours) and adds {fmt(HOLLIE_SICK_PAY)} sick pay.</p>
+            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on a flat {fmt(HOLLIE_FLAT_GROSS)}/month gross plus overtime at £{(HOLLIE_RATE*1.5).toFixed(2)}/h, with NOW Pension taken as salary sacrifice (before tax, NI &amp; student loan), then tax, NI and Plan 2 student loan on what's left. Each sick day takes off {fmt(HOLLIE_DAY_PAY)} (7.5 hours) and adds Statutory Sick Pay of {fmt(hollieCalc.sspDay)} for each whole day.</p>
           </div>
         )}
 
