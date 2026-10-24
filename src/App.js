@@ -774,11 +774,15 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.1";
+const APP_VERSION = "1.18.2";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.2", date: "24 Oct 2026", items: [
+    { b: "Budget opens on the month you're paying in for", t: " — the month your next transfers into the joint account are for. As soon as Monzo shows you've both paid in, it moves on a month. Around payday, a line under the months shows who's paid in so far." },
+    { b: "Back to…", t: " — the button now takes you back to that month. This month is still a tap away on the strip, with its paid ticks." },
+  ] },
   { v: "1.18.1", date: "11 Oct 2026", items: [
     { b: "Sick pay follows SSP", t: " — each whole day off sick now adds Statutory Sick Pay (£24.65 a day, from £123.25 a week) instead of a flat £30. Half days take off half a day's pay with no SSP." },
   ] },
@@ -1209,6 +1213,29 @@ function payCycle(now = new Date()) {
   let start = getPayday(today.getFullYear(), today.getMonth());
   if (start > today) start = getPayday(today.getFullYear(), today.getMonth() - 1);
   return { start, next: getPayday(start.getFullYear(), start.getMonth() + 1) };
+}
+// The month the Budget opens on: the one you're paying into the joint account for. Each payday's
+// transfers pay for the month after it, and once Monzo shows you've both paid in it moves on a month.
+// seen(payday) -> {glyn, hollie, fresh} (fresh = Monzo checked since that payday), or null when
+// there are no Monzo figures. Monzo can't say: it moves on the day after payday. Checked but one
+// transfer not seen: it waits until a week after payday (the transfer window), then moves on.
+// `who` (who's in so far) is set while it waits on a payday someone has paid in for, or that's
+// been checked since.
+function payInMonth(now, seen) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const { start: last, next } = payCycle(now);
+  const both = s => !!(s && s.glyn && s.hollie);
+  const s0 = seen(last);
+  let pd = last;
+  if (both(s0)) pd = next;
+  else if (!s0 || !s0.fresh) { if (today > last) pd = next; }
+  else if (now.getTime() - last.getTime() > 8 * DAY_MS) pd = next;
+  // Both paid in early for the next payday (from 3 days before it).
+  if (pd === next && both(seen(next))) pd = getPayday(next.getFullYear(), next.getMonth() + 1);
+  const fund = new Date(pd.getFullYear(), pd.getMonth() + 1, 1);
+  const s = seen(pd);
+  return { y: fund.getFullYear(), m: fund.getMonth() + 1, payday: pd,
+    who: s && !both(s) && (s.glyn || s.hollie || s.fresh) ? { glyn: !!s.glyn, hollie: !!s.hollie } : null };
 }
 const isPotMove = t => !!t.pot_id || t.scheme === "uk_retail_pot";
 const txWhen = t => new Date(t.created);
@@ -2419,7 +2446,7 @@ export default function App() {
   const [newCat,setNewCat]=useState("");
   const [dragOver,setDragOver]=useState(null);
   const [budTab,setBudTab]=useState("shared");
-  const [selIdx,setSelIdx]=useState(0);            // Budget tab: month offset 0-11 (0 = current)
+  const [selPick,setSelPick]=useState(null);       // Budget tab: month picked (offset 0-11 from this month), or null = the month being paid in for
   const [laOpen,setLaOpen]=useState(false);        // collapsed 12-month Year view
   const dragBill=useRef(null);
   const [chartRange,setChartRange]=useState("All");
@@ -3762,10 +3789,36 @@ export default function App() {
     return out;
   },[sharedBills,glynBills,scheduledBills,myId,isOwner,schedNowMonth,schedNowYear,cr.net]);
 
-  // The Budget tab renders whichever month is selected. The app-wide figures
-  // (totalOut / surplus, used by Pay Calc) always stay on the current month.
+  // Which of you has paid into the joint account around the last and next paydays: from this
+  // phone's own Monzo figures, or as Glyn's phone shared them (bank_summary.pay), whichever was
+  // checked more recently. src = when the figures last came from Monzo.
+  const ownPay=(()=>{
+    if(!isOwner||!bank.accounts.length)return null;
+    const j=bank.accounts.find(a=>a.type==="uk_retail_joint");
+    if(!j)return null;
+    const now=new Date(), cyc=payCycle(now), pay={};
+    for(const pd of [cyc.start,cyc.next]){
+      const t=paydayTransfers(bank.txns,j.account_id,pd,now);
+      pay[localISO(pd)]={g:t.glyn>0,h:t.hollie>0};
+    }
+    const src=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&Date.parse(a.updated_at)>Date.parse(m))?a.updated_at:m,null);
+    return {pay,src};
+  })();
+  const payInfo=[ownPay,bankSummary&&bankSummary.pay?{pay:bankSummary.pay,src:bankSummary.src}:null]
+    .filter(p=>p&&p.src).reduce((a,p)=>!a||Date.parse(p.src)>Date.parse(a.src)?p:a,null);
+  const payIn=payInMonth(new Date(),pd=>{
+    const s=payInfo&&payInfo.pay[localISO(pd)];
+    return s?{glyn:!!s.g,hollie:!!s.h,fresh:Date.parse(payInfo.src)>=pd.getTime()}:null;
+  });
+  const homeIdx=Math.min(11,Math.max(0,(payIn.y*12+payIn.m)-(schedNowYear*12+schedNowMonth)));
+  const homeLabel=MONTHS[payIn.m-1];
+
+  // The Budget tab shows the month being paid in for, unless another is picked. The app-wide
+  // figures (totalOut / surplus, used by Pay Calc) always stay on the current month.
+  const selIdx=selPick!=null?selPick:homeIdx;
   const laSel=lookAheadMonths[selIdx]||lookAheadMonths[0];
   const selIsNow=selIdx===0;
+  const selIsHome=selIdx===homeIdx;
   const selSchedShared=(laSel?laSel.hits:[]).filter(b=>b.scope==="shared");
   const selSchedPersonal=(laSel?laSel.hits:[]).filter(b=>b.scope==="personal");
   const selKey=laSel?monthKeyOf(laSel.yr,laSel.m):monthKeyOf(schedNowYear,schedNowMonth);
@@ -4775,13 +4828,16 @@ const calcTimesheetTotals = days => {
     }
     const ids=bankPrefs.house_pots||[];
     const hp=bank.pots.filter(p=>ids.includes(p.pot_id));
-    const body={v:1,by:user.id,mk:bankMatch.mk,ticks,house:hp.length?{total:hp.reduce((s,p)=>s+(Number(p.balance)||0),0),n:hp.length}:null};
+    // pay: who's paid into the joint account around the last and next paydays (no amounts), so
+    // Hollie's Budget moves on to the next month at the same time.
+    const body={v:1,by:user.id,mk:bankMatch.mk,ticks,house:hp.length?{total:hp.reduce((s,p)=>s+(Number(p.balance)||0),0),n:hp.length}:null,
+      pay:ownPay?ownPay.pay:null};
     const src=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&Date.parse(a.updated_at)>Date.parse(m))?a.updated_at:m,null);
     const key=stableJson(body);
     const newer=s=>!s||(src&&Date.parse(src)-Date.parse(s)>3*3600000);
     const mine=cur&&cur.by===user.id;
     if(mine&&cur.src&&src&&Date.parse(cur.src)>Date.parse(src))return;   // another of your devices has newer figures
-    if(mine&&stableJson({v:cur.v,by:cur.by,mk:cur.mk,ticks:cur.ticks,house:cur.house})===key&&!newer(cur.src)){summarySent.current={key,src:cur.src};return;}
+    if(mine&&stableJson({v:cur.v,by:cur.by,mk:cur.mk,ticks:cur.ticks,house:cur.house,pay:cur.pay})===key&&!newer(cur.src)){summarySent.current={key,src:cur.src};return;}
     if(sent&&sent.key===key&&!newer(sent.src))return;   // this phone already shared it (so no two phones can keep answering each other)
     sendSummary({...body,src,at:new Date().toISOString()},key,src);
   });
@@ -5346,17 +5402,17 @@ const calcTimesheetTotals = days => {
             <div style={{...card,borderRadius:12,padding:"12px 12px 13px",display:"flex",flexDirection:"column",gap:11}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
                 <span style={{fontSize:14,fontWeight:800,color:"#e8eaf0"}}>{laSel?MONTHS[laSel.m-1]+" "+laSel.yr:""}</span>
-                {selIsNow
+                {selIsHome
                   ? <span style={{fontSize:10.5,fontWeight:700,padding:"3px 8px",borderRadius:20,background:"#0a2018",color:rateCol,border:"1px solid #17553f"}}>{rate}% left over</span>
-                  : <button onClick={()=>{haptic();setSelIdx(0);}} style={{background:"transparent",border:"1px solid #2a5a8a",borderRadius:20,color:"#8ec5ff",fontSize:10.5,fontWeight:700,padding:"3px 10px",cursor:"pointer"}}>Back to this month</button>}
+                  : <button onClick={()=>{haptic();setSelPick(null);}} style={{background:"transparent",border:"1px solid #2a5a8a",borderRadius:20,color:"#8ec5ff",fontSize:10.5,fontWeight:700,padding:"3px 10px",cursor:"pointer"}}>Back to {homeLabel}</button>}
               </div>
 
               <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4,WebkitOverflowScrolling:"touch"}}>
                 {lookAheadMonths.map((r,i)=>{
                   const on=i===selIdx;
                   return (
-                    <button key={r.key} onClick={()=>{haptic();setSelIdx(i);}} style={{
-                      flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#0d1117",color:on?"#fff":(i===0?"#8ec5ff":"#5a6480"),
+                    <button key={r.key} onClick={()=>{haptic();setSelPick(i===homeIdx?null:i);}} style={{
+                      flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#0d1117",color:on?"#fff":(i===homeIdx?"#8ec5ff":"#5a6480"),
                       border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"7px 11px",fontSize:11.5,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
                       {MONTHS[r.m-1]}{r.m===1||i===0?" "+String(r.yr).slice(2):""}
                       {r.hits.length>0&&<span style={{position:"absolute",top:4,right:4,width:5,height:5,borderRadius:3,background:on?"#fff":"#ffb84a"}}/>}
@@ -5365,8 +5421,17 @@ const calcTimesheetTotals = days => {
                 })}
               </div>
 
+              {/* Payday: who's paid into the joint account for this month so far (from Monzo). */}
+              {selIsHome&&payIn.who&&(
+                <div style={{fontSize:11,color:"#5a6480",lineHeight:1.5,padding:"0 2px"}}>
+                  Paid in for {homeLabel}: <b style={{color:payIn.who.glyn?"#00c88c":"#8892b0"}}>Glyn {payIn.who.glyn?"✓":"not yet"}</b>
+                  {" · "}<b style={{color:payIn.who.hollie?"#00c88c":"#8892b0"}}>Hollie {payIn.who.hollie?"✓":"not yet"}</b>
+                  {" — moves on to "+MONTHS[payIn.m%12]+" once you're both in"}
+                </div>
+              )}
+
               {(()=>{
-                if(!selIsNow)return null;
+                if(!selIsNow&&!selIsHome)return null;
                 const pend=[...sharedBills,...glynBills].filter(b=>notSetFor(b,selKey));
                 if(!pend.length)return null;
                 const names=pend.map(b=>b.name);
@@ -5605,7 +5670,7 @@ const calcTimesheetTotals = days => {
                 {lookAheadMonths.map((r,i)=>{
                   const vs=netForIdx(i)+r.income-r.total;
                   return (
-                    <div key={r.key} onClick={()=>{haptic();setSelIdx(i);setLaOpen(false);}}
+                    <div key={r.key} onClick={()=>{haptic();setSelPick(i===homeIdx?null:i);setLaOpen(false);}}
                       style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",alignItems:"center",
                         padding:"9px 6px",fontSize:12.5,borderTop:"1px solid #1e2535",cursor:"pointer",
                         background:i===selIdx?"#15203a":"transparent"}}>
