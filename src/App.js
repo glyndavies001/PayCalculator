@@ -360,10 +360,14 @@ const db = {
   async upsertSharedBill(b) {
     const row = { bill_id: b.id, name: b.name, total: b.total, is_car_glyn: false, split_mode: b.splitMode || null, split_value: b.splitValue != null ? b.splitValue : null };
     if (b.amounts !== undefined) row.amounts = b.amounts;   // untouched bills never write this column
-    let { error } = await supabase.from("shared_bills").upsert(row, { onConflict: "bill_id" });
-    if (missingColumn(error, "amounts")) {
-      delete row.amounts;
-      ({ error } = await supabase.from("shared_bills").upsert(row, { onConflict: "bill_id" }));
+    if (b.history !== undefined) row.history = b.history;   // (nor this one)
+    const save = () => supabase.from("shared_bills").upsert(row, { onConflict: "bill_id" });
+    let { error } = await save();
+    for (let i = 0; i < 2 && error; i++) {   // a column whose migration hasn't run: save without it
+      const col = ["amounts", "history"].find(c => c in row && missingColumn(error, c));
+      if (!col) break;
+      delete row[col];
+      ({ error } = await save());
     }
     reportDbError("upsertSharedBill", error);
   },
@@ -380,10 +384,14 @@ const db = {
   async upsertGlynBill(userId, b) {
     const row = { user_id: userId, bill_id: b.id, name: b.name, total: b.total };
     if (b.amounts !== undefined) row.amounts = b.amounts;   // untouched bills never write this column
-    let { error } = await supabase.from("glyn_bills").upsert(row, { onConflict: "user_id,bill_id" });
-    if (missingColumn(error, "amounts")) {
-      delete row.amounts;
-      ({ error } = await supabase.from("glyn_bills").upsert(row, { onConflict: "user_id,bill_id" }));
+    if (b.history !== undefined) row.history = b.history;   // (nor this one)
+    const save = () => supabase.from("glyn_bills").upsert(row, { onConflict: "user_id,bill_id" });
+    let { error } = await save();
+    for (let i = 0; i < 2 && error; i++) {   // a column whose migration hasn't run: save without it
+      const col = ["amounts", "history"].find(c => c in row && missingColumn(error, c));
+      if (!col) break;
+      delete row[col];
+      ({ error } = await save());
     }
     reportDbError("upsertGlynBill", error);
   },
@@ -745,18 +753,35 @@ const catColor = (cat, idx) => (cat && cat.color) || CAT_COLORS[(idx>=0?idx:0) %
 // Variable bills (credit cards, say) appear every month but carry their own amount
 // per pay month, held in `amounts` keyed "YYYY-MM". A month with nothing recorded
 // is 0, so next month's balance is never assumed from this month's.
+// Regular bills have one `total`, and remember what they were before a change in `history`:
+// [{to:"YYYY-MM", total}] sorted by `to`, each the amount up to and including that month. So
+// changing a regular bill from one month on leaves the months before it as they were.
 const monthKeyOf = (yr, m) => yr + "-" + String(m).padStart(2, "0");
+const shiftMonthKey = (mk, d) => { const [y, m] = mk.split("-").map(Number); const x = new Date(y, m - 1 + d, 1); return monthKeyOf(x.getFullYear(), x.getMonth() + 1); };
 const isVariable = b => !!(b && b.amounts && typeof b.amounts === "object");
-const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : (Number(b && b.total) || 0);
-const withAmount = (b, mk) => isVariable(b) ? { ...b, total: amountOf(b, mk) } : b;
+const fixedAmountFor = (b, mk) => {
+  if (b && Array.isArray(b.history)) for (const e of b.history) if (e && mk <= e.to) return Number(e.total) || 0;
+  return Number(b && b.total) || 0;
+};
+const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : fixedAmountFor(b, mk);
+const withAmount = (b, mk) => isVariable(b) || (b && Array.isArray(b.history) && b.history.length) ? { ...b, total: amountOf(b, mk) } : b;
 const notSetFor = (b, mk) => isVariable(b) && !(mk in b.amounts);
+// A regular bill changed to `n` from month `mk` on: the months before keep what they were.
+function changeFromMonth(b, mk, n) {
+  const prev = shiftMonthKey(mk, -1);
+  const was = fixedAmountFor(b, prev);
+  const keep = (Array.isArray(b.history) ? b.history : []).filter(e => e && e.to < prev);
+  const history = was === n ? keep : [...keep, { to: prev, total: was }];
+  return { ...b, total: n, history: history.length ? history : null };
+}
 // Database rows -> the bill objects the app works with.
-const mapSharedBillRow = r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), splitMode: r.split_mode || null, splitValue: r.split_value != null ? parseFloat(r.split_value) : null, amounts: r.amounts || undefined });
-const mapGlynBillRow = r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), amounts: r.amounts || undefined });
+const mapSharedBillRow = r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), splitMode: r.split_mode || null, splitValue: r.split_value != null ? parseFloat(r.split_value) : null, amounts: r.amounts || undefined, history: Array.isArray(r.history) ? r.history : undefined });
+const mapGlynBillRow = r => ({ id: r.bill_id, name: r.name, total: parseFloat(r.total), amounts: r.amounts || undefined, history: Array.isArray(r.history) ? r.history : undefined });
 // Same bill contents? (Used to save only the bills that actually changed.)
 const sameBill = (a, b) => a.name === b.name && Number(a.total) === Number(b.total)
   && (a.splitMode || null) === (b.splitMode || null) && (a.splitValue ?? null) === (b.splitValue ?? null)
-  && JSON.stringify(a.amounts || null) === JSON.stringify(b.amounts || null);
+  && JSON.stringify(a.amounts || null) === JSON.stringify(b.amounts || null)
+  && JSON.stringify(a.history || null) === JSON.stringify(b.history || null);
 // Local calendar date as YYYY-MM-DD. toISOString() gives the UTC date, which is a
 // day early for anything made at local midnight during British Summer Time.
 const localISO = (d = new Date()) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -774,11 +799,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.4";
+const APP_VERSION = "1.18.5";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.5", date: "24 Oct 2026", items: [
+    { b: "Bill changes don't rewrite the past", t: " — changing a regular bill's amount now applies from the month you're viewing onwards, and earlier months keep what they were. To change one from a later month, tap that month first." },
+  ] },
   { v: "1.18.4", date: "24 Oct 2026", items: [
     { b: "Same figures everywhere", t: " — the Dashboard's Monthly Surplus and Monthly Budget card now show the month you're paying in for, by name, so they match the Budget. Pay Calc's surplus is against the month its pay covers." },
     { b: "Hollie's months follow her pay", t: " — her Budget pairs each month with her pay for the month before, so November uses her October pay right up to the end of October." },
@@ -2997,7 +3025,7 @@ export default function App() {
     if (!isOwner || !user) return undefined;
     try {
       const all = await db.getAllPersonalBills();
-      return all.filter(b => b.user_id !== user.id).map(b => ({ user_id: b.user_id, id: b.bill_id, name: b.name, total: parseFloat(b.total) }));
+      return all.filter(b => b.user_id !== user.id).map(b => ({ user_id: b.user_id, id: b.bill_id, name: b.name, total: parseFloat(b.total), amounts: b.amounts || undefined, history: Array.isArray(b.history) ? b.history : undefined }));
     } catch (e) { return undefined; }
   };
   const buildBackupData = async () => {
@@ -3023,7 +3051,7 @@ export default function App() {
       const current = (await db.getAllPersonalBills()).filter(b => b.user_id !== user.id);
       const keep = new Set(partnerBills.map(b => b.user_id + ":" + b.id));
       for (const b of partnerBills) {
-        if (b.user_id && b.user_id !== user.id) await db.upsertGlynBill(b.user_id, { id: b.id, name: b.name, total: b.total });
+        if (b.user_id && b.user_id !== user.id) await db.upsertGlynBill(b.user_id, { id: b.id, name: b.name, total: b.total, amounts: b.amounts || undefined, history: Array.isArray(b.history) ? b.history : undefined });
       }
       for (const b of current) {
         if (!keep.has(b.user_id + ":" + b.bill_id)) await db.deleteGlynBill(b.user_id, b.bill_id);
@@ -4275,12 +4303,16 @@ export default function App() {
   },[user]);
 
   const hSplit=(id,mode,value)=>{updSB(sharedBills.map(b=>b.id===id?{...b,splitMode:mode||null,splitValue:mode&&value!=null?value:null}:b));};
+  // Editing an amount: a variable bill changes for the month in view; a regular bill from the
+  // month in view onwards, the months before keeping what they were (unchanged = left alone).
+  const editedAmount=(b,n)=>isVariable(b)?{...b,amounts:{...b.amounts,[selKey]:n}}
+    :amountOf(b,selKey)===n?b:changeFromMonth(b,selKey,n);
   const hSB=(id,v)=>{
     const n=parseFloat(v);
     updSB(sharedBills.map(b=>{
       if(b.id!==id)return b;
       if(isNaN(n))return b;
-      return isVariable(b)?{...b,amounts:{...b.amounts,[selKey]:n}}:{...b,total:n};
+      return editedAmount(b,n);
     }));
     setEditSh(null);
   };
@@ -4289,7 +4321,7 @@ export default function App() {
     updGB(glynBills.map(b=>{
       if(b.id!==id)return b;
       if(isNaN(n))return b;
-      return isVariable(b)?{...b,amounts:{...b.amounts,[selKey]:n}}:{...b,total:n};
+      return editedAmount(b,n);
     }));
     setEditGl(null);
   };
@@ -4306,7 +4338,7 @@ export default function App() {
     const bill=(isG?glynBills:sharedBills).find(b=>b.id===billId);
     if(!bill)return;
     const m=laSel?laSel.m:schedNowMonth, yr=laSel?laSel.yr:schedNowYear;
-    addSchedRow({id:Date.now(),name:bill.name,total:Number(bill.total)||0,
+    addSchedRow({id:Date.now(),name:bill.name,total:amountOf(bill,monthKeyOf(yr,m)),
       split_mode:isG?null:(bill.splitMode||null),split_value:isG?null:(bill.splitValue!=null?bill.splitValue:null),
       scope:isG?"personal":"shared",owner:myId,freq,months:[m],year:freq==="once"?yr:null});
     if(isG){
@@ -4383,9 +4415,10 @@ export default function App() {
   const setVariable=(billId,on,isGlyn)=>{
     const apply=b=>{
       if(b.id!==billId)return b;
-      if(on)return {...b,total:0,amounts:{...(b.amounts||{}),[selKey]:isVariable(b)?amountOf(b,selKey):(Number(b.total)||0)}};
+      // (A regular bill's earlier amounts don't carry over either way.)
+      if(on)return {...b,total:0,history:null,amounts:{...(b.amounts||{}),[selKey]:amountOf(b,selKey)}};
       const {amounts,...rest}=b;
-      return {...rest,total:amountOf(b,selKey),amounts:null};
+      return {...rest,total:amountOf(b,selKey),amounts:null,history:null};
     };
     isGlyn?updGB(glynBills.map(apply)):updSB(sharedBills.map(apply));
     haptic();
@@ -4761,7 +4794,7 @@ const calcTimesheetTotals = days => {
     // An Overdraft is cleared by a wage, so it counts in the month that wage pays for: the last
     // payday's month (what its wage cleared) and the next payday's (how far overdrawn now).
     const odMonths=[...new Set([fundMonthKey(payCycle(now).start),fundMonthKey(upcomingPayday(now))])];
-    const penceOf=b=>isVariable(b)?null:Math.round((Number(b.total)||0)*100);
+    const penceOf=b=>isVariable(b)?null:Math.round(amountOf(b,mk)*100);   // what a regular bill is this month
     // Payees you've picked for a bill (that still exists) aren't matched to another one.
     const taken=new Set(all.map(x=>links[x.ref]&&links[x.ref].k).filter(k=>k&&groups.has(k)));
     const auto=autoLinks(all.filter(x=>!links[x.ref]&&!isOd(x)).map(x=>({ref:x.ref,name:x.b.name,pence:penceOf(x.b),
@@ -5368,7 +5401,7 @@ const calcTimesheetTotals = days => {
 
           const editRow=(b,first)=>(
             <div key={b.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 13px",borderTop:first?"none":"1px solid #171d2b",background:"#0f141f"}}>
-              <span style={{flex:1,fontSize:12,color:"#5a6480"}}>{isVariable(b)?b.name+" in "+selLabel:"Total for "+b.name}</span>
+              <span style={{flex:1,fontSize:12,color:"#5a6480"}}>{isVariable(b)?b.name+" in "+selLabel:b.name+" from "+selLabel+" on"}</span>
               <input autoFocus type="number" defaultValue={String(amt1(b))}
                 onBlur={e=>onAmt(b.id,e.target.value)}
                 onKeyDown={e=>{if(e.key==="Enter")onAmt(b.id,e.target.value);}}
@@ -5380,7 +5413,7 @@ const calcTimesheetTotals = days => {
           // Ticks: only for this month, against the bill's full amount (or what's typed in, if it varies).
           const tickFor=b=>{
             if(!selIsNow)return null;
-            const typed=isVariable(b)?Number(b.amounts[selKey])||0:Number(b.total)||0;
+            const typed=amountOf(b,selKey);
             return tickLine(billTick((isG?"g:":"s:")+b.id),typed?Math.round(typed*100):null);
           };
           const billRows=list=>list.map((b,bi)=>editingId===b.id?editRow(b,bi===0):row(b.id,{
@@ -8017,7 +8050,7 @@ const calcTimesheetTotals = days => {
                     <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>
                       {varies
                         ? "Set separately for each month — currently "+fmt(amountOf(bill,selKey))+" in "+selLabel+". Months you haven't filled in stay at £0, so upcoming months aren't guessed from this one."
-                        : "One figure that applies to every month, including future ones."}
+                        : "One figure for every month. Changing it applies from the month you're viewing onwards — earlier months keep what they were."}
                     </div>
                   </>
                 );
@@ -8038,7 +8071,7 @@ const calcTimesheetTotals = days => {
                         {on&&<div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>{m.auto?"Matched automatically":"You picked this"}{m.accountId?" · "+(BANK_LABEL[(bank.accounts.find(a=>a.account_id===m.accountId)||{}).type]||""):""}</div>}
                         {tk&&<div style={{fontSize:11,color:tk.color,marginTop:3,fontWeight:600}}>{tk.text}</div>}
                       </div>
-                      <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref,name:bill.name,shared:!isG,pence:isVariable(bill)?null:Math.round((Number(bill.total)||0)*100)});}} style={miniBtn}>{on?"Change":"Link"}</button>
+                      <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref,name:bill.name,shared:!isG,pence:isVariable(bill)?null:Math.round(amountOf(bill,nowMk)*100)});}} style={miniBtn}>{on?"Change":"Link"}</button>
                     </div>
                     <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>Ticks the bill off on the Budget tab once the payment goes out{isVariable(bill)?", and fills in a blank month's amount from it":""}.</div>
                   </>
@@ -8145,10 +8178,10 @@ const calcTimesheetTotals = days => {
                 <div key={x.ref} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 4px",borderTop:"1px solid #1a1f2e"}}>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.b.name}</div>
-                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>{x.shared?"Shared":"Mine"} · {isVariable(x.b)?"varies":fmt(x.b.total)}</div>
+                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>{x.shared?"Shared":"Mine"} · {isVariable(x.b)?"varies":fmt(amountOf(x.b,nowMk))}</div>
                   </div>
                   <button onClick={()=>setLink(x.ref,{k:"none"})} style={{...miniBtn,background:"transparent",color:"#5a6480",border:"1px solid #1e2535"}}>Don't track</button>
-                  <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref:x.ref,name:x.b.name,shared:x.shared,pence:isVariable(x.b)?null:Math.round((Number(x.b.total)||0)*100)});}} style={miniBtn}>Pick</button>
+                  <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref:x.ref,name:x.b.name,shared:x.shared,pence:isVariable(x.b)?null:Math.round(amountOf(x.b,nowMk)*100)});}} style={miniBtn}>Pick</button>
                 </div>
               ))}
               {unlinkedBills.length===0&&<div style={{fontSize:12.5,color:"#00c88c",padding:"14px 4px",textAlign:"center",fontWeight:600}}>✓ Every bill is matched or set aside</div>}
