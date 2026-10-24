@@ -774,11 +774,15 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.2";
+const APP_VERSION = "1.18.3";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.3", date: "24 Oct 2026", items: [
+    { b: "Overdraft in the right month", t: " — the wage that clears your overdraft pays for the month after payday, so that's where it counts now. Next month shows how far overdrawn you are, keeping up with Monzo until payday, then what the wage cleared." },
+    { b: "Left over uses the pay that covers each month", t: " — the pay from the payday before it. The month you're paying in for uses this month's pay estimate, overtime included; later months assume no overtime." },
+  ] },
   { v: "1.18.2", date: "24 Oct 2026", items: [
     { b: "Budget opens on the month you're paying in for", t: " — the month your next transfers into the joint account are for. As soon as Monzo shows you've both paid in, it moves on a month. Around payday, a line under the months shows who's paid in so far." },
     { b: "Back to…", t: " — the button now takes you back to that month. This month is still a tap away on the strip, with its paid ticks." },
@@ -1237,6 +1241,17 @@ function payInMonth(now, seen) {
   return { y: fund.getFullYear(), m: fund.getMonth() + 1, payday: pd,
     who: s && !both(s) && (s.glyn || s.hollie || s.fresh) ? { glyn: !!s.glyn, hollie: !!s.hollie } : null };
 }
+// The next payday to come (today's, all through payday itself).
+function upcomingPayday(now = new Date()) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const pd = getPayday(today.getFullYear(), today.getMonth());
+  return pd >= today ? pd : getPayday(today.getFullYear(), today.getMonth() + 1);
+}
+// The Budget month a payday's wage pays for: the one after it ("YYYY-MM").
+function fundMonthKey(pd) {
+  const d = new Date(pd.getFullYear(), pd.getMonth() + 1, 1);
+  return monthKeyOf(d.getFullYear(), d.getMonth() + 1);
+}
 const isPotMove = t => !!t.pot_id || t.scheme === "uk_retail_pot";
 const txWhen = t => new Date(t.created);
 const txName = t => t.merchant || t.counterparty || t.description || "Payment";
@@ -1649,17 +1664,19 @@ function balanceBefore(txns, account, tx) {
   for (let j = txns.length - 1; j >= i; j--) if (txns[j].account_id === account.account_id) bal -= Number(txns[j].amount);
   return bal;
 }
-// An "Overdraft" bill in a Budget month: how far overdrawn the account is now ("live"), until that
-// month's wage lands; from then on, how far overdrawn it was just before the wage (it clears it).
+// An "Overdraft" bill in a Budget month: the overdraft that month's money clears. Each payday's
+// wage pays for the month after it, and clears whatever the account is overdrawn by when it lands.
+// So until the wage before a month lands, that month shows how far overdrawn the account is now
+// ("live", for the next payday's month); from then on, how far overdrawn it was just before it.
 function overdraftStatus(txns, account, mk, now = new Date()) {
   const [y, m] = mk.split("-").map(Number);
-  const pd = getPayday(y, m - 1);
+  const pd = getPayday(y, m - 2);   // the payday before this month (getPayday's months run 0-11)
   const w = wageNear(txns, pd, [account.account_id]);
   if (w) {
     const bal = balanceBefore(txns, account, w);
     return bal == null ? null : { state: "paid", date: txWhen(w), amount: bal < 0 ? -bal : 0, n: 1, od: true };
   }
-  if (mk === monthKeyOf(now.getFullYear(), now.getMonth() + 1)) {
+  if (pd.getTime() === upcomingPayday(now).getTime()) {
     const bal = Number(account.balance) || 0;
     return { state: "live", date: now, amount: bal < 0 ? -bal : 0, od: true };
   }
@@ -3876,17 +3893,27 @@ export default function App() {
   const hollieSurplus=hollieCalc.net+incomeNow-hollieOut;
   // Whoever is signed in: their own net, and their surplus for the month in view.
   const viewerNet=isOwner?cr.net:hollieCalc.net;
-  // Forecasting a future month assumes NO overtime — only contracted hours at the
-  // current bonus tier. The current month keeps the live estimate, which reflects
-  // the overtime actually logged. Hollie's base pay is flat, so hers is constant.
+  // A pay period's pay without overtime (yr, m = the month its period ends): contracted
+  // hours at the current bonus tier. Hollie's base pay is flat, so hers is constant.
   const baselineNetFor=(yr,m)=>isOwner
     ? calcPay({stdHrs:monthHoursFor(yr,m),otHrs:0,weekendOtHrs:0,holidayHrs:0,
         bonus:ci.bonus,perfAllowance:ci.perfAllowance,_allowanceOverride:effectiveAllowance}).net
     : calcHolliePay(0).net;
+  // Each Budget month is paid for by the payday before it (the pay period ending the 28th of the
+  // month before). This pay period's pay is the live estimate, overtime and all; a pay that's
+  // already landed is its payslip; later ones assume contracted hours only.
+  const curPeriod=getCurrentPayPeriodKey();
+  const payslipNet=(yr,m)=>{const r=history.find(h=>h.month===MONTHS[m-1]+" "+yr);return r&&Number(r.net)>0?Number(r.net):null;};
+  const fundNetFor=(yr,m)=>{
+    const p=new Date(yr,m-2,1),py=p.getFullYear(),pm=p.getMonth()+1,pk=monthKeyOf(py,pm);
+    if(pk===curPeriod)return viewerNet;
+    if(pk<curPeriod&&isOwner){const n=payslipNet(py,pm);if(n!=null)return n;}
+    return baselineNetFor(py,pm);
+  };
+  const liveLabel=MONTHS[Number(curPeriod.slice(5))%12];   // the month this pay period's pay is for
   const netForIdx=(i)=>{
-    if(i===0)return viewerNet;
     const r=lookAheadMonths[i];
-    return r?baselineNetFor(r.yr,r.m):viewerNet;
+    return r?fundNetFor(r.yr,r.m):viewerNet;
   };
   const selNet=netForIdx(selIdx);
   const selIncomeRows=laSel?laSel.incomeRows:[];
@@ -4714,6 +4741,9 @@ const calcTimesheetTotals = days => {
     const mk=monthKeyOf(now.getFullYear(),now.getMonth()+1);
     const all=[...sharedBills.map(b=>({ref:"s:"+b.id,b,shared:true})),...glynBills.map(b=>({ref:"g:"+b.id,b,shared:false}))];
     const isOd=x=>!x.shared&&isVariable(x.b)&&/\boverdraft\b/i.test(x.b.name||"")&&personal.length>0;
+    // An Overdraft is cleared by a wage, so it counts in the month that wage pays for: the last
+    // payday's month (what its wage cleared) and the next payday's (how far overdrawn now).
+    const odMonths=[...new Set([fundMonthKey(payCycle(now).start),fundMonthKey(upcomingPayday(now))])];
     const penceOf=b=>isVariable(b)?null:Math.round((Number(b.total)||0)*100);
     // Payees you've picked for a bill (that still exists) aren't matched to another one.
     const taken=new Set(all.map(x=>links[x.ref]&&links[x.ref].k).filter(k=>k&&groups.has(k)));
@@ -4727,12 +4757,15 @@ const calcTimesheetTotals = days => {
       else if((man&&man.k==="od")||(!man&&isOd(x))){kind="od";isAuto=!man;}
       else if(man&&man.k){kind="tx";keys=[man.k];}
       else{const a=auto.get(x.ref);if(a){kind="tx";keys=a.keys;isAuto=true;}}
-      let status=null;
+      let status=null,odFills=null;
       if(kind==="tx")status=billStatus(keys,groups,mk,penceOf(x.b),now);
-      else if(kind==="od"&&personal[0])status=overdraftStatus(bank.txns,personal[0],mk,now);
+      else if(kind==="od"&&personal[0]){
+        status=overdraftStatus(bank.txns,personal[0],mk,now);   // this month's tick
+        odFills=odMonths.map(k=>[k,k===mk?status:overdraftStatus(bank.txns,personal[0],k,now)]);
+      }
       const g=keys.length?groups.get(keys[0]):null;
       const name=kind==="od"?"How far overdrawn":g?(g.pot?"Into "+g.name+" pot":g.name):man&&man.n?man.n:null;
-      byRef[x.ref]={kind,keys,auto:isAuto,status,name,accountId:g?g.accountId:null,joint:!!(g&&jIds.includes(g.accountId))};
+      byRef[x.ref]={kind,keys,auto:isAuto,status,name,accountId:g?g.accountId:null,joint:!!(g&&jIds.includes(g.accountId)),odFills};
     }
     // Bills paid into the same pot (the Bills pot, say) tick together when it's topped up, then
     // each as it leaves the pot.
@@ -4773,20 +4806,27 @@ const calcTimesheetTotals = days => {
       let changed=false;
       const next=list.map(b=>{
         if(!isVariable(b))return b;
-        const ref=prefix+b.id,m=bankMatch.byRef[ref],st=m&&m.status;
-        // Paid this month, or (Overdraft) how far overdrawn the account is now.
-        if(!st||!(st.state==="paid"||st.state==="live"))return b;
+        const ref=prefix+b.id,m=bankMatch.byRef[ref];
+        if(!m)return b;
         if(shared&&m.auto&&!m.joint)return b;   // a shared bill only takes the joint account's payments
-        const val=Math.round(st.amount)/100;
-        const cur=b.amounts[mk],was=fills[ref]&&fills[ref][mk];
-        const blank=cur===undefined||cur===null||Number(cur)===0;
-        if(blank&&!(val>0))return b;   // nothing to fill in
-        if(!blank&&!(was!=null&&Number(cur)===Number(was)))return b;   // typed by you: left alone
-        if(Number(cur)===val)return b;
-        const mine={...(fills[ref]||{}),[mk]:val};
+        // An Overdraft fills the months its wages pay for (odFills); anything else, this month.
+        let amounts=b.amounts,mine=null;
+        for(const [k,st] of m.odFills||[[mk,m.status]]){
+          // Paid this month, or (Overdraft) how far overdrawn the account is now.
+          if(!st||!(st.state==="paid"||st.state==="live"))continue;
+          const val=Math.round(st.amount)/100;
+          const cur=amounts[k],was=fills[ref]&&fills[ref][k];
+          const blank=cur===undefined||cur===null||Number(cur)===0;
+          if(blank&&!(val>0))continue;   // nothing to fill in
+          if(!blank&&!(was!=null&&Number(cur)===Number(was)))continue;   // typed by you: left alone
+          if(Number(cur)===val)continue;
+          amounts={...amounts,[k]:val};
+          mine={...(mine||fills[ref]||{}),[k]:val};
+        }
+        if(!mine)return b;
         Object.keys(mine).sort().slice(0,-3).forEach(k=>{delete mine[k];});   // the last few months will do
         noted[ref]=mine;changed=true;
-        return {...b,amounts:{...b.amounts,[mk]:val}};
+        return {...b,amounts};
       });
       return changed?next:null;
     };
@@ -5685,7 +5725,7 @@ const calcTimesheetTotals = days => {
                   );
                 })}
                 <div style={{fontSize:10,color:"#3a4460",padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
-                  Tap a month to open it. This month uses your live estimate ({fmt(viewerNet)} net); later months assume contracted hours only — no overtime — so they shift a little with each month's working days.
+                  Tap a month to open it. Each month is paid for by the payday before it, so {liveLabel} uses your live estimate ({fmt(viewerNet)} net, overtime included){isOwner?", months already paid for use the payslip,":""} and later months assume contracted hours only — no overtime — so they shift a little with each month's working days.
                 </div>
               </div>
             )}
