@@ -774,11 +774,15 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.3";
+const APP_VERSION = "1.18.4";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.4", date: "24 Oct 2026", items: [
+    { b: "Same figures everywhere", t: " — the Dashboard's Monthly Surplus and Monthly Budget card now show the month you're paying in for, by name, so they match the Budget. Pay Calc's surplus is against the month its pay covers." },
+    { b: "Hollie's months follow her pay", t: " — her Budget pairs each month with her pay for the month before, so November uses her October pay right up to the end of October." },
+  ] },
   { v: "1.18.3", date: "24 Oct 2026", items: [
     { b: "Overdraft in the right month", t: " — the wage that clears your overdraft pays for the month after payday, so that's where it counts now. Next month shows how far overdrawn you are, keeping up with Monzo until payday, then what the wage cleared." },
     { b: "Left over uses the pay that covers each month", t: " — the pay from the payday before it. The month you're paying in for uses this month's pay estimate, overtime included; later months assume no overtime." },
@@ -3830,8 +3834,8 @@ export default function App() {
   const homeIdx=Math.min(11,Math.max(0,(payIn.y*12+payIn.m)-(schedNowYear*12+schedNowMonth)));
   const homeLabel=MONTHS[payIn.m-1];
 
-  // The Budget tab shows the month being paid in for, unless another is picked. The app-wide
-  // figures (totalOut / surplus, used by Pay Calc) always stay on the current month.
+  // The Budget tab shows the month being paid in for, unless another is picked. (totalOut /
+  // surplus above are this calendar month's; the Dashboard and Pay Calc show the pay-in month.)
   const selIdx=selPick!=null?selPick:homeIdx;
   const laSel=lookAheadMonths[selIdx]||lookAheadMonths[0];
   const selIsNow=selIdx===0;
@@ -3889,8 +3893,6 @@ export default function App() {
   };
   const hollieCalc=calcHolliePay(hollieOtForPay,hollieSickNow);
   const hollieYear=calcHolliePay(hollieOtForPay,0);   // the yearly figures leave this month's sick days out
-  const hollieOut=shHollie+glOnly;
-  const hollieSurplus=hollieCalc.net+incomeNow-hollieOut;
   // Whoever is signed in: their own net, and their surplus for the month in view.
   const viewerNet=isOwner?cr.net:hollieCalc.net;
   // A pay period's pay without overtime (yr, m = the month its period ends): contracted
@@ -3901,8 +3903,9 @@ export default function App() {
     : calcHolliePay(0).net;
   // Each Budget month is paid for by the payday before it (the pay period ending the 28th of the
   // month before). This pay period's pay is the live estimate, overtime and all; a pay that's
-  // already landed is its payslip; later ones assume contracted hours only.
-  const curPeriod=getCurrentPayPeriodKey();
+  // already landed is its payslip; later ones assume contracted hours only. Hollie's pay goes by
+  // calendar month, so for her this month's pay (her live estimate) is the one for next month.
+  const curPeriod=isOwner?getCurrentPayPeriodKey():monthKeyOf(schedNowYear,schedNowMonth);
   const payslipNet=(yr,m)=>{const r=history.find(h=>h.month===MONTHS[m-1]+" "+yr);return r&&Number(r.net)>0?Number(r.net):null;};
   const fundNetFor=(yr,m)=>{
     const p=new Date(yr,m-2,1),py=p.getFullYear(),pm=p.getMonth()+1,pk=monthKeyOf(py,pm);
@@ -3915,6 +3918,20 @@ export default function App() {
     const r=lookAheadMonths[i];
     return r?fundNetFor(r.yr,r.m):viewerNet;
   };
+  // The month being paid in for, exactly as the Budget shows it. The Dashboard and Pay Calc use
+  // these, so every "left over" in the app matches the Budget.
+  const laHome=lookAheadMonths[homeIdx]||null;
+  const homeNet=netForIdx(homeIdx);
+  const homeSurplus=laHome?homeNet+laHome.income-laHome.total:surplus;
+  const homeName=laHome?new Date(laHome.yr,laHome.m-1,1).toLocaleDateString("en-GB",{month:"long"}):"";
+  const homePayDay=laHome?getPayday(laHome.yr,laHome.m-2).toLocaleDateString("en-GB",{day:"numeric",month:"short"}):"";
+  // Pay Calc's estimate is the pay at the end of this pay period, which pays for the month after
+  // it: the month being paid in for, except between payday and both transfers landing, when it's
+  // already the next one. Its surplus is against that month, as the Budget shows it.
+  const liveRowIdx=(()=>{const [y,m]=curPeriod.split("-").map(Number);return (y*12+m+1)-(schedNowYear*12+schedNowMonth);})();
+  const laLive=liveRowIdx>=0&&liveRowIdx<12?lookAheadMonths[liveRowIdx]:null;
+  const liveSurplus=laLive?netForIdx(liveRowIdx)+laLive.income-laLive.total:surplus;
+  const liveName=laLive?new Date(laLive.yr,laLive.m-1,1).toLocaleDateString("en-GB",{month:"long"}):"";
   const selNet=netForIdx(selIdx);
   const selIncomeRows=laSel?laSel.incomeRows:[];
   const selIncome=laSel?laSel.income:0;
@@ -5139,7 +5156,7 @@ const calcTimesheetTotals = days => {
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
               {[
                 {label:"Est. Net Pay",    value:fmt(cr.net),      sub:"from Pay Calc",   accent:"#4a9eff"},
-                {label:"Monthly Surplus", value:fmtS(surplus),     sub:"after all bills", accent:surplus>=0?"#00c88c":"#ff4a6a"},
+                {label:"Monthly Surplus", value:fmtS(homeSurplus), sub:"after "+homeLabel+"'s bills", accent:homeSurplus>=0?"#00c88c":"#ff4a6a"},
                 {label:"Latest Net",      value:fmt(latest?.net), sub:latest?.month,     accent:"#7c6fff"},
                 {label:"FY Avg Net",      value:fmt(ts.avgNet),   sub:"Apr to now",      accent:"#ffb84a"},
               ].map(k=>(
@@ -5203,14 +5220,15 @@ const calcTimesheetTotals = days => {
             })()}
 
             <div style={{...card,marginBottom:12}}>
-              <SectionLabel>Monthly Budget</SectionLabel>
+              <SectionLabel>Monthly Budget · {homeName}</SectionLabel>
+              <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>Your {homePayDay} pay against {homeName}'s bills — the month you're paying in for</div>
               {[
-                ["Est. Net Pay",          fmt(cr.net),   "#4a9eff"],
-                ...(incomeNow?[["Other Income",fmtS(incomeNow),"#00c88c"]]:[]),
-                ["Shared Bills (my half)",fmt(shGlyn),   "#ff6b8a"],
-                ["My Personal Bills",     fmt(glOnly),   "#ff8c4a"],
-                ["Total Outgoings",       fmt(totalOut), "#ff4a6a"],
-                ["Monthly Surplus",       fmtS(surplus),  surplus>=0?"#00c88c":"#ff4a6a"],
+                ["Net Pay",               fmt(homeNet),   "#4a9eff"],
+                ...(laHome&&laHome.income?[["Other Income",fmtS(laHome.income),"#00c88c"]]:[]),
+                ["Shared Bills (my half)",fmt(laHome?laHome.shared:shGlyn),   "#ff6b8a"],
+                ["My Personal Bills",     fmt(laHome?laHome.personal:glOnly),   "#ff8c4a"],
+                ["Total Outgoings",       fmt(laHome?laHome.total:totalOut), "#ff4a6a"],
+                ["Monthly Surplus",       fmtS(homeSurplus),  homeSurplus>=0?"#00c88c":"#ff4a6a"],
               ].map(([l,v,c],i,arr)=>(
                 <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
               ))}
@@ -5748,7 +5766,7 @@ const calcTimesheetTotals = days => {
               <div style={{textAlign:"center",marginBottom:14}}>
                 <div style={{fontSize:11,color:"#c84aff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
                 <div style={{fontSize:38,fontWeight:700,color:"#c84aff"}}>{fmt(hollieCalc.net)}</div>
-                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after bills: <span style={{color:hollieSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(hollieSurplus)}</span></div>
+                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after {liveLabel}'s bills: <span style={{color:liveSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(liveSurplus)}</span></div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                 {[["Annual Gross",fmt(hollieYear.annualGross)],["Annual Net",fmt(hollieYear.annualNet)]].map(([l,v])=>(
@@ -5801,12 +5819,14 @@ const calcTimesheetTotals = days => {
             </div>
 
             <div style={card}>
-              <SectionLabel>Surplus</SectionLabel>
+              <SectionLabel>Surplus · {liveName}</SectionLabel>
+              <div style={{fontSize:10,color:"#3a4460",marginBottom:4}}>This pay against {liveName}'s bills — the month it pays for</div>
               {[
                 ["Net pay", fmt(hollieCalc.net), "#c8cee0", false],
-                ["Your share of shared bills", "−"+fmt(shHollie), "#ff6b8a", false],
-                ["Your personal bills", "−"+fmt(glOnly), "#ff8c4a", false],
-                ["Left over", fmtS(hollieSurplus), hollieSurplus>=0?"#00c88c":"#ff4a6a", true],
+                ...(laLive&&laLive.income?[["Other income", "+"+fmt(laLive.income), "#00c88c", false]]:[]),
+                ["Your share of shared bills", "−"+fmt(laLive?laLive.shared:shHollie), "#ff6b8a", false],
+                ["Your personal bills", "−"+fmt(laLive?laLive.personal:glOnly), "#ff8c4a", false],
+                ["Left over", fmtS(liveSurplus), liveSurplus>=0?"#00c88c":"#ff4a6a", true],
               ].map(([l,v,c,bold],i)=>(
                 <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderTop:i?"1px solid #161b28":"none",fontSize:13}}>
                   <span style={{color:"#8892b0"}}>{l}</span><span style={{color:c,fontWeight:bold?800:600}}>{v}</span>
@@ -5824,7 +5844,7 @@ const calcTimesheetTotals = days => {
               <div style={{textAlign:"center",marginBottom:14}}>
                 <div style={{fontSize:11,color:"#4a9eff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
                 <div style={{fontSize:38,fontWeight:700,color:"#4a9eff"}}>{fmt(cr.net)}</div>
-                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after bills: <span style={{color:surplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(surplus)}</span></div>
+                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after {liveLabel}'s bills: <span style={{color:liveSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(liveSurplus)}</span></div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                 {[["Annual Gross",fmt(cr.annualGross),"#7c6fff"],["Annual Net",fmt(cr.annualNet),"#4a9eff"],["Annual Tax",fmt(cr.annualTax),"#ff6b8a"],["Annual NI",fmt(cr.annualNI),"#ff8c4a"]].map(([l,v,c])=>(
