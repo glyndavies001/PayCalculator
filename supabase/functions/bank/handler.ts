@@ -4,7 +4,9 @@
 //
 // GET  …/bank/callback?code=…&state=…      Monzo sends the person back here after the email link
 // POST …/bank/hook/<secret>                Monzo's webhook for a new transaction (fetched again from
-//                                          Monzo; what the webhook says is never stored as sent)
+//                                          Monzo; what the webhook says is never stored as sent),
+//                                          except ones it can't place on a linked account (a card
+//                                          payment straight from a pot): kept in bank_hook_inbox
 // POST …/bank {action:"status"}            what the app's Bank section shows (no bank data, no secrets)
 // POST …/bank {action:"config", clientId, clientSecret}   save the Monzo keys (the owner, two-step)
 // POST …/bank {action:"link"}              the Monzo sign-in address for the caller (two-step)
@@ -67,6 +69,8 @@ async function getLink(userId) { const rows = await db("GET", `bank_links?user_i
 const patchLink = (userId, patch) => db("PATCH", `bank_links?user_id=eq.${userId}`, patch, "return=minimal");
 async function forgetData(userId) {
   for (const t of ["bank_pot_history", "bank_transactions", "bank_pots", "bank_accounts"]) await db("DELETE", `${t}?user_id=eq.${userId}`, null, "return=minimal");
+  // Notifications kept unplaced: this person's, and any nobody could be matched to yet.
+  await db("DELETE", `bank_hook_inbox?or=(user_id.eq.${userId},user_id.is.null)`, null, "return=minimal");
 }
 
 export async function config() {
@@ -364,6 +368,47 @@ function background(p) {
   else p.catch(() => {});
 }
 const hookProblem = e => (e instanceof Dead ? "link expired" : e instanceof NeedsApproval ? "needs approval" : String((e && e.message) || e));
+
+// A notification Vaulted can't place on a linked account (a card payment straight from a pot
+// doesn't arrive under the personal or joint account). Kept as sent, trimmed, so a pot payment can
+// be matched to a Trolley shop, checked against the pot's balance drop first. One row per payment
+// (Monzo sends some more than once); rows go after 60 days. Never stops the webhook answering Monzo.
+const INBOX_DAYS = 60;
+function small(o, n = 20) {
+  if (!o || typeof o !== "object" || Array.isArray(o)) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(o).slice(0, n)) {
+    out[String(k).slice(0, 60)] = v == null || typeof v === "number" || typeof v === "boolean" ? v : String(typeof v === "string" ? v : JSON.stringify(v)).slice(0, 200);
+  }
+  return out;
+}
+async function keepUnplaced(body, why, userId = null) {
+  try {
+    const t = body && body.data && typeof body.data === "object" && !Array.isArray(body.data) ? body.data : {};
+    const m = t.merchant && typeof t.merchant === "object" ? t.merchant : null;
+    const meta = t.metadata && typeof t.metadata === "object" ? t.metadata : {};
+    const when = Date.parse(String(t.created || ""));
+    const extra = {
+      keys: Object.keys(t).slice(0, 40).map(k => k.slice(0, 60)),   // what Monzo sent (names only)
+      metadata: small(meta),
+      merchant_id: m ? cut(m.group_id || m.id, 80) : typeof t.merchant === "string" ? cut(t.merchant, 80) : null,
+      declined: cut(t.decline_reason, 60),
+    };
+    const row = {
+      user_id: userId, why, type: cut(body && body.type, 60), tx_id: cut(t.id, 80), account_id: cut(t.account_id, 80),
+      created: Number.isFinite(when) ? iso(when) : null, amount: pence(t.amount), currency: cut(t.currency, 8),
+      description: cut(t.description), merchant: m ? cut(m.name) : null, category: cut(t.category, 40), scheme: cut(t.scheme, 40),
+      pot_id: cut(meta.pot_id, 80), meta: Object.fromEntries(Object.entries(extra).filter(([, v]) => v != null)),
+    };
+    const got = await db("POST", "bank_hook_inbox?on_conflict=tx_id&select=id", [row], "resolution=ignore-duplicates,return=representation");
+    if (!Array.isArray(got) || !got.length) return;   // already kept
+    await db("DELETE", `bank_hook_inbox?received_at=lt.${enc(iso(Date.now() - INBOX_DAYS * DAY))}`, null, "return=minimal");
+    console.error("hook", `kept a notification Vaulted couldn't place (${why})`);
+  } catch (e) {
+    console.error("hook inbox", String((e && e.message) || e));
+  }
+}
+
 // The webhook's payment, read back from Monzo and saved, then the balance. 0 = done, else Monzo's status.
 async function saveHookTx(link, cfg, t) {
   const r = await call(link, cfg, "GET", `/transactions/${t.id}`, [["expand[]", "merchant"]]);
@@ -371,6 +416,7 @@ async function saveHookTx(link, cfg, t) {
   const stamp = iso(Date.now());
   const tx = r.data && r.data.transaction;
   if (tx && tx.id === t.id && tx.account_id === t.account_id && keepTx(tx, t.account_id)) await upsert("bank_transactions", [rowOfTx(link.user_id, tx, stamp)], "user_id,tx_id");
+  else if (tx && tx.id === t.id && tx.account_id && tx.account_id !== t.account_id) await keepUnplaced({ type: "transaction.created", data: tx }, "listed under another account", link.user_id);
   await refreshAccount(link, cfg, { id: t.account_id }, stamp);
   return 0;
 }
@@ -397,9 +443,11 @@ async function retryHookTx(userId, cfg, t) {
 export async function hook(req, cfg, secret) {
   if (!cfg.hook || !sameText(secret, cfg.hook)) return new Response("Not found", { status: 404, headers: CORS });
   const body = await req.json().catch(() => null);
-  const t = body && body.type === "transaction.created" && body.data;
-  if (!t || !/^tx_[A-Za-z0-9]+$/.test(String(t.id || "")) || !/^acc_[A-Za-z0-9]+$/.test(String(t.account_id || "")) || !ready(cfg)) return json({ ok: true });
-  const owners = await db("GET", `bank_accounts?account_id=eq.${enc(t.account_id)}&select=user_id`) || [];
+  if (!body || typeof body !== "object" || !ready(cfg)) return json({ ok: true });
+  const t = body.type === "transaction.created" && body.data && typeof body.data === "object" ? body.data : null;
+  if (!t || !/^tx_[A-Za-z0-9]+$/.test(String(t.id || ""))) { await keepUnplaced(body, "not a new payment"); return json({ ok: true }); }
+  const owners = /^acc_[A-Za-z0-9]+$/.test(String(t.account_id || "")) ? (await db("GET", `bank_accounts?account_id=eq.${enc(t.account_id)}&select=user_id`)) || [] : [];
+  if (!owners.length) { await keepUnplaced(body, "not a linked account"); return json({ ok: true }); }
   for (const { user_id } of owners) {
     const link = await getLink(user_id);
     if (!link || link.status !== "ok" || !link.refresh_token) continue;
