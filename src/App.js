@@ -744,7 +744,23 @@ const loadText = (key) => { try { const v = localStorage.getItem(key) || ""; try
 const fmt = n => "£" + Math.abs(Number(n)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 // Signed variant: adjustments can be negative (a credit in that month).
 const fmtS = n => (Number(n) < 0 ? "−" : "") + fmt(n);
+const fmtPlus = n => (Number(n) < 0 ? "−" : "+") + fmt(n);
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// A second payslip for a month that already has one. An extra payrun (paid separately, like an
+// overtime correction) goes on top of the first: every line added, with a note of what it was. A
+// corrected payslip replaces the first. The same payslip again (same date, gross and net) is left.
+const SLIP_SUMS = ["gross", "net", "tax", "ni", "nest", "sl", "bonus", "ot", "weekendOt", "holidayPay", "hourlyAllowance", "regularPay"];
+const slipPence = n => Math.round((Number(n) || 0) * 100);
+const samePayslip = (a, b) => !!a && !!b && String(a.date || "") === String(b.date || "")
+  && slipPence(a.gross) === slipPence(b.gross) && slipPence(a.net) === slipPence(b.net);
+function addPayslip(main, extra) {
+  const out = { ...main };
+  for (const k of SLIP_SUMS) out[k] = (slipPence(main[k]) + slipPence(extra[k])) / 100;
+  const line = "Extra payrun" + (extra.date ? " paid " + extra.date : "") + ": " + fmtS(extra.gross) + " gross, " + fmtS(extra.net) + " net";
+  out.note = main.note ? main.note + "\n" + line : line;
+  return out;
+}
 // Category colours. Stored on the category object itself (cats/glynCats are JSON,
 // so no migration); categories saved before this default by position.
 const CAT_COLORS = ["#4a9eff","#00c88c","#ff8c4a","#c84aff","#ffb84a","#4ad0c0","#ff6b8a","#8ec5ff"];
@@ -799,11 +815,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.5";
+const APP_VERSION = "1.18.6";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.6", date: "29 Oct 2026", items: [
+    { b: "Extra payruns", t: " — uploading a second payslip for a month that already has one now asks whether to add it on top (an extra payrun, like an overtime correction) or replace the first (a corrected copy). An added payrun counts in that month's pay and Left over, shows as a note on the payslip, and doesn't change the Pay Calc's bonus." },
+  ] },
   { v: "1.18.5", date: "24 Oct 2026", items: [
     { b: "Bill changes don't rewrite the past", t: " — changing a regular bill's amount now applies from the month you're viewing onwards, and earlier months keep what they were. To change one from a later month, tap that month first." },
   ] },
@@ -2555,6 +2574,13 @@ export default function App() {
 
   const [importMsg,setImportMsg]=useState(null);
   const [multiResults,setMultiResults]=useState([]);
+  // A payslip for a month that already has one waits here for "add", "replace" or "cancel".
+  const [slipAsk,setSlipAsk]=useState(null);
+  const slipAnswer=useRef(null);
+  const askSlip=(saved,incoming)=>new Promise(resolve=>{slipAnswer.current=resolve;setSlipAsk({saved,incoming});});
+  const answerSlip=choice=>{const r=slipAnswer.current;slipAnswer.current=null;setSlipAsk(null);if(r)r(choice);};
+  const historyRef=useRef(history);
+  useEffect(()=>{historyRef.current=history;},[history]);
   const [uploadProgress,setUploadProgress]=useState(null);
   const [notes,setNotes]=useState({});
   const [expandedPayslip,setExpandedPayslip]=useState(null);
@@ -4147,7 +4173,12 @@ export default function App() {
     setMultiResults([]);
     const results=[];
     const successful=[];
+    const mains=[];   // all but extra payruns: the latest sets the Pay Calc's bonus
     try {
+      // Payslips already saved, by month: from the database when signed in (a shared PDF can
+      // arrive before history has loaded).
+      let have=new Map((historyRef.current||[]).map(h=>[h.month,h]));
+      if(user){const fresh=await db.getPayslips(user.id).catch(()=>null);if(Array.isArray(fresh))have=new Map(fresh.map(h=>[h.month,h]));}
       for(let i=0;i<files.length;i++){
         const file=files[i];
         setUploadProgress(`Reading ${i+1} of ${files.length}...`);
@@ -4158,7 +4189,7 @@ export default function App() {
             headers:await authHeaders(),
             body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:[
               {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
-              {type:"text",text:'Extract payslip data. Return ONLY valid JSON with this exact shape:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00,"weekendOt":0.00,"holidayPay":0.00,"hourlyAllowance":0.00,"regularPay":0.00}\n\nField definitions:\n- month: payment month/year (e.g. "May 2026")\n- date: payment date as DD/MM/YYYY\n- gross: TOTAL gross pay (sum of all earnings)\n- net: net pay (gross minus all deductions)\n- tax: PAYE total\n- ni: Employee National Insurance Contribution\n- nest: NEST pension contribution\n- sl: Student Loan deduction\n- bonus: Performance Bonus line only\n- ot: Overtime line ONLY (not weekend hours, not holiday pay)\n- weekendOt: Weekend Hours line (£ amount)\n- holidayPay: SUM of all "Holiday" earning lines (could be multiple, may include "Holiday (Contracted Staff YYYY)")\n- hourlyAllowance: SUM of all "Hourly Allowance" lines including any with brackets like "Hourly Allowance (Hols)"\n- regularPay: Regular Hours line (£ amount only)\nIf a field is not present, use 0.00. Return JSON only, no markdown, no explanation.'}
+              {type:"text",text:'Extract payslip data. Return ONLY valid JSON with this exact shape:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00,"weekendOt":0.00,"holidayPay":0.00,"hourlyAllowance":0.00,"regularPay":0.00}\n\nField definitions:\n- month: payment month/year (e.g. "May 2026")\n- date: payment date as DD/MM/YYYY\n- gross: TOTAL gross pay (sum of all earnings)\n- net: net pay (gross minus all deductions)\n- tax: PAYE total\n- ni: Employee National Insurance Contribution\n- nest: NEST pension contribution\n- sl: Student Loan deduction\n- bonus: Performance Bonus line only\n- ot: Overtime line ONLY (not weekend hours, not holiday pay)\n- weekendOt: Weekend Hours line (£ amount)\n- holidayPay: SUM of all "Holiday" earning lines (could be multiple, may include "Holiday (Contracted Staff YYYY)")\n- hourlyAllowance: SUM of all "Hourly Allowance" lines including any with brackets like "Hourly Allowance (Hols)"\n- regularPay: Regular Hours line (£ amount only)\nAmounts printed as negative (reversals or adjustments) stay negative.\nIf a field is not present, use 0.00. Return JSON only, no markdown, no explanation.'}
             ]}]})
           });
           if (!resp.ok) {
@@ -4178,13 +4209,25 @@ export default function App() {
           ["gross","net","tax","ni","nest","sl","bonus","ot","weekendOt","holidayPay","hourlyAllowance","regularPay"].forEach(k=>{parsed[k]=Number(parsed[k])||0;});
           // Allowance is active whenever a performance bonus was paid (they're the same tier)
           parsed.perfAllowance = (parsed.bonus || 0) > 0;
+          // A month that already has a payslip: an extra payrun goes on top, a corrected one replaces it.
+          let slip=parsed, extra=false;
+          const saved=have.get(month);
+          if (saved) {
+            if (samePayslip(saved, parsed)) { results.push({ok:true,parsed:saved,same:true}); continue; }
+            setUploadProgress(`${month} already has a payslip`);
+            const choice=await askSlip(saved, parsed);
+            if (choice==="add") { slip=addPayslip(saved, parsed); extra=true; }
+            else if (choice!=="replace") { results.push({ok:false,name:file.name,err:`not saved, as ${month} already has a payslip`}); continue; }
+          }
           // Save to Supabase
           if (user) {
-            try { await trackSave(db.upsertPayslip(user.id, parsed)); }
+            try { await trackSave(db.upsertPayslip(user.id, slip)); }
             catch(dbErr) { console.error("Supabase save failed:", dbErr); }
           }
-          successful.push(parsed);
-          results.push({ok:true,parsed});
+          have.set(month, slip);
+          successful.push(slip);
+          if (!extra) mains.push(slip);
+          results.push({ok:true,parsed:slip,extra:extra?parsed:null});
         } catch(err){
           console.error("Upload error for", file.name, err);
           results.push({ok:false,name:file.name,err:err.message||String(err)||"Unknown error"});
@@ -4200,8 +4243,9 @@ export default function App() {
             successful.forEach(p=>{const exists=h.find(x=>x.month===p.month);h=exists?h.map(x=>x.month===p.month?p:x):[...h,p];});
             return sortH(h);
           });
-          const last=successful[successful.length-1];
-          setCMany({ bonus: last.bonus, perfAllowance: last.perfAllowance });
+          // The Pay Calc's bonus comes from the latest payslip, never from an extra payrun.
+          const last=mains[mains.length-1];
+          if (last) setCMany({ bonus: last.bonus, perfAllowance: last.perfAllowance });
           // A payslip means a pay period has closed. If the accumulator still holds a
           // previous period's hours, reset it and clear the calculator now.
           if (shouldResetTimesheet(accumulatedRef.current.lastUpload)) {
@@ -6147,6 +6191,7 @@ const calcTimesheetTotals = days => {
                             </div>
                           ))}
                         </div>
+                        {r.note&&<div style={{fontSize:11.5,color:"#a0c0ff",background:"#111827",borderRadius:8,padding:"8px 10px",marginBottom:8,whiteSpace:"pre-line",lineHeight:1.5}}>{r.note}</div>}
                         <textarea placeholder="Add a note for this month..." value={notes[r.month]||""}
                           onChange={e=>{const n={...notes,[r.month]:e.target.value};updNotes(n);}}
                           style={{width:"100%",boxSizing:"border-box",background:"#111827",border:"1px solid #2a3050",borderRadius:8,color:"#8892b0",fontSize:12,padding:"10px",resize:"vertical",minHeight:60,fontFamily:"inherit",lineHeight:1.5}}/>
@@ -7537,7 +7582,7 @@ const calcTimesheetTotals = days => {
                 {multiResults.map((r,i)=>(
                   <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:12}}>
                     {r.ok
-                      ?<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}</span><span style={{color:"#8892b0"}}>Gross {fmt(r.parsed.gross)} · Net {fmt(r.parsed.net)}</span></div>
+                      ?<div style={{display:"flex",justifyContent:"space-between",gap:8}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}{r.extra?" · extra payrun":""}</span><span style={{color:"#8892b0",textAlign:"right"}}>{r.same?"Already saved":r.extra?`${fmtPlus(r.extra.gross)} gross · ${fmtPlus(r.extra.net)} net added`:`Gross ${fmt(r.parsed.gross)} · Net ${fmt(r.parsed.net)}`}</span></div>
                       :<div style={{color:"#ff6b8a"}}>⚠ {r.name} — {r.err}</div>
                     }
                   </div>
@@ -7905,6 +7950,33 @@ const calcTimesheetTotals = days => {
           </div>
         </div>
       )}
+
+      {/* A payslip for a month that already has one: add it on top (an extra payrun) or replace it */}
+      {slipAsk&&(()=>{
+        const {saved,incoming}=slipAsk;
+        const otherDay=String(incoming.date||"")!==String(saved.date||"");   // a different pay date: most likely an extra payrun
+        const btn=primary=>({width:"100%",border:primary?"none":"1px solid #2a3050",borderRadius:10,background:primary?"#4a9eff":"#1e2535",color:primary?"#000":"#c8cee0",fontSize:14,fontWeight:700,padding:"12px 14px",cursor:"pointer",marginTop:8});
+        const slipRow=(label,p)=>(
+          <div style={{background:"#0d1117",borderRadius:8,padding:"9px 11px",marginBottom:6}}>
+            <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>{label}</div>
+            <div style={{fontSize:13,color:"#c8cee0"}}>Paid {p.date||"?"} · Gross {fmtS(p.gross)} · Net {fmtS(p.net)}</div>
+            {p.note&&<div style={{fontSize:11,color:"#8892b0",marginTop:3,whiteSpace:"pre-line"}}>{p.note}</div>}
+          </div>
+        );
+        return(
+          <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:230,background:"rgba(0,0,0,0.6)"}}>
+            <div style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"16px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"85vh",overflowY:"auto"}}>
+              <div style={{fontSize:16,color:"#e8eaf0",fontWeight:800,marginBottom:4}}>{saved.month} already has a payslip</div>
+              <div style={{fontSize:12.5,color:"#8892b0",lineHeight:1.5,marginBottom:10}}>Add this one if it's an extra payrun on top, like a correction paid separately. Replace if it's a corrected copy of the same payslip.</div>
+              {slipRow("Saved",saved)}
+              {slipRow("This one",incoming)}
+              <button onClick={()=>{haptic();answerSlip("add");}} style={btn(otherDay)}>Add to {saved.month}</button>
+              <button onClick={()=>{haptic();answerSlip("replace");}} style={btn(!otherDay)}>Replace it</button>
+              <button onClick={()=>{haptic();answerSlip("cancel");}} style={{...btn(false),background:"transparent",border:"none",color:"#8892b0"}}>Don't save this one</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* "More" sheet -- secondary tabs */}
       {showMore&&(
