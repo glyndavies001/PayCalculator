@@ -815,11 +815,16 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.8";
+const APP_VERSION = "1.18.9";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.9", date: "30 Oct 2026", items: [
+    { b: "What's really left follows your Budget", t: " — it now takes off the Budget bills still to go out before payday, at the Budget's amounts, ticking each off as Monzo sees it go, instead of guessing from past payments. Bills paid from a pot count when the pot's topped up." },
+    { b: "Head Room stays yours", t: " — bills set to \"don't track\", like Head Room, stay in what's left, and so does the Overdraft (your balance already shows it)." },
+    { b: "Shares on their way", t: " — the joint account counts a share that isn't in yet as on its way, shown underneath, so it isn't flagged short just because Hollie hasn't paid in." },
+  ] },
   { v: "1.18.8", date: "30 Oct 2026", items: [
     { b: "Joint transfers checked to the penny", t: " — the Joint account card only ticks a transfer that matches the share exactly. Anything else shows the gap, like \"50p less than your share\", so a bill changed after you've paid in shows up." },
   ] },
@@ -1333,19 +1338,6 @@ function usualDay(dates) {
   if (dom > 31) dom -= 31;
   return dom;
 }
-// Payments a pot paid for: a payment out with a matching amount taken from a pot on the same
-// account within 15 minutes (Monzo's "pay bills from a pot"). They don't touch the main balance.
-function potCovered(txns) {
-  const out = new Set();
-  const draws = txns.filter(t => isPotMove(t) && Number(t.amount) > 0);
-  if (!draws.length) return out;
-  for (const t of txns) {
-    if (isPotMove(t) || !(Number(t.amount) < 0)) continue;
-    const ms = txWhen(t).getTime();
-    if (draws.some(w => w.account_id === t.account_id && Number(w.amount) === -Number(t.amount) && Math.abs(txWhen(w).getTime() - ms) <= 15 * 60000)) out.add(t.tx_id);
-  }
-  return out;
-}
 // Payments Monzo paid from a pot by itself (a bill set to come out of the Bills pot, say): the same
 // amount taken from a pot on the same account within a few seconds. tx_id -> pot_id. (Money you
 // move out of a pot yourself to cover a payment takes longer, so it isn't counted.)
@@ -1361,67 +1353,92 @@ function paidFromPot(txns) {
   }
   return out;
 }
-// Regular payments out of one account: seen in at least 2 of the last 3 pay cycles and no more
-// than twice a cycle (card payments: once a cycle at a steady amount, so shopping isn't counted).
-// Regular top-ups of a pot count too (its main top-up each cycle; small extras are ignored),
-// while payments a pot paid for don't, as they leave the main balance alone.
-// Each comes with its usual day of the month, its latest amount, and whether it's gone out yet
-// this cycle. payees (from bank_prefs, by payee key): {regular: false} for one that only looks
-// regular (Lidl now and then), {name} to call it something else ("Simon" for a payment to Angie).
-// txns must be oldest first.
-function regularOutgoings(txns, accountId, now = new Date(), pots = null, payees = null) {
-  const cyc = payCycle(now);
-  const starts = [cyc.start];
-  for (let k = 1; k <= 3; k++) starts.push(getPayday(cyc.start.getFullYear(), cyc.start.getMonth() - k));
-  const cycleOf = d => {
-    if (d >= cyc.next) return -1;
-    for (let k = 0; k < starts.length; k++) if (d >= starts[k]) return k;
-    return -1;
-  };
-  const covered = potCovered(txns.filter(t => t.account_id === accountId));
-  const groups = new Map();
-  for (const t of txns) {
-    if (t.account_id !== accountId || !(Number(t.amount) < 0) || covered.has(t.tx_id)) continue;
-    const c = cycleOf(txWhen(t));
-    const pot = isPotMove(t);
-    const key = c < 0 ? null : pot ? (t.pot_id ? "pot:" + t.pot_id : null) : txKey(t);
-    if (!key) continue;
-    let g = groups.get(key);
-    if (!g) groups.set(key, g = { per: [[], [], [], []], card: false, pot: pot ? t.pot_id : null });
-    g.per[c].push(t);
-    if (!pot && (t.scheme === "mastercard" || (t.merchant_id && !t.dd_id))) g.card = true;
-  }
-  const potName = new Map((pots || []).map(p => [p.pot_id, p.name]));
-  const out = [];
-  for (const [key, g] of groups) {
-    const own = (payees && payees[key]) || {};
-    if (own.regular === false) continue;
-    if (g.pot) {   // a pot's main top-up each cycle: at least half its usual biggest
-      const maxes = g.per.map(p => Math.max(0, ...p.map(t => -Number(t.amount)))).filter(Boolean);
-      const floor = medianOf(maxes) / 2;
-      g.per = g.per.map(p => p.filter(t => -Number(t.amount) >= floor));
+// What's really left in each linked account before the next payday: its balance, less what your
+// Budget still has to take out of it, plus (the joint account) any share not paid in yet.
+// A bill counts on the day its money leaves the main balance (paid out, or put in the pot it's
+// paid from), at the Budget's amount for that month, until Monzo sees it go: match.cyc.st has each
+// matched bill's standing in every month this pay month spans. Shared bills come off the joint
+// account and your own off your personal one, unless they're matched to a payee on another.
+// Bills set to "don't track" (Head Room, there to absorb surprises) and the Overdraft (the balance
+// already shows it) stay in what's left. A bill with no payee yet, or a one-off from the Budget,
+// counts until a payment of the same amount leaves its account this pay month.
+// pay (Glyn's phone): {jointId, glyn, hollie (pence paid in since payday), want: {glyn, hollie}}.
+function budgetLeft({ accounts, bills, sched = [], match, txns = [], myId = null, pay = null, now = new Date() }) {
+  const { start, next, st } = match.cyc;
+  const fundMk = fundMonthKey(start);   // the Budget month this pay month's wage pays for
+  const [fy, fm] = fundMk.split("-").map(Number);
+  const idOf = type => (accounts.find(a => a.type === type) || {}).account_id;
+  const personalId = idOf("uk_retail"), jointId = idOf("uk_retail_joint");
+  const items = new Map(accounts.map(a => [a.account_id, []]));
+  const add = (acc, it) => { if (items.has(acc)) items.get(acc).push(it); };
+  const loose = [];   // nothing to follow on Monzo: ticked off by a payment of the same amount
+  for (const x of bills) {
+    const m = match.byRef[x.ref] || {};
+    if (m.kind === "none" || m.kind === "od") continue;
+    const acc = items.has(m.accountId) ? m.accountId : x.shared ? jointId : personalId;
+    const g = m.kind === "tx" && m.keys && m.keys.length ? match.groups.get(m.keys[0]) : null;
+    if (!g) { loose.push({ acc, key: x.ref, name: x.b.name, amount: Math.round(amountOf(x.b, fundMk) * 100) }); continue; }
+    for (const [mk, sts] of Object.entries(st)) {
+      const s = sts.get(x.ref);
+      if (s && (s.state === "paid" || s.state === "inpot")) continue;   // gone from the main balance
+      const amount = Math.round(amountOf(x.b, mk) * 100);
+      if (!(amount > 0)) continue;
+      // Its day that month: for a bill paid from a pot, the day the pot is topped up.
+      const [y, mo] = mk.split("-").map(Number);
+      const day = s && s.date && (s.state === "due" || s.state === "late") ? s.date.getDate() : g.day;
+      const due = new Date(y, mo - 1, Math.min(day, new Date(y, mo, 0).getDate()));
+      if (due < start || due >= next) continue;
+      add(acc, { key: x.ref + "@" + mk, name: x.b.name, amount, due, late: !!(s && s.state === "late"), pot: (s && s.pot) || null });
     }
-    const past = [g.per[1], g.per[2], g.per[3]];
-    if (past.filter(p => p.length).length < 2) continue;
-    if (past.some(p => p.length > (g.card ? 1 : 2))) continue;
-    const amounts = past.filter(p => p.length).map(p => -Number(p[p.length - 1].amount));
-    if (g.card) { const m = medianOf(amounts); if (amounts.some(a => Math.abs(a - m) > Math.max(100, m * 0.15))) continue; }
-    // Due on its usual day of the month, placed inside this cycle.
-    const dom = usualDay(past.flatMap(p => p.map(txWhen)));
-    const onDay = (y, m) => new Date(y, m, Math.min(dom, new Date(y, m + 1, 0).getDate()));
-    let due = onDay(cyc.start.getFullYear(), cyc.start.getMonth());
-    if (due < cyc.start) due = onDay(cyc.start.getFullYear(), cyc.start.getMonth() + 1);
-    const last = past.find(p => p.length);
-    const latest = last[last.length - 1];
-    const name = (typeof own.name === "string" && own.name.trim()) || (g.pot ? "Into " + (potName.get(g.pot) || "a") + " pot" : txName(latest));
-    out.push({ key, name, amount: -Number(latest.amount), due, paid: g.per[0].length > 0, pot: g.pot });
   }
-  return out.sort((a, b) => a.due - b.due);
+  for (const b of sched) {
+    const ms = Array.isArray(b.months) ? b.months : [];
+    if (!ms.includes(fm) || (b.freq === "once" && (b.year || 0) !== fy)) continue;
+    const acc = b.scope === "shared" ? jointId : b.scope === "personal" && b.owner === myId ? personalId : null;
+    if (acc) loose.push({ acc, key: "sched:" + b.id, name: b.name, amount: Math.round((Number(b.total) || 0) * 100) });
+  }
+  const spent = new Map();   // payments out of each account since payday (pence)
+  for (const t of txns) {
+    if (!(Number(t.amount) < 0) || isPotMove(t) || txWhen(t) < start) continue;
+    if (!spent.has(t.account_id)) spent.set(t.account_id, []);
+    spent.get(t.account_id).push(-Number(t.amount));
+  }
+  for (const u of loose) {
+    if (!(u.amount > 0)) continue;
+    const paid = spent.get(u.acc) || [], i = paid.indexOf(u.amount);
+    if (i >= 0) { paid.splice(i, 1); continue; }
+    add(u.acc, { key: u.key, name: u.name, amount: u.amount, due: null, late: false });
+  }
+  // Shares not in the joint account yet: on their way to it, and (yours) still to go from your account.
+  const come = [];
+  if (pay && items.has(pay.jointId)) {
+    if (!(pay.glyn > 0) && pay.want.glyn > 0) {
+      come.push({ who: "you", amount: pay.want.glyn });
+      add(personalId, { key: "joint", name: "Into the joint account", amount: pay.want.glyn, due: start, late: false });
+    }
+    if (!(pay.hollie > 0) && pay.want.hollie > 0) come.push({ who: "Hollie", amount: pay.want.hollie });
+  }
+  const at = d => (d.due ? d.due.getTime() : Infinity);
+  return accounts.map(a => {
+    const all = items.get(a.account_id).sort((p, q) => at(p) - at(q) || p.name.localeCompare(q.name));
+    const unlisted = unlistedOf(a);
+    const taken = takenUnlisted(all, unlisted, now);   // taken already but not listed: not counted again
+    const due = all.filter(d => !taken.includes(d));
+    const dueTotal = due.reduce((s, d) => s + d.amount, 0);
+    const toCome = pay && a.account_id === pay.jointId ? come : [];
+    const comeTotal = toCome.reduce((s, c) => s + c.amount, 0);
+    const balance = Number(a.balance) || 0;
+    // Through what's due in date order, shares to come counted first: the first payment it won't cover.
+    let run = balance + comeTotal, shortAt = null;
+    for (const d of due) { run -= d.amount; if (run < 0 && !shortAt) shortAt = d; }
+    return { id: a.account_id, type: a.type, label: BANK_LABEL[a.type], balance, due, dueTotal, come: toCome, comeTotal,
+      left: balance + comeTotal - dueTotal, shortAt, unlisted, taken };
+  });
 }
-// What's still to go out of one account before the next payday.
-function stillToGo(txns, accountId, now = new Date(), pots = null, payees = null) {
-  const { next } = payCycle(now);
-  return regularOutgoings(txns, accountId, now, pots, payees).filter(r => !r.paid && r.due < next);
+// Who's still to pay into the joint account, in words: "once Hollie's paid in".
+function onceIn(come) {
+  const you = come.some(c => c.who === "you"), her = come.some(c => c.who === "Hollie");
+  return you && her ? "once you've both paid in" : her ? "once Hollie's paid in" : you ? "once you've paid in" : "";
 }
 // The wage around one payday (3 days either side): £500+ into one of `accounts` (the personal
 // ones) from JLI, or else one Monzo files as income. Transfers from people never count.
@@ -1701,7 +1718,7 @@ const unlistedOf = a => (a && a.gap_base != null && a.gap_offset != null ? Math.
 function takenUnlisted(due, unlisted, now = new Date()) {
   if (!(unlisted > 0)) return [];
   const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  const cands = due.filter(d => d.due < end).slice(0, 10);
+  const cands = due.filter(d => d.due && d.due < end).slice(0, 10);
   const cap = unlisted * 1.25 + 100;
   let best = [], bestSum = 0;
   for (let mask = 1; mask < (1 << cands.length); mask++) {
@@ -2343,7 +2360,7 @@ function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock,
           <div style={{ fontSize: 11.5, color: "#b06070", marginTop: 3, lineHeight: 1.5 }}>
             {r.balance < 0
               ? `It's already ${fmt(pounds(-r.balance))} overdrawn, with ${fmt(pounds(r.dueTotal))} still to go out.`
-              : `${r.shortAt.name} (${fmt(pounds(r.shortAt.amount))}) on ${dshort(r.shortAt.due)} is the first payment it won't cover.`}
+              : `${r.shortAt.name} (${fmt(pounds(r.shortAt.amount))})${r.shortAt.due ? " on " + dshort(r.shortAt.due) : ""} is the first payment it won't cover${r.comeTotal > 0 ? ", even " + onceIn(r.come) : ""}.`}
           </div>
         </div>
       </div>
@@ -2361,22 +2378,23 @@ function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock,
             <span style={{ fontSize: i ? 17 : 24, fontWeight: 800, color: r.left >= 0 ? "#00c88c" : "#ff4a6a" }}>{fmtS(pounds(r.left))}</span>
           </div>
           <div style={{ fontSize: 11, color: "#5a6480", marginTop: 2, textAlign: "right" }}>{fmtS(pounds(r.balance))} now − {fmt(pounds(r.dueTotal))} still to go</div>
+          {r.comeTotal > 0 && <div data-come="1" style={{ fontSize: 11, color: "#8892b0", marginTop: 2, textAlign: "right" }}>+ {fmt(pounds(r.comeTotal))} from {r.come.map(c => c.who).join(" and ")}, not in yet</div>}
           {r.unlisted > 0 && <div data-unlisted="1" style={{ fontSize: 10.5, color: "#8892b0", marginTop: 3, textAlign: "right", lineHeight: 1.45 }}>{fmt(pounds(r.unlisted))} already taken that Monzo hasn't listed yet{r.taken.length ? " (" + r.taken.map(d => d.name).join(", ") + ")" : ""}, so not counted again</div>}
         </div>
       ))}
-      <div style={{ fontSize: 11.5, color: "#4a9eff", marginTop: 10 }}>{n ? `${open ? "▾" : "▸"} ${n} regular payment${n === 1 ? "" : "s"} still to go` : "Nothing regular left to go out before payday"}</div>
+      <div style={{ fontSize: 11.5, color: "#4a9eff", marginTop: 10 }}>{n ? `${open ? "▾" : "▸"} ${n} Budget payment${n === 1 ? "" : "s"} still to go` : "Nothing in your Budget left to go out before payday"}</div>
       {open && left.rows.map(r => r.due.length > 0 && (
         <div key={"d" + r.id} style={{ marginTop: 6 }}>
           {left.rows.length > 1 && <div style={{ fontSize: 10, color: "#5a6480", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, margin: "6px 0 2px" }}>{r.label}</div>}
           {r.due.map(d => (
             <div key={d.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, padding: "3px 0" }}>
-              <span style={{ color: "#8892b0", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span style={{ color: "#5a6480" }}>{d.due.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span> {d.name}</span>
+              <span style={{ color: "#8892b0", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span style={{ color: d.late ? "#ffb84a" : "#5a6480" }}>{d.due ? d.due.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "No date"}</span> {d.name}{d.pot && <span style={{ color: "#5a6480" }}> · into {d.pot} pot</span>}</span>
               <span style={{ color: "#e8eaf0", fontWeight: 600, flexShrink: 0 }}>{fmt(pounds(d.amount))}</span>
             </div>
           ))}
         </div>
       ))}
-      <div style={{ fontSize: 10, color: "#3a4460", marginTop: 8 }}>Monzo · updated {agoText(left.updated)} · regular payments and pot top-ups spotted over the last 3 months</div>
+      <div style={{ fontSize: 10, color: "#3a4460", marginTop: 8 }}>Your Budget's bills, ticked off as Monzo sees them go · Monzo updated {agoText(left.updated)}</div>
     </div>}
   </>);
 }
@@ -2418,8 +2436,8 @@ function JointCard({ check }) {
       </div>
       {r && <div style={{ borderTop: "1px solid #1a1f2e", marginTop: 6, paddingTop: 8, fontSize: 12, lineHeight: 1.5 }}>
         {r.left >= 0
-          ? <span style={{ color: "#00c88c", fontWeight: 600 }}>{r.dueTotal > 0 ? `✓ Covers the ${fmt(pounds(r.dueTotal))} still to go, with ${fmt(pounds(r.left))} spare` : `✓ Nothing else due before payday · ${fmt(pounds(r.left))} spare`}</span>
-          : <span style={{ color: "#ff6b8a", fontWeight: 700 }}>⚠ {fmt(pounds(-r.left))} short of the {fmt(pounds(r.dueTotal))} still to go</span>}
+          ? <span style={{ color: "#00c88c", fontWeight: 600 }}>{r.dueTotal > 0 ? `✓ Covers the ${fmt(pounds(r.dueTotal))} still to go, with ${fmt(pounds(r.left))} spare` : `✓ Nothing else due before payday · ${fmt(pounds(r.left))} spare`}{r.comeTotal > 0 ? " " + onceIn(r.come) : ""}</span>
+          : <span style={{ color: "#ff6b8a", fontWeight: 700 }}>⚠ {fmt(pounds(-r.left))} short of the {fmt(pounds(r.dueTotal))} still to go{r.comeTotal > 0 ? ", even " + onceIn(r.come) : ""}</span>}
         <div style={{ fontSize: 10.5, color: "#3a4460", marginTop: 2 }}>Shares are your split for {mon}'s shared bills · {fmt(pounds(r.balance))} in the joint account now{r.unlisted > 0 ? ", after " + fmt(pounds(r.unlisted)) + " Monzo has taken but not listed yet" : ""}</div>
       </div>}
     </div>
@@ -4810,29 +4828,6 @@ const calcTimesheetTotals = days => {
     return {date:pd.toLocaleDateString("en-GB",{day:"numeric",month:"short"}),days};
   },[nowTick]);
 
-  // Bank: what's left before payday on each account, and the wage that landed.
-  const bankLeft=useMemo(()=>{
-    if(!bank.accounts.length)return null;
-    const now=new Date(nowTick);
-    const payees=(bankPrefs&&bankPrefs.payees)||null;   // ones you've said aren't regular, or renamed
-    const rows=bank.accounts.map(a=>{
-      const all=stillToGo(bank.txns,a.account_id,now,bank.pots,payees);
-      // Money Monzo has already taken but not listed: the payments due by today it most likely
-      // is aren't counted again.
-      const unlisted=unlistedOf(a);
-      const taken=takenUnlisted(all,unlisted,now);
-      const due=all.filter(d=>!taken.includes(d));
-      const dueTotal=due.reduce((s,r)=>s+r.amount,0);
-      const balance=Number(a.balance)||0;
-      // Going through what's due in date order: the first payment the balance won't cover.
-      let run=balance,shortAt=null;
-      for(const d of due){run-=d.amount;if(run<0&&!shortAt)shortAt=d;}
-      return {id:a.account_id,type:a.type,label:BANK_LABEL[a.type],balance,due,dueTotal,left:balance-dueTotal,shortAt,unlisted,taken};
-    });
-    const updated=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
-    return {rows,next:payCycle(now).next,updated};
-  },[bank,bankPrefs,nowTick]);
-
   // Budget bills against Monzo: which payment pays each bill (matched automatically unless
   // you've picked one) and how each stands this month. "od" = an Overdraft bill, cleared by
   // the wage. Keys: "s:<id>" shared bills, "g:<id>" your own.
@@ -4850,7 +4845,8 @@ const calcTimesheetTotals = days => {
     // An Overdraft is cleared by a wage, so it counts in the month that wage pays for: the last
     // payday's month (what its wage cleared) and the next payday's (how far overdrawn now).
     const odMonths=[...new Set([fundMonthKey(payCycle(now).start),fundMonthKey(upcomingPayday(now))])];
-    const penceOf=b=>isVariable(b)?null:Math.round(amountOf(b,mk)*100);   // what a regular bill is this month
+    const penceIn=(b,k)=>isVariable(b)?null:Math.round(amountOf(b,k)*100);   // what a regular bill is in a month
+    const penceOf=b=>penceIn(b,mk);
     // Payees you've picked for a bill (that still exists) aren't matched to another one.
     const taken=new Set(all.map(x=>links[x.ref]&&links[x.ref].k).filter(k=>k&&groups.has(k)));
     const auto=autoLinks(all.filter(x=>!links[x.ref]&&!isOd(x)).map(x=>({ref:x.ref,name:x.b.name,pence:penceOf(x.b),
@@ -4880,7 +4876,24 @@ const calcTimesheetTotals = days => {
       return {ref:x.ref,name:x.b.name,pence,month:pence!=null?pence:Math.round((Number((x.b.amounts||{})[mk])||0)*100),key:byRef[x.ref].keys[0],status:byRef[x.ref].status};
     }),groups,bank.potHist||[],bank.txns,mk,now);
     for(const [ref,st] of pots.status)byRef[ref].status=st;
-    return {byRef,groups,mk,potUnmatched:pots.unmatched};
+    // Each bill's standing in the months this pay month spans (for What's really left), worked out
+    // the same way: its own payments, then bills paid into the same pot together.
+    const statusIn=k=>{
+      const own=new Map(),list=[];
+      for(const x of all){
+        const r=byRef[x.ref];
+        if(r.kind!=="tx"||!r.keys.length)continue;
+        const pence=penceIn(x.b,k);
+        own.set(x.ref,billStatus(r.keys,groups,k,pence,now));
+        list.push({ref:x.ref,name:x.b.name,pence,month:pence!=null?pence:Math.round((Number((x.b.amounts||{})[k])||0)*100),key:r.keys[0],status:own.get(x.ref)});
+      }
+      for(const [ref,s] of potGroupTicks(list,groups,bank.potHist||[],bank.txns,k,now).status)own.set(ref,s);
+      return own;
+    };
+    const cyc=payCycle(now),lastDay=new Date(cyc.next.getFullYear(),cyc.next.getMonth(),cyc.next.getDate()-1);
+    const st={};
+    for(const d of [cyc.start,lastDay]){const k=monthKeyOf(d.getFullYear(),d.getMonth()+1);if(!st[k])st[k]=statusIn(k);}
+    return {byRef,groups,mk,potUnmatched:pots.unmatched,cyc:{start:cyc.start,next:cyc.next,st}};
   },[bank,bankPrefs,sharedBills,glynBills,nowTick]);
   const nowMkBank=(()=>{const d=new Date(nowTick);return monthKeyOf(d.getFullYear(),d.getMonth()+1);})();
   // How a bill stands this month: live on the phone with the Monzo link, or, for shared bills,
@@ -5005,8 +5018,8 @@ const calcTimesheetTotals = days => {
     }
     return {glyn,hollie};
   };
-  const jointCheck=(()=>{
-    if(!isOwner||!bankLeft)return null;
+  const jointPay=(()=>{
+    if(!isOwner||!bank.accounts.length)return null;
     const j=bank.accounts.find(a=>a.type==="uk_retail_joint");
     if(!j)return null;
     const now=new Date(nowTick);
@@ -5014,10 +5027,21 @@ const calcTimesheetTotals = days => {
     const tr=paydayTransfers(bank.txns,j.account_id,cyc.start,now);
     const nm=new Date(cyc.start.getFullYear(),cyc.start.getMonth()+1,1);
     const want=splitFor(nm.getFullYear(),nm.getMonth()+1,monthKeyOf(cyc.start.getFullYear(),cyc.start.getMonth()+1));
-    return {payday:cyc.start,month:nm,glyn:tr.glyn,hollie:tr.hollie,
-      want:{glyn:Math.round(want.glyn*100),hollie:Math.round(want.hollie*100)},
-      row:bankLeft.rows.find(r=>r.id===j.account_id),late:now.getTime()-cyc.start.getTime()>3*DAY_MS};
+    return {jointId:j.account_id,payday:cyc.start,month:nm,glyn:tr.glyn,hollie:tr.hollie,
+      want:{glyn:Math.round(want.glyn*100),hollie:Math.round(want.hollie*100)},late:now.getTime()-cyc.start.getTime()>3*DAY_MS};
   })();
+  // What's really left in each account before payday: the balance less the Budget bills still to
+  // go out of it, plus any share not in the joint account yet.
+  const bankLeft=(()=>{
+    if(!bank.accounts.length||!bankMatch||!bankMatch.cyc)return null;
+    const rows=budgetLeft({accounts:bank.accounts,
+      bills:[...sharedBills.map(b=>({ref:"s:"+b.id,b,shared:true})),...glynBills.map(b=>({ref:"g:"+b.id,b,shared:false}))],
+      sched:scheduledBills,match:bankMatch,txns:bank.txns,myId,pay:jointPay,now:new Date(nowTick)});
+    const updated=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
+    return {rows,next:bankMatch.cyc.next,updated};
+  })();
+  const jointCheck=jointPay&&bankLeft?{payday:jointPay.payday,month:jointPay.month,glyn:jointPay.glyn,hollie:jointPay.hollie,
+    want:jointPay.want,row:bankLeft.rows.find(r=>r.id===jointPay.jointId),late:jointPay.late}:null;
 
   // Spending by category, this pay month so far against last, on each account; and the
   // allowances paid into pots, with what's left in each pot.
