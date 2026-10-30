@@ -815,11 +815,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.6";
+const APP_VERSION = "1.18.7";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.7", date: "30 Oct 2026", items: [
+    { b: "Your figures first", t: " — the Dashboard now opens on your pay tiles, Tax Year, Latest vs Previous Month and Monthly Budget. Monzo's What's really left, the joint account and spending sit underneath. Warnings, and the note when your pay lands, still show at the very top." },
+  ] },
   { v: "1.18.6", date: "29 Oct 2026", items: [
     { b: "Extra payruns", t: " — uploading a second payslip for a month that already has one now asks whether to add it on top (an extra payrun, like an overtime correction) or replace the first (a corrected copy). An added payrun counts in that month's pay and Left over, shows as a note on the payslip, and doesn't change the Pay Calc's bonus." },
   ] },
@@ -2288,8 +2291,11 @@ function BankLinkSheet({ sheet, aal2, onEnterCode, onClose }) {
   );
 }
 
-// Dashboard: the wage that just landed, and what's really left before payday.
-function BankCards({ left, pay, locked, attention, onDismissPay, onUnlock, onOpenBank }) {
+// Dashboard: the wage that just landed, and what's really left before payday. part="alerts" is
+// just the notices (unlock, link problems, the joint account running short, pay landed), which
+// go at the top; part="left" is just the What's really left card.
+function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock, onOpenBank }) {
+  const alerts = part !== "left", leftCard = part !== "alerts";
   const [open, setOpen] = useState(false);
   const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
   const lab = { fontSize: 11, color: "#5a6480", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
@@ -2317,16 +2323,16 @@ function BankCards({ left, pay, locked, attention, onDismissPay, onUnlock, onOpe
   }
   const n = left ? left.rows.reduce((s, r) => s + r.due.length, 0) : 0;
   return (<>
-    {locked && <div onClick={onUnlock} style={{ ...card, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+    {alerts && locked && <div onClick={onUnlock} style={{ ...card, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
       <span style={{ fontSize: 18 }}>🔒</span>
       <div style={{ flex: 1, fontSize: 12.5, color: "#8892b0" }}>Enter your two-step code to see your Monzo balance</div>
       <span style={{ fontSize: 11, color: "#4a9eff", fontWeight: 700 }}>Unlock →</span>
     </div>}
-    {attention && <div onClick={onOpenBank} style={{ ...card, background: "#1a1500", border: "1px solid #ffb84a", display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+    {alerts && attention && <div onClick={onOpenBank} style={{ ...card, background: "#1a1500", border: "1px solid #ffb84a", display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
       <span style={{ fontSize: 18 }}>🏦</span>
       <div style={{ flex: 1, fontSize: 12.5, color: "#ffb84a" }}>{attention}</div>
     </div>}
-    {left && left.rows.filter(r => r.shortAt && r.type === "uk_retail_joint").map(r => (   // the joint account only
+    {alerts && left && left.rows.filter(r => r.shortAt && r.type === "uk_retail_joint").map(r => (   // the joint account only
       <div key={"short" + r.id} data-short="1" style={{ ...card, background: "#1a0a0a", border: "1px solid #ff4a6a", display: "flex", alignItems: "flex-start", gap: 10 }}>
         <span style={{ fontSize: 18 }}>⚠️</span>
         <div style={{ flex: 1 }}>
@@ -2339,8 +2345,8 @@ function BankCards({ left, pay, locked, attention, onDismissPay, onUnlock, onOpe
         </div>
       </div>
     ))}
-    {payBox}
-    {left && <div style={{ ...card, cursor: "pointer" }} onClick={() => { haptic(); setOpen(o => !o); }}>
+    {alerts && payBox}
+    {leftCard && left && <div style={{ ...card, cursor: "pointer" }} onClick={() => { haptic(); setOpen(o => !o); }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
         <div style={lab}>💰 What's really left</div>
         <div style={{ fontSize: 11, color: "#5a6480" }}>to payday {dshort(left.next)}</div>
@@ -5213,14 +5219,13 @@ const calcTimesheetTotals = days => {
                 </div>
               </div>
             )}
-            <BankCards left={bankLeft} pay={bankPay}
+            {/* Monzo notices stay at the top; its cards sit under the pay and budget figures */}
+            <BankCards part="alerts" left={bankLeft} pay={bankPay}
               locked={mfa.hasFactor&&!mfaAal2&&!!bankLinkInfo}
               attention={bankAttention}
               onDismissPay={()=>{haptic();if(bankPay){setPaySeen(bankPay.id);save(SK.paySeen,bankPay.id);}}}
               onUnlock={()=>{haptic();setMfa(m=>({...m,need:true,skipped:false}));}}
               onOpenBank={()=>{haptic();setShowDiagBank(true);setTab("Diag");window.scrollTo(0,0);}}/>
-            <JointCard check={jointCheck}/>
-            <SpendCard data={spending}/>
             {missingMonths.length>0&&(
               <div style={{background:"#1a0f1a",border:"1px solid #c84aff",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
@@ -5310,6 +5315,11 @@ const calcTimesheetTotals = days => {
                 <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
               ))}
             </div>
+
+            {/* Monzo: what's really left, the joint account and spending */}
+            <BankCards part="left" left={bankLeft}/>
+            <JointCard check={jointCheck}/>
+            <SpendCard data={spending}/>
 
             <div style={{...card,marginBottom:12}}>
               <SectionLabel>Student Loan -- Plan 2</SectionLabel>
