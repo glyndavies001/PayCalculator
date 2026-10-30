@@ -815,11 +815,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.9";
+const APP_VERSION = "1.18.10";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.10", date: "30 Oct 2026", items: [
+    { b: "Top-ups count", t: " — a small extra transfer into the joint account that makes up what your share was short (like 50p after a bill changed) now counts towards it, so the Joint account card ticks it. Small transfers for anything else still don't." },
+  ] },
   { v: "1.18.9", date: "30 Oct 2026", items: [
     { b: "What's really left follows your Budget", t: " — it now takes off the Budget bills still to go out before payday, at the Budget's amounts, ticking each off as Monzo sees it go, instead of guessing from past payments. Bills paid from a pot count when the pot's topped up." },
     { b: "Head Room stays yours", t: " — bills set to \"don't track\", like Head Room, stay in what's left, and so does the Overdraft (your balance already shows it)." },
@@ -1774,18 +1777,27 @@ function spendByCategory(txns, accountId, from, to) {
 const CAT_LABEL = { eating_out: "🍔 Eating out", groceries: "🛒 Groceries", shopping: "🛍️ Shopping", transport: "🚗 Transport", bills: "🧾 Bills", entertainment: "🎬 Entertainment", general: "📦 General", personal_care: "💆 Personal care", holidays: "✈️ Holidays", family: "👪 Family", charity: "❤️ Charity", gifts: "🎁 Gifts", cash: "💵 Cash", expenses: "💼 Expenses", finances: "💳 Finances", custom: "🏷️ Your own categories" };
 const catLabel = c => CAT_LABEL[c] || "📦 " + String(c || "Other").replace(/_/g, " ");
 // The payday transfers into the joint account: everything of £100 or more from each of you,
-// from 3 days before payday to a week after.
-function paydayTransfers(txns, jointId, payday, now = new Date()) {
+// from 3 days before payday to a week after. With `want` (each share, pence), a smaller transfer
+// that makes up some or all of what a share is still short counts too ("+50p to top it up"), until
+// 3 days before the next payday; smaller ones for anything else don't.
+function paydayTransfers(txns, jointId, payday, now = new Date(), want = null) {
   const from = payday.getTime() - 3 * DAY_MS, to = Math.min(now.getTime(), payday.getTime() + 8 * DAY_MS);
+  const next = getPayday(payday.getFullYear(), payday.getMonth() + 1);
+  const topTo = Math.min(now.getTime(), next.getTime() - 3 * DAY_MS);
   const out = { glyn: 0, hollie: 0, when: {} };
+  const small = [];
   for (const t of txns) {
-    if (t.account_id !== jointId || isPotMove(t) || !(Number(t.amount) >= 10000)) continue;
+    if (t.account_id !== jointId || isPotMove(t) || !(Number(t.amount) > 0)) continue;
     const ms = txWhen(t).getTime();
-    if (ms < from || ms > to) continue;
     const n = String(t.counterparty || t.description || "").trim().toLowerCase();
     const k = /^glyn\b/.test(n) ? "glyn" : /^hollie\b/.test(n) ? "hollie" : null;
-    if (k) { out[k] += Number(t.amount); out.when[k] = txWhen(t); }
+    if (!k || ms < from) continue;
+    if (Number(t.amount) >= 10000) { if (ms <= to) { out[k] += Number(t.amount); out.when[k] = txWhen(t); } }
+    else if (want && ms <= topTo) small.push({ k, amount: Number(t.amount), ms });
   }
+  // Top-ups, oldest first: each that fits in what that share is still short (1p either way).
+  for (const s of small.sort((a, b) => a.ms - b.ms))
+    if (out[s.k] > 0 && s.amount <= (Number(want[s.k]) || 0) - out[s.k] + 1) out[s.k] += s.amount;
   return out;
 }
 // The same JSON whatever order the keys come back in (Postgres reorders jsonb keys).
@@ -5024,11 +5036,12 @@ const calcTimesheetTotals = days => {
     if(!j)return null;
     const now=new Date(nowTick);
     const cyc=payCycle(now);
-    const tr=paydayTransfers(bank.txns,j.account_id,cyc.start,now);
     const nm=new Date(cyc.start.getFullYear(),cyc.start.getMonth()+1,1);
-    const want=splitFor(nm.getFullYear(),nm.getMonth()+1,monthKeyOf(cyc.start.getFullYear(),cyc.start.getMonth()+1));
+    const split=splitFor(nm.getFullYear(),nm.getMonth()+1,monthKeyOf(cyc.start.getFullYear(),cyc.start.getMonth()+1));
+    const want={glyn:Math.round(split.glyn*100),hollie:Math.round(split.hollie*100)};
+    const tr=paydayTransfers(bank.txns,j.account_id,cyc.start,now,want);   // top-ups to a share count
     return {jointId:j.account_id,payday:cyc.start,month:nm,glyn:tr.glyn,hollie:tr.hollie,
-      want:{glyn:Math.round(want.glyn*100),hollie:Math.round(want.hollie*100)},late:now.getTime()-cyc.start.getTime()>3*DAY_MS};
+      want,late:now.getTime()-cyc.start.getTime()>3*DAY_MS};
   })();
   // What's really left in each account before payday: the balance less the Budget bills still to
   // go out of it, plus any share not in the joint account yet.
