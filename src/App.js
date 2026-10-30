@@ -815,11 +815,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.7";
+const APP_VERSION = "1.18.8";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.18.8", date: "30 Oct 2026", items: [
+    { b: "Joint transfers checked to the penny", t: " — the Joint account card only ticks a transfer that matches the share exactly. Anything else shows the gap, like \"50p less than your share\", so a bill changed after you've paid in shows up." },
+  ] },
   { v: "1.18.7", date: "30 Oct 2026", items: [
     { b: "Your figures first", t: " — the Dashboard now opens on your pay tiles, Tax Year, Latest vs Previous Month and Monthly Budget. Monzo's What's really left, the joint account and spending sit underneath. Warnings, and the note when your pay lands, still show at the very top." },
   ] },
@@ -2386,12 +2389,15 @@ function JointCard({ check }) {
   const lab = { fontSize: 11, color: "#5a6480", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
   const dshort = d => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   const mon = check.month.toLocaleDateString("en-GB", { month: "long" });
+  // Ticked only when the transfer matches the share to the penny (a 50/50 split can come to half a
+  // penny, so 1p either way still matches); any other gap is shown, under £1 in pence ("50p").
+  const gap = p => (p < 100 ? Math.round(p) + "p" : fmt(pounds(p)));
   const line = (who, got, want, theirs) => {
     const diff = got - want;
-    const ok = got > 0 && Math.abs(diff) <= 100;
+    const ok = got > 0 && Math.abs(diff) <= 1;
     const note = !got ? (check.late ? "Not seen yet" : "Not in yet")
       : ok ? "✓ " + (theirs ? "her" : "your") + " share"
-      : fmt(pounds(Math.abs(diff))) + (diff > 0 ? " more" : " less") + " than " + (theirs ? "her" : "your") + " share";
+      : gap(Math.abs(diff)) + (diff > 0 ? " more" : " less") + " than " + (theirs ? "her" : "your") + " share";
     return (
       <div key={who} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, padding: "5px 0" }}>
         <span style={{ fontSize: 12.5, color: "#8892b0", fontWeight: 600 }}>{who}</span>
