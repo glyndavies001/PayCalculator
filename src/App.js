@@ -824,11 +824,18 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.19.8";
+const APP_VERSION = "1.20.0";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.20.0", date: "31 Oct 2026", items: [
+    { b: "Policies", t: " — a new page (🛡️ at the top of the Dashboard) for your insurance, energy, broadband and other deals. Add a PDF or a photo of the paperwork and Claude fills in the details: policy number, price, dates, phone number and more. Tap Copy for the policy number." },
+    { b: "When to act", t: " — each one shows when it ends and the best time to sort it, like car insurance quotes 3–4 weeks before it renews, or switching energy in the last 49 days of a fix." },
+    { b: "Renewals", t: " — add the renewal letter to a policy and it updates the dates and the price, keeping the old price so you can see the rise." },
+    { b: "Share → Vaulted", t: " — share a PDF that doesn't look like a payslip and it asks whether it's a payslip or a policy." },
+    { b: "Shortcuts in two rows", t: " — the Dashboard's shortcuts are now two rows of three." },
+  ] },
   { v: "1.19.8", date: "31 Oct 2026", items: [
     { b: "No More button", t: " — the other pages are shortcuts at the top of the Dashboard (Payslips, Timesheet, Gifts, Move and Diag)." },
     { b: "A Home for Hollie", t: " — Hollie's first tab is Home: What's really left, the Joint account card and the joint pots, with shortcuts to Settle Up and Gifts. Her Budget is back to just the budget, and her bar is Home, Budget, Pay Calc, Move and Diag." },
@@ -923,7 +930,7 @@ function verCmp(a, b) {
   return 0;
 }
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
-const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];   // shortcuts at the top of the Dashboard
+const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Policies","Diag"];   // shortcuts at the top of the Dashboard
 // Hollie's bar, and her shortcuts at the top of Home.
 const PARTNER_TABS = ["Home","Budget","Pay Calc","Move","Diag"];
 const PARTNER_SHORTCUTS = ["Settle Up","Gifts"];
@@ -2531,11 +2538,13 @@ function PotsCard({ pots }) {
   );
 }
 // Shortcuts to the pages that aren't on the bottom bar, at the top of the first page.
-const TAB_ICON = { "Payslips": "📄", "Timesheet": "⏱️", "Gifts": "🎁", "Move": "🏡", "Diag": "🛠️", "Pay Info": "💷", "Tax Year": "📅", "Leave": "🌴", "Settle Up": "🤝" };
+const TAB_ICON = { "Payslips": "📄", "Timesheet": "⏱️", "Gifts": "🎁", "Move": "🏡", "Policies": "🛡️", "Diag": "🛠️", "Pay Info": "💷", "Tax Year": "📅", "Leave": "🌴", "Settle Up": "🤝" };
 function NavTiles({ tabs, onGo }) {
   if (!tabs || !tabs.length) return null;
+  // Up to 5 in a row; more go in two even rows (6 = two rows of three).
+  const cols = tabs.length <= 5 ? tabs.length : Math.ceil(tabs.length / 2);
   return (
-    <div data-shortcuts="1" style={{ display: "grid", gridTemplateColumns: "repeat(" + Math.min(tabs.length, 5) + ",1fr)", gap: 6, marginBottom: 12 }}>
+    <div data-shortcuts="1" style={{ display: "grid", gridTemplateColumns: "repeat(" + cols + ",1fr)", gap: 6, marginBottom: 12 }}>
       {tabs.map(t => (
         <button key={t} onClick={() => onGo(t)} style={{ minWidth: 0, background: "#141824", border: "1px solid #1e2535", borderRadius: 12, padding: "10px 0 9px", textAlign: "center", cursor: "pointer" }}>
           <div style={{ fontSize: 20, lineHeight: 1 }}>{TAB_ICON[t] || "•"}</div>
@@ -2588,8 +2597,775 @@ function JointCard({ check, me = "glyn" }) {
 }
 
 
+// ── Policies (v1.20.0) ───────────────────────────────────────────────────────────────────────
+// Insurance, energy, broadband and anything else with an end or renewal date, with their
+// documents. Glyn's only: the policies table and the private "policies" bucket need a two-step
+// (aal2) session, like the Monzo data. Documents are read by Claude through /api/claude.
+const POLICY_KINDS = [
+  { k: "car",       l: "Car insurance",       e: "🚗", rule: "insure" },
+  { k: "home",      l: "Home insurance",      e: "🏠", rule: "insure" },
+  { k: "pet",       l: "Pet insurance",       e: "🐶", rule: "pet" },
+  { k: "energy",    l: "Energy",              e: "⚡", rule: "energy" },
+  { k: "broadband", l: "Broadband & TV",      e: "🌐", rule: "telecom" },
+  { k: "mobile",    l: "Mobile",              e: "📱", rule: "telecom" },
+  { k: "breakdown", l: "Breakdown cover",     e: "🛟", rule: "insure" },
+  { k: "travel",    l: "Travel insurance",    e: "✈️", rule: "insure" },
+  { k: "life",      l: "Life insurance",      e: "❤️", rule: "check" },
+  { k: "gadget",    l: "Gadget or warranty",  e: "🔧", rule: "check" },
+  { k: "mortgage",  l: "Mortgage",            e: "🏦", rule: "mortgage" },
+  { k: "finance",   l: "Car finance or loan", e: "💳", rule: "ends" },
+  { k: "mot",       l: "MOT",                 e: "🔩", rule: "mot" },
+  { k: "cartax",    l: "Car tax",             e: "🚘", rule: "due" },
+  { k: "tv",        l: "TV licence",          e: "📺", rule: "due" },
+  { k: "other",     l: "Other",               e: "📄", rule: "check" },
+];
+const POLICY_KIND = Object.fromEntries(POLICY_KINDS.map(x => [x.k, x]));
+// When to act on each kind: how many days before the end date, and what to say.
+const POLICY_RULES = {
+  insure:   { days: 27,  soon: "Get quotes from", now: "Get quotes now",
+              tip: "Quotes are usually cheapest 3–4 weeks before it renews, so check before it renews by itself." },
+  pet:      { days: 28,  soon: "Check the renewal price from", now: "Check the renewal price",
+              tip: "A new insurer may not cover anything your pet's already been treated for, so check that before switching." },
+  energy:   { days: 49,  soon: "Switch window opens", now: "In the switch window",
+              tip: "No exit fees in the last 49 days of a fixed deal. When it ends you go onto the standard rate unless you pick a new deal." },
+  telecom:  { days: 30,  soon: "Haggle or switch from", now: "Haggle or switch now",
+              tip: "Prices usually go up once a contract ends. Your provider has to tell you 10–40 days before the end." },
+  mortgage: { days: 183, soon: "Look at new deals from", now: "Look at new deals",
+              tip: "Start looking about 6 months before the fixed rate ends." },
+  mot:      { days: 30,  soon: "Book from", now: "Book the MOT",
+              tip: "You can have the MOT up to a month (minus a day) early and keep the same renewal date." },
+  due:      { days: 14,  soon: "Renew from", now: "Renew now", tip: "" },
+  check:    { days: 30,  soon: "Check from", now: "Check before it renews", tip: "" },
+};
+const POLICY_PERIOD = { month: "a month", year: "a year", once: "one-off" };
+const POLICY_PERIOD_SHORT = { month: "/mo", year: "/yr", once: "" };
+const POLICY_DOC_WORD = { policy: "Policy", renewal: "Renewal", contract: "Contract", statement: "Statement", other: "Document" };
+const POLICY_READ_MAX = 3 * 1024 * 1024;   // bigger than this can't go through /api/claude (4.5 MB limit)
+const POLICY_FILE_MAX = 20 * 1024 * 1024;  // the bucket's limit
+const policyFiles = () => supabase.storage.from("policies");
+const policiesMissing = error => {
+  if (!error) return false;
+  const msg = String(error.message || error.details || "");
+  return error.code === "42P01" || error.code === "PGRST205" || (/policies/.test(msg) && /could not find|does not exist|schema cache/i.test(msg));
+};
+// Days from a to b (YYYY-MM-DD), counted in UTC so clock changes don't matter.
+const isoUTC = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
+const isoDaysBetween = (a, b) => Math.round((isoUTC(b) - isoUTC(a)) / DAY_MS);
+const isoAddDays = (s, n) => new Date(isoUTC(s) + n * DAY_MS).toISOString().slice(0, 10);
+const policyDay = (s, withYear = true) => s ? new Date(s + "T00:00:00").toLocaleDateString("en-GB", withYear ? { day: "numeric", month: "short", year: "numeric" } : { day: "numeric", month: "short" }) : "";
+const policyDayNear = (s, today) => policyDay(s, s.slice(0, 4) !== today.slice(0, 4));
+const policyKindOf = p => POLICY_KIND[p && p.kind] || POLICY_KIND.other;
+const policyLabel = p => (p && (p.name || p.provider)) || policyKindOf(p).l;
+const policyEndWord = p => p.kind === "mortgage" ? "Fixed rate ends" : (p.kind === "mot" || p.kind === "cartax" || p.kind === "tv") ? "Due" : p.auto_renew === true ? "Renews" : "Ends";
+const policyDaysText = d => d === 0 ? "today" : d === 1 ? "tomorrow" : d <= 60 ? `in ${d} days` : d < 700 ? `in about ${Math.round(d / 30.4)} months` : `in about ${Math.round(d / 365)} years`;
+function policyStatus(p, today) {
+  const rule = POLICY_RULES[policyKindOf(p).rule] || null;
+  if (!p.end_date) return { k: "none", rule };
+  const days = isoDaysBetween(today, p.end_date);
+  const from = rule ? isoAddDays(p.end_date, -rule.days) : null;
+  if (days < 0) return { k: "ended", days, from, rule };
+  if (rule && today >= from) return { k: "act", days, from, rule };
+  return { k: "later", days, from, rule };
+}
+const policyPerYear = (price, period) => price == null || !isFinite(price) ? null : period === "month" ? price * 12 : period === "year" ? price : null;
+// The last two prices (per year), for the rise or fall since last time.
+function policyPriceChange(p) {
+  const h = (Array.isArray(p.prices) ? p.prices : []).filter(x => policyPerYear(Number(x.price), x.period) != null);
+  if (h.length < 2) return null;
+  const a = h[h.length - 2], b = h[h.length - 1];
+  const ya = policyPerYear(Number(a.price), a.period), yb = policyPerYear(Number(b.price), b.period);
+  if (!ya || ya === yb) return null;
+  return { from: a, to: b, diffYear: yb - ya, pct: Math.round((yb - ya) / ya * 100) };
+}
+// Adds a price to the history (oldest first) when it's new; a change on the same day replaces it.
+function policyNextPrices(prev, price, period, date, from) {
+  const list = Array.isArray(prev) ? [...prev] : [];
+  if (price == null || !period) return list;
+  const last = list[list.length - 1];
+  if (last && Number(last.price) === price && last.period === period) return list;
+  if (last && last.date === date) list[list.length - 1] = { date, price, period, from: from || last.from || null };
+  else list.push({ date, price, period, from: from || null });
+  return list;
+}
+const policyNorm = s => String(s || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+// The saved policy a newly read document belongs to: same policy number, or the only one of the
+// same kind from the same provider.
+function policyMatch(list, read) {
+  if (!read) return null;
+  const n = policyNorm(read.policy_number);
+  if (n.length >= 4) {
+    const live = list.find(p => !p.archived && policyNorm(p.policy_number) === n);
+    if (live) return live;
+  }
+  const prov = String(read.provider || "").trim().toLowerCase();
+  if (!prov) return null;
+  const same = list.filter(p => !p.archived && p.kind === read.kind && p.provider &&
+    (p.provider.toLowerCase().includes(prov) || prov.includes(p.provider.toLowerCase())));
+  return same.length === 1 ? same[0] : null;
+}
+const POLICY_FIELDS = ["provider", "name", "policy_number", "cover", "start_date", "end_date", "price", "price_period", "payment", "phone", "website", "notes"];
+const policyEmptyForm = (kind = "other") => ({ kind, provider: "", name: "", policy_number: "", cover: "", start_date: "", end_date: "",
+  price: "", price_period: "month", payment: "", auto_renew: null, phone: "", website: "", details: [], notes: "", archived: false });
+const policyFormOf = p => ({ ...policyEmptyForm(p.kind || "other"),
+  ...Object.fromEntries(POLICY_FIELDS.map(k => [k, p[k] == null ? "" : String(p[k])])),
+  price: p.price == null || !isFinite(Number(p.price)) ? "" : Number(p.price).toFixed(2),
+  price_period: p.price_period || "month", auto_renew: p.auto_renew == null ? null : !!p.auto_renew, archived: !!p.archived,
+  details: (Array.isArray(p.details) ? p.details : []).map(d => ({ label: String((d && d.label) || ""), value: String((d && d.value) || "") })) });
+const policyFormFromRead = read => !read ? policyEmptyForm() : ({ ...policyEmptyForm(read.kind),
+  ...Object.fromEntries(POLICY_FIELDS.filter(k => k !== "notes").map(k => [k, read[k] || ""])),
+  price_period: read.price_period || "month", auto_renew: read.auto_renew, details: read.details.map(d => ({ ...d })) });
+// A renewal read into a saved policy: what the document says wins, the rest is kept.
+function policyMergeRead(form, read) {
+  if (!read) return form;
+  const out = { ...form, details: form.details.map(d => ({ ...d })) };
+  ["policy_number", "cover", "start_date", "end_date", "price", "payment", "phone", "website"].forEach(k => { if (read[k]) out[k] = read[k]; });
+  ["provider", "name"].forEach(k => { if (!out[k] && read[k]) out[k] = read[k]; });
+  if (read.price && read.price_period) out.price_period = read.price_period;
+  if (read.auto_renew !== null) out.auto_renew = read.auto_renew;
+  read.details.forEach(d => {
+    const i = out.details.findIndex(x => x.label.trim().toLowerCase() === d.label.toLowerCase());
+    if (i >= 0) out.details[i] = { ...d }; else out.details.push({ ...d });
+  });
+  return out;
+}
+// What Claude read, tidied: only known kinds, real dates, a number for the price.
+function policyCleanRead(r) {
+  const s = v => (v == null ? "" : String(v)).trim();
+  const d = v => /^\d{4}-\d{2}-\d{2}$/.test(s(v)) && !isNaN(Date.parse(s(v))) ? s(v) : "";
+  const pn = parseFloat(s(r.price).replace(/[^0-9.]/g, ""));
+  const kind = s(r.kind).toLowerCase(), doc = s(r.doc_type).toLowerCase(), per = s(r.price_period).toLowerCase();
+  return {
+    kind: POLICY_KIND[kind] ? kind : "other",
+    doc_type: POLICY_DOC_WORD[doc] ? doc : "other",
+    provider: s(r.provider), name: s(r.name), policy_number: s(r.policy_number), cover: s(r.cover),
+    start_date: d(r.start_date), end_date: d(r.end_date),
+    price: isFinite(pn) && pn > 0 ? (Math.round(pn * 100) / 100).toFixed(2) : "",
+    price_period: POLICY_PERIOD[per] ? per : "",
+    payment: s(r.payment), auto_renew: r.auto_renew === true ? true : r.auto_renew === false ? false : null,
+    phone: s(r.phone), website: s(r.website),
+    details: (Array.isArray(r.details) ? r.details : []).map(x => ({ label: s(x && x.label), value: s(x && x.value) }))
+      .filter(x => x.label && x.value).slice(0, 12),
+  };
+}
+const POLICY_READ_PROMPT = `This is a UK household document: an insurance policy or renewal notice, an energy, broadband or mobile contract, a mortgage or finance agreement, an MOT certificate, or similar. Pull out the details someone would want to keep. Return ONLY valid JSON, no markdown, in exactly this shape:
+{"kind":"","doc_type":"","provider":"","name":"","policy_number":"","cover":"","start_date":"","end_date":"","price":0,"price_period":"","payment":"","auto_renew":null,"phone":"","website":"","details":[{"label":"","value":""}]}
+
+kind: one of car, home, pet, energy, broadband, mobile, breakdown, travel, life, gadget, mortgage, finance, mot, cartax, tv, other (home = buildings and/or contents insurance; broadband includes landline and TV packages; finance = car finance or a loan; cartax = vehicle tax; tv = TV licence).
+doc_type: policy (schedule, certificate, welcome pack), renewal (renewal notice or invitation), contract (contract summary, terms, offer), statement, or other.
+provider: the company the customer deals with, e.g. "Admiral", "Octopus Energy", "BT". The brand name, not a parent company or underwriter.
+name: what it's for in 1-4 words, e.g. the car's make and model ("Kia Sportage"), the pet's name, "Home", "Electricity & gas", "Fibre broadband".
+policy_number: the policy, account, agreement or customer reference you'd quote when calling them. Prefer the policy number over a customer number.
+cover: one short sentence on the cover or deal, e.g. "Comprehensive, protected no-claims bonus" or "12-month fixed tariff, electricity and gas".
+start_date and end_date: when this cover, contract or fixed deal starts and ends, as YYYY-MM-DD. end_date is the renewal date, or the end of the minimum term or fixed rate; for an MOT it's the expiry date. For a renewal notice, give the NEW period's dates.
+price: what it costs now, as a number. For a renewal notice, the NEW price. If paid monthly, the monthly amount with price_period "month"; if paid yearly, the yearly total with "year"; a single payment for something one-off (like single-trip travel insurance) is "once". Use 0 if no price is shown.
+payment: how it's paid, e.g. "Direct Debit, monthly" or "Paid in full by card".
+auto_renew: true if it says it renews automatically, false if it says it won't, null if it doesn't say.
+phone: the main customer services number (the claims number if that's the only one). website: their website, e.g. "admiral.com".
+details: up to 10 other useful facts with short labels, such as Excess, Car reg, No-claims, Drivers, Pet, Vet fees limit, Rebuild sum, Contents sum, Tariff, Unit rate, Standing charge, Exit fee, Speed, Minimum term, Price rise, Interest rate, Balance, Last year's price, Mileage.
+Use "" for anything that isn't in the document. Return the JSON only.`;
+async function readPolicyDoc(b64, mime) {
+  const block = mime === "application/pdf"
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
+    : { type: "image", source: { type: "base64", media_type: mime, data: b64 } };
+  const resp = await fetch(API_PROXY, {
+    method: "POST",
+    headers: await authHeaders(),
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1500, messages: [{ role: "user", content: [block, { type: "text", text: POLICY_READ_PROMPT }] }] }),
+  });
+  if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error("API " + resp.status + (t ? ": " + t.slice(0, 120) : "")); }
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error).slice(0, 120));
+  const raw = (data.content || []).map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error("no details came back");
+  return policyCleanRead(JSON.parse(m[0]));
+}
+const blobToBase64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(blob); });
+// Photos are shrunk to 2000px on the long side (plenty to read a letter, and far smaller).
+async function shrinkPhoto(file, max = 2000) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("Couldn't open that photo.")); i.src = url; });
+    const s = Math.min(1, max / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(img.naturalWidth * s)); c.height = Math.max(1, Math.round(img.naturalHeight * s));
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.85));
+    if (!blob) throw new Error("Couldn't open that photo.");
+    return blob;
+  } finally { URL.revokeObjectURL(url); }
+}
+async function preparePolicyFile(file) {
+  const name = file.name || "document";
+  // The file's own type goes up with it, and some phones leave it blank: give it the right one.
+  if (file.type === "application/pdf" || /\.pdf$/i.test(name)) return { blob: file.type === "application/pdf" ? file : new Blob([file], { type: "application/pdf" }), mime: "application/pdf", name: /\.pdf$/i.test(name) ? name : name + ".pdf", ext: "pdf" };
+  if (/^image\//.test(file.type || "") || /\.(jpe?g|png|webp|gif|bmp)$/i.test(name)) {
+    const blob = await shrinkPhoto(file);
+    return { blob, mime: "image/jpeg", name: name.replace(/\.[^.]+$/, "") + ".jpg", ext: "jpg" };
+  }
+  throw new Error("That isn't a PDF or a photo. Pick a PDF, or take a photo of the paperwork.");
+}
+const policyTrim = v => { const s = String(v == null ? "" : v).trim(); return s || null; };
+const policyWebsite = w => /^https?:\/\//i.test(w) ? w : "https://" + w;
+
+function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTaken }) {
+  const [state, setState] = useState("loading");    // loading | ready | locked | nofactor | missing | error
+  const [list, setList] = useState([]);
+  const [q, setQ] = useState("");
+  const [showOld, setShowOld] = useState(false);
+  const [openId, setOpenId] = useState(null);       // the policy sheet
+  const [edit, setEdit] = useState(null);           // the edit / check-the-details sheet
+  const [reading, setReading] = useState(null);     // "Reading <file>…"
+  const [note, setNote] = useState(null);           // {ok, text} under the buttons
+  const [copied, setCopied] = useState(null);       // what was just copied
+  const [links, setLinks] = useState({});           // document path -> {u: signed URL, at}
+  const [sure, setSure] = useState(null);           // tapped once: "del:<id>" / "doc:<id>"
+  const listRef = useRef([]);
+  listRef.current = list;
+  const today = localISO();
+
+  const load = useCallback(async () => {
+    if (!user) return;
+    if (!mfa.hasFactor) { setState("nofactor"); return; }
+    if (mfa.level !== "aal2") { setState("locked"); return; }
+    const { data, error } = await jwtRetry(() => supabase.from("policies").select("*").eq("user_id", user.id));
+    if (error) {
+      if (policiesMissing(error)) { setState("missing"); return; }
+      reportDbError("getPolicies", error);
+      setState(s => (s === "ready" ? "ready" : "error"));   // a blip on refresh keeps what's showing
+      return;
+    }
+    reportDbError("getPolicies", null);
+    setList(data || []);
+    setState("ready");
+  }, [user, mfa.hasFactor, mfa.level]);
+  useEffect(() => { load(); }, [load, reloadTick]);
+
+  // ── Adding a document: pick it, shrink a photo, have Claude read it, then check the details ──
+  const fileInput = useRef(null);
+  const target = useRef(null);       // the policy it's being added to (null = work it out)
+  const tapAt = useRef(0), gotAt = useRef(0), lastSig = useRef(null);
+  const startDoc = async (file, policy) => {
+    setNote(null);
+    let prep;
+    try { prep = await preparePolicyFile(file); }
+    catch (e) { setNote({ ok: false, text: e.message || "Couldn't open that file." }); return; }
+    if (prep.blob.size > POLICY_FILE_MAX) { setNote({ ok: false, text: "That file's over 20 MB, too big to keep. Try a photo of the main page instead." }); return; }
+    setOpenId(null);
+    let read = null, why = "";
+    if (prep.mime === "application/pdf" && prep.blob.size > POLICY_READ_MAX) {
+      why = "This PDF is too big to read automatically, so fill in the details yourself. The file will still be kept.";
+    } else {
+      setReading("Reading " + prep.name + "…");
+      try { read = await readPolicyDoc(await blobToBase64(prep.blob), prep.mime); }
+      catch (e) {
+        console.error("Policy read failed:", e);
+        why = "Couldn't read it automatically (" + String((e && e.message) || e).slice(0, 90) + "), so fill in the details yourself. The file will still be kept.";
+      } finally { setReading(null); }
+    }
+    const fresh = policy ? (listRef.current.find(x => x.id === policy.id) || policy) : null;
+    const match = fresh || policyMatch(listRef.current, read);
+    setEdit({
+      mode: "doc", file: prep, read, why, fixed: !!policy, match, useMatch: !!match,
+      form: match ? policyMergeRead(policyFormOf(match), read) : policyFormFromRead(read),
+      base: match ? policyFormOf(match) : null, saving: false, err: "",
+    });
+  };
+  const startDocRef = useRef(startDoc);
+  startDocRef.current = startDoc;
+  const intake = async (files, input) => {
+    gotAt.current = Date.now();
+    const f = files && files[0];
+    if (!f) { if (input) input.value = ""; return; }
+    // change and input (or the rescue) can both hand over the same pick: take it once per tap.
+    const sig = f.name + ":" + f.size + ":" + (f.lastModified || 0);
+    if (lastSig.current && lastSig.current.sig === sig && lastSig.current.tap === tapAt.current) { if (input) input.value = ""; return; }
+    lastSig.current = { sig, tap: tapAt.current };
+    try { await startDocRef.current(f, target.current); }
+    finally { if (input) input.value = ""; }
+  };
+  const intakeRef = useRef(intake);
+  intakeRef.current = intake;
+  const pick = policy => {
+    if (reading) return;
+    haptic();
+    target.current = policy || null;
+    tapAt.current = Date.now();
+    setNote(null);
+    const el = fileInput.current;
+    if (el) { el.value = ""; el.click(); }
+  };
+  // Android sometimes fills the input without firing change: look at it on coming back.
+  useEffect(() => {
+    const rescue = () => setTimeout(() => {
+      const el = fileInput.current;
+      if (!el || !tapAt.current || Date.now() - tapAt.current > 3 * 60000 || gotAt.current >= tapAt.current) return;
+      const files = Array.from(el.files || []);
+      if (files.length) intakeRef.current(files, el);
+    }, 180);
+    const onVis = () => { if (!document.hidden) rescue(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", rescue);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", rescue); };
+  }, []);
+  // A document shared into Vaulted (Share → Vaulted → Policy).
+  useEffect(() => {
+    if (!shared || state !== "ready" || reading) return;
+    const f = shared;
+    onSharedTaken();
+    target.current = null;
+    startDocRef.current(f, null);
+  }, [shared, state, reading, onSharedTaken]);
+
+  // ── Saving ──
+  const saveEdit = async () => {
+    const e = edit;
+    if (!e || e.saving || !user) return;
+    const f = e.form;
+    const pn = parseFloat(String(f.price).replace(/[^0-9.]/g, ""));
+    const price = isFinite(pn) && pn >= 0 && String(f.price).trim() !== "" ? Math.round(pn * 100) / 100 : null;
+    const was = e.mode === "edit" ? e.policy : (e.useMatch ? e.match : null);
+    const base = was ? (listRef.current.find(x => x.id === was.id) || was) : null;
+    if (!policyTrim(f.name) && !policyTrim(f.provider) && !policyTrim(f.policy_number)) {
+      setEdit(x => ({ ...x, err: "Add the provider or what it's for, so you can find it." }));
+      return;
+    }
+    const id = base ? base.id : genUUID();
+    setEdit(x => ({ ...x, saving: true, err: "" }));
+    const docs = base && Array.isArray(base.docs) ? [...base.docs] : [];
+    let uploaded = null;
+    if (e.file) {
+      const docId = genUUID();
+      const path = user.id + "/" + id + "/" + docId + "." + e.file.ext;
+      const { error } = await trackSave(policyFiles().upload(path, e.file.blob, { contentType: e.file.mime, upsert: false }));
+      if (error) {
+        reportDbError("savePolicyFile", error);
+        setEdit(x => x && ({ ...x, saving: false, err: "Couldn't save the file: " + error.message }));
+        return;
+      }
+      uploaded = path;
+      docs.push({ id: docId, path, name: e.file.name, mime: e.file.mime, size: e.file.blob.size, kind: (e.read && e.read.doc_type) || "other", added: today });
+    }
+    const period = price != null ? (f.price_period || "month") : null;
+    const priceDate = e.file && f.start_date ? f.start_date : today;
+    const row = {
+      id, user_id: user.id, kind: f.kind || "other",
+      provider: policyTrim(f.provider), name: policyTrim(f.name), policy_number: policyTrim(f.policy_number), cover: policyTrim(f.cover),
+      start_date: f.start_date || null, end_date: f.end_date || null, price, price_period: period,
+      payment: policyTrim(f.payment), auto_renew: f.auto_renew, phone: policyTrim(f.phone), website: policyTrim(f.website),
+      details: f.details.map(d => ({ label: d.label.trim(), value: d.value.trim() })).filter(d => d.label || d.value),
+      prices: policyNextPrices(base && base.prices, price, period, priceDate, e.file ? e.file.name : null),
+      docs, notes: policyTrim(f.notes), archived: !!f.archived, updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await trackSave(supabase.from("policies").upsert(row, { onConflict: "id" }).select().single());
+    if (error) {
+      if (uploaded) policyFiles().remove([uploaded]).catch(() => {});
+      reportDbError("savePolicy", error);
+      setEdit(x => x && ({ ...x, saving: false, err: "Couldn't save: " + error.message }));
+      return;
+    }
+    reportDbError("savePolicy", null);
+    haptic("success");
+    setList(l => [...l.filter(p => p.id !== id), data || row]);
+    setEdit(null);
+    setOpenId(id);
+  };
+  const patchPolicy = async (p, patch) => {
+    const { data, error } = await trackSave(supabase.from("policies").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", p.id).select().single());
+    if (error) { reportDbError("savePolicy", error); setNote({ ok: false, text: "Couldn't save: " + error.message }); return null; }
+    reportDbError("savePolicy", null);
+    setList(l => l.map(x => (x.id === p.id ? (data || { ...x, ...patch }) : x)));
+    return data || { ...p, ...patch };
+  };
+  const removePolicy = async p => {
+    setSure(null);
+    const { error } = await trackSave(supabase.from("policies").delete().eq("id", p.id));
+    if (error) { reportDbError("deletePolicy", error); setNote({ ok: false, text: "Couldn't delete it: " + error.message }); return; }
+    reportDbError("deletePolicy", null);
+    const paths = (p.docs || []).map(d => d.path).filter(Boolean);
+    if (paths.length) policyFiles().remove(paths).catch(() => {});
+    haptic("medium");
+    setList(l => l.filter(x => x.id !== p.id));
+    setOpenId(null);
+    setNote({ ok: true, text: policyLabel(p) + " deleted." });
+  };
+  const removeDoc = async (p, d) => {
+    setSure(null);
+    const done = await patchPolicy(p, { docs: (p.docs || []).filter(x => x.id !== d.id) });
+    if (done) policyFiles().remove([d.path]).catch(() => {});
+  };
+  const copy = async (text, key) => {
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; }
+    catch (e) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select(); ok = document.execCommand("copy"); document.body.removeChild(ta);
+      } catch (e2) {}
+    }
+    if (ok) { haptic(); setCopied(key); setTimeout(() => setCopied(c => (c === key ? null : c)), 1600); }
+  };
+
+  // Links to open the documents of the policy that's open (they last an hour).
+  const open = list.find(p => p.id === openId) || null;
+  const openDocs = open && Array.isArray(open.docs) ? open.docs : [];
+  const docKey = openDocs.map(d => d.path).join("|");
+  useEffect(() => {
+    if (!docKey) return;
+    const need = docKey.split("|").filter(path => path && !(links[path] && Date.now() - links[path].at < 50 * 60000));
+    if (!need.length) return;
+    let gone = false;
+    policyFiles().createSignedUrls(need, 3600).then(({ data }) => {
+      if (gone || !Array.isArray(data)) return;
+      setLinks(m => { const n = { ...m }; data.forEach(x => { if (x && x.path && x.signedUrl) n[x.path] = { u: x.signedUrl, at: Date.now() }; }); return n; });
+    }).catch(() => {});
+    return () => { gone = true; };
+  }, [docKey]);   // links is read, not watched: a new link mustn't ask again
+
+  // ── Styles ──
+  const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 10 };
+  const hdr = { fontSize: 11.5, color: SUBTEXT, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 };
+  const small = { fontSize: 13, color: SUBTEXT, lineHeight: 1.5 };
+  const mini = { background: "#1e2535", border: "1px solid #2a3050", borderRadius: 7, color: "#8ec5ff", fontSize: 12.5, fontWeight: 700, padding: "7px 11px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0, textDecoration: "none", display: "inline-block" };
+  const bigBtn = { background: "#1a3a5a", border: "1px solid #2a5a8a", borderRadius: 10, color: "#8ec5ff", fontSize: 15, fontWeight: 700, padding: "13px", cursor: "pointer" };
+  const overlay = { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 210, background: "rgba(0,0,0,0.6)" };
+  const sheet = { position: "absolute", left: 0, right: 0, bottom: 0, background: "#141824", borderTop: "1px solid #2a3050", borderRadius: "16px 16px 0 0", padding: "8px 14px", paddingBottom: "calc(16px + env(safe-area-inset-bottom))", maxHeight: "90vh", overflowY: "auto" };
+  const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #2a3050", borderRadius: 8, color: "#e8eaf0", fontSize: 15, padding: "12px 14px", marginBottom: 12, fontFamily: "inherit" };
+  const seg = on => ({ flex: 1, background: on ? "#1a3a5a" : "transparent", border: "1px solid " + (on ? "#2a5a8a" : "#2a3050"), borderRadius: 8, color: on ? "#8ec5ff" : SUBTEXT, fontSize: 13.5, fontWeight: 700, padding: "10px 6px", cursor: "pointer" });
+  const plainBtn = { width: "100%", background: "transparent", border: "none", color: SUBTEXT, fontSize: 13.5, fontWeight: 600, padding: "10px", cursor: "pointer" };
+  const fileEl = <input ref={fileInput} type="file" accept="application/pdf,image/*"
+    onChange={e => intake(Array.from(e.target.files || []), e.target)} onInput={e => intake(Array.from(e.target.files || []), e.target)} style={{ display: "none" }}/>;
+
+  if (state !== "ready") {
+    const box = (body, extra) => <div style={{ ...card, textAlign: "center", padding: "22px 14px", lineHeight: 1.55 }}><div style={{ fontSize: 28, marginBottom: 6 }}>🛡️</div>{body}{extra}</div>;
+    if (state === "loading") return box(<div style={small}>Loading your policies…</div>);
+    if (state === "nofactor") return box(<div style={small}>Policies are kept behind two-step sign-in, like the Monzo details. Turn it on in Diag → Bank &amp; two-step.</div>);
+    if (state === "locked") return box(<div style={small}>Enter your two-step code to see your policies on this phone.</div>,
+      <button onClick={() => { haptic(); onEnterCode(); }} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>Enter code</button>);
+    if (state === "missing") return box(<div style={{ ...small, color: "#ffb84a" }}>Policies isn't set up in the database yet. Ask Claude to check the Policies setup.</div>);
+    return box(<div style={{ ...small, color: "#ff6b8a" }}>Couldn't load your policies.</div>,
+      <button onClick={() => { haptic(); setState("loading"); load(); }} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>Try again</button>);
+  }
+
+  // ── The list ──
+  const qn = q.trim().toLowerCase();
+  const hit = p => !qn || [p.name, p.provider, p.policy_number, policyKindOf(p).l, p.cover, p.notes, ...((p.details || []).map(d => d.label + " " + d.value))]
+    .some(v => v && String(v).toLowerCase().includes(qn));
+  const live = list.filter(p => !p.archived), old = list.filter(p => p.archived);
+  const rank = s => (s.k === "ended" ? 0 : s.k === "none" ? 2 : 1);
+  const shown = live.filter(hit).map(p => ({ p, s: policyStatus(p, today) })).sort((a, b) =>
+    rank(a.s) - rank(b.s) || (a.s.k === "ended" ? b.s.days - a.s.days : a.s.k === "none" ? 0 : a.s.days - b.s.days) || policyLabel(a.p).localeCompare(policyLabel(b.p)));
+  const oldShown = old.filter(hit).sort((a, b) => String(b.end_date || "").localeCompare(String(a.end_date || "")));
+  const yearTotal = live.reduce((a, p) => a + (policyPerYear(p.price == null ? null : Number(p.price), p.price_period) || 0), 0);
+  const toAct = live.filter(p => { const s = policyStatus(p, today); return s.k === "act" || s.k === "ended"; }).length;
+
+  const row = (p, s) => {
+    const kind = policyKindOf(p);
+    const ch = policyPriceChange(p);
+    const sub = [p.name ? p.provider : null, kind.l].filter(Boolean).join(" · ");
+    const endLine = s.k === "none" ? null : s.k === "ended"
+      ? (policyEndWord(p) === "Due" ? "Was due " : "Ended ") + policyDay(p.end_date)
+      : policyEndWord(p) + " " + policyDay(p.end_date) + " · " + policyDaysText(s.days);
+    const act = s.k === "act" && s.rule ? s.rule.now : s.k === "later" && s.rule ? s.rule.soon + " " + policyDayNear(s.from, today) : null;
+    return (
+      <div key={p.id} onClick={() => { haptic(); setSure(null); setOpenId(p.id); }}
+        style={{ ...card, cursor: "pointer", border: "1px solid " + (s.k === "ended" ? "#5a1a2a" : s.k === "act" ? "#6a5420" : "#1e2535") }}>
+        <div style={{ display: "flex", gap: 11, alignItems: "flex-start" }}>
+          <div style={{ fontSize: 22, lineHeight: "26px", width: 26, textAlign: "center", flexShrink: 0 }}>{kind.e}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{policyLabel(p)}</div>
+              {p.price != null && <div style={{ fontSize: 15, fontWeight: 700, color: "#e8eaf0", whiteSpace: "nowrap" }}>{fmt(p.price)}{POLICY_PERIOD_SHORT[p.price_period] || ""}</div>}
+            </div>
+            <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 2 }}>
+              {sub}
+              {ch && <span style={{ color: ch.diffYear > 0 ? "#ffb84a" : "#4ad07a", fontWeight: 700 }}>{" · " + (ch.diffYear > 0 ? "↑ up " : "↓ down ") + Math.abs(ch.pct) + "%"}</span>}
+            </div>
+            {endLine && <div style={{ fontSize: 13.5, color: s.k === "ended" ? "#ff6b8a" : "#e8eaf0", marginTop: 5 }}>{endLine}</div>}
+            {act && <div style={{ fontSize: 13, fontWeight: 700, color: s.k === "act" ? "#ffb84a" : SUBTEXT, marginTop: 3 }}>⏰ {act}</div>}
+            {p.policy_number && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 9 }}>
+                <div style={{ flex: 1, minWidth: 0, fontSize: 14, color: "#e8eaf0", background: "#0d1117", border: "1px solid #1e2535", borderRadius: 7, padding: "6px 9px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "ui-monospace,Menlo,Consolas,monospace", letterSpacing: 0.3 }}>{p.policy_number}</div>
+                <button onClick={e => { e.stopPropagation(); copy(p.policy_number, "n:" + p.id); }} style={mini}>{copied === "n:" + p.id ? "Copied ✓" : "Copy"}</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── The policy sheet ──
+  const policySheet = () => {
+    const p = open, kind = policyKindOf(p), s = policyStatus(p, today), ch = policyPriceChange(p);
+    const sub = [p.name ? p.provider : null, kind.l].filter(Boolean).join(" · ");
+    const close = () => { setOpenId(null); setSure(null); };
+    const line = (lab, val, action, key) => (
+      <div key={key || lab} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid #1a1f2e" }}>
+        <div style={{ width: 96, flexShrink: 0, fontSize: 12.5, color: SUBTEXT, fontWeight: 700 }}>{lab}</div>
+        <div style={{ flex: 1, minWidth: 0, fontSize: 14.5, color: "#e8eaf0", wordBreak: "break-word", lineHeight: 1.4 }}>{val}</div>
+        {action || null}
+      </div>
+    );
+    const tel = p.phone ? p.phone.replace(/[^\d+]/g, "") : "";
+    const docs = openDocs.slice().reverse();
+    const prices = Array.isArray(p.prices) ? p.prices : [];
+    const boxTone = s.k === "ended" ? ["#2a0f15", "#5a1a2a", "#ff6b8a"] : s.k === "act" ? ["#2a2008", "#6a5420", "#ffb84a"] : ["#111520", "#1e2535", "#e8eaf0"];
+    const showBox = s.k === "ended" || (s.rule && (s.k === "act" || s.k === "later"));
+    return (
+      <div onClick={close} onTouchStart={e => e.stopPropagation()} style={overlay}>
+        <div onClick={e => e.stopPropagation()} style={sheet}>
+          <SheetGrab onClose={close}/>
+          <div style={{ display: "flex", gap: 11, alignItems: "flex-start", marginBottom: 12 }}>
+            <div style={{ fontSize: 26, lineHeight: "30px" }}>{kind.e}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 17, fontWeight: 800, color: "#e8eaf0", wordBreak: "break-word" }}>{policyLabel(p)}</div>
+              <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 2 }}>{sub}{p.archived ? " · old" : ""}</div>
+            </div>
+            <button onClick={() => { haptic(); setEdit({ mode: "edit", policy: p, form: policyFormOf(p), base: null, saving: false, err: "" }); }} style={mini}>Edit</button>
+          </div>
+          {showBox && (
+            <div style={{ background: boxTone[0], border: "1px solid " + boxTone[1], borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: boxTone[2] }}>
+                {s.k === "ended" ? (policyEndWord(p) === "Due" ? "Was due " : "Ended ") + policyDay(p.end_date)
+                  : s.k === "act" ? "⏰ " + s.rule.now : "⏰ " + s.rule.soon + " " + policyDay(s.from)}
+              </div>
+              {(s.k === "ended" || (s.rule && s.rule.tip)) && (
+                <div style={{ ...small, marginTop: 4 }}>{s.k === "ended" ? "Renewed or switched? Add the new document here, or mark this one as old." : s.rule.tip}</div>
+              )}
+            </div>
+          )}
+          {p.policy_number && line("Number", <span style={{ fontFamily: "ui-monospace,Menlo,Consolas,monospace", letterSpacing: 0.3 }}>{p.policy_number}</span>,
+            <button onClick={() => copy(p.policy_number, "sheet:" + p.id)} style={mini}>{copied === "sheet:" + p.id ? "Copied ✓" : "Copy"}</button>)}
+          {p.price != null && line("Price", <>
+            {fmt(p.price)} {POLICY_PERIOD[p.price_period] || ""}{p.price_period === "month" ? <span style={{ color: SUBTEXT }}>{" (" + fmt(Number(p.price) * 12) + " a year)"}</span> : null}
+            {ch && <div style={{ fontSize: 13, fontWeight: 700, color: ch.diffYear > 0 ? "#ffb84a" : "#4ad07a", marginTop: 2 }}>
+              {(ch.diffYear > 0 ? "Up " : "Down ") + (ch.from.period === ch.to.period && POLICY_PERIOD[ch.to.period] && ch.to.period !== "once"
+                ? fmt(Math.abs(Number(ch.to.price) - Number(ch.from.price))) + " " + POLICY_PERIOD[ch.to.period]
+                : fmt(Math.abs(ch.diffYear)) + " a year") + " (" + (ch.pct > 0 ? "+" : "") + ch.pct + "%) on last time"}
+            </div>}
+          </>)}
+          {p.end_date && line(policyEndWord(p), policyDay(p.end_date) + (s.k === "ended" ? "" : " · " + policyDaysText(s.days)))}
+          {p.start_date && line("Started", policyDay(p.start_date))}
+          {p.payment && line("Paid by", p.payment)}
+          {p.auto_renew != null && line("Renews itself", p.auto_renew ? "Yes" : "No")}
+          {p.phone && line("Phone", p.phone, tel ? <a href={"tel:" + tel} onClick={e => e.stopPropagation()} style={mini}>Call</a> : null)}
+          {p.website && line("Website", p.website, <a href={policyWebsite(p.website)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={mini}>Open</a>)}
+          {p.cover && line("Covers", p.cover)}
+          {(p.details || []).map((d, i) => line(d.label || "Detail", d.value, null, "d" + i))}
+          {p.notes && line("Notes", <span style={{ whiteSpace: "pre-wrap" }}>{p.notes}</span>)}
+
+          <div style={{ ...hdr, marginTop: 18 }}>Documents</div>
+          {docs.length === 0 && <div style={{ ...small, marginBottom: 6 }}>None yet.</div>}
+          {docs.map(d => {
+            const link = links[d.path];
+            const isImg = /^image\//.test(d.mime || "");
+            const ask = sure === "doc:" + d.id;
+            return (
+              <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: "1px solid #1a1f2e" }}>
+                {isImg && link ? <img src={link.u} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6, flexShrink: 0, background: "#0d1117" }}/>
+                  : <div style={{ width: 40, textAlign: "center", fontSize: 22, flexShrink: 0 }}>{isImg ? "🖼️" : "📄"}</div>}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
+                  <div style={{ fontSize: 12.5, color: SUBTEXT }}>{(POLICY_DOC_WORD[d.kind] || "Document") + (d.added ? " · added " + policyDay(d.added) : "")}</div>
+                </div>
+                {link ? <a href={link.u} target="_blank" rel="noopener noreferrer" style={mini}>Open</a> : <span style={{ ...mini, opacity: 0.5 }}>…</span>}
+                <button onClick={() => { haptic(); if (ask) removeDoc(p, d); else setSure("doc:" + d.id); }} style={{ ...mini, color: "#ff6b8a" }}>{ask ? "Delete?" : "✕"}</button>
+              </div>
+            );
+          })}
+          <button onClick={() => pick(p)} disabled={!!reading} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>＋ Add a document</button>
+          <div style={{ ...small, marginTop: 6, textAlign: "center" }}>A renewal letter updates the dates and the price.</div>
+
+          {prices.length > 1 && <>
+            <div style={{ ...hdr, marginTop: 18 }}>Price history</div>
+            {prices.slice().reverse().map((x, i, arr) => {
+              const prev = arr[i + 1];
+              const ya = prev ? policyPerYear(Number(prev.price), prev.period) : null, yb = policyPerYear(Number(x.price), x.period);
+              const pct = ya && yb != null ? Math.round((yb - ya) / ya * 100) : null;
+              return (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 0", borderBottom: "1px solid #1a1f2e", fontSize: 14 }}>
+                  <span style={{ color: SUBTEXT }}>{policyDay(x.date)}</span>
+                  <span style={{ color: "#e8eaf0", fontWeight: 700 }}>
+                    {fmt(x.price)} {POLICY_PERIOD[x.period] || ""}
+                    {pct ? <span style={{ color: pct > 0 ? "#ffb84a" : "#4ad07a" }}>{" " + (pct > 0 ? "+" : "") + pct + "%"}</span> : null}
+                  </span>
+                </div>
+              );
+            })}
+          </>}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+            <button onClick={() => { haptic(); patchPolicy(p, { archived: !p.archived }); }}
+              style={{ flex: 1, background: "#161b28", border: "1px solid #2a3050", borderRadius: 10, color: "#8ec5ff", fontSize: 13.5, fontWeight: 700, padding: "12px 8px", cursor: "pointer" }}>
+              {p.archived ? "Back to current" : "Mark as old"}
+            </button>
+            <button onClick={() => { haptic(); if (sure === "del:" + p.id) removePolicy(p); else setSure("del:" + p.id); }}
+              style={{ flex: 1, background: "#2a1a1a", border: "1px solid #5a2a2a", borderRadius: 10, color: "#ff6b8a", fontSize: 13.5, fontWeight: 700, padding: "12px 8px", cursor: "pointer" }}>
+              {sure === "del:" + p.id ? "Tap again to delete" : "Delete"}
+            </button>
+          </div>
+          <button onClick={close} style={{ ...plainBtn, marginTop: 4 }}>Close</button>
+        </div>
+      </div>
+    );
+  };
+
+  // ── The edit / check-the-details sheet ──
+  const editSheet = () => {
+    const e = edit, f = e.form;
+    const set = patch => setEdit(x => ({ ...x, form: { ...x.form, ...patch } }));
+    const setDetail = (i, patch) => setEdit(x => ({ ...x, form: { ...x.form, details: x.form.details.map((d, j) => (j === i ? { ...d, ...patch } : d)) } }));
+    const close = () => { if (!e.saving) setEdit(null); };
+    const chooseMatch = on => setEdit(x => ({ ...x, useMatch: on,
+      form: on ? policyMergeRead(policyFormOf(x.match), x.read) : policyFormFromRead(x.read), base: on ? policyFormOf(x.match) : null }));
+    const title = e.mode === "edit" ? "Edit policy" : e.mode === "new" ? "Add a policy" : "Check the details";
+    const lab = t => <div style={{ ...hdr, marginBottom: 6 }}>{t}</div>;
+    // A renewal going into a saved policy: what's changing.
+    const changes = [];
+    if (e.base && e.useMatch) {
+      const a = parseFloat(e.base.price), b = parseFloat(f.price);
+      if (isFinite(b) && (a !== b || e.base.price_period !== f.price_period)) {
+        const ya = isFinite(a) ? policyPerYear(a, e.base.price_period) : null, yb = policyPerYear(b, f.price_period);
+        const pct = ya && yb != null ? Math.round((yb - ya) / ya * 100) : null;
+        changes.push({ k: "price", t: "Price: " + (isFinite(a) ? fmt(a) + " " + (POLICY_PERIOD[e.base.price_period] || "") + " → " : "") + fmt(b) + " " + (POLICY_PERIOD[f.price_period] || "") + (pct != null && pct !== 0 ? " (" + (pct > 0 ? "+" : "") + pct + "%)" : ""), up: pct > 0 });
+      }
+      if (f.end_date && f.end_date !== e.base.end_date) changes.push({ k: "end", t: "Ends: " + (e.base.end_date ? policyDay(e.base.end_date) + " → " : "") + policyDay(f.end_date) });
+      if (f.policy_number && policyNorm(f.policy_number) !== policyNorm(e.base.policy_number)) changes.push({ k: "num", t: "Number: " + (e.base.policy_number ? e.base.policy_number + " → " : "") + f.policy_number });
+    }
+    const namePh = { car: "e.g. Kia Sportage", pet: "e.g. your pet's name", home: "e.g. Home", energy: "e.g. Electricity & gas", broadband: "e.g. Fibre broadband", mobile: "e.g. Glyn's phone", mortgage: "e.g. NatWest mortgage" }[f.kind] || "e.g. what it's for";
+    return (
+      <div onClick={close} onTouchStart={ev => ev.stopPropagation()} style={{ ...overlay, zIndex: 215 }}>
+        <div onClick={ev => ev.stopPropagation()} style={sheet}>
+          <SheetGrab onClose={close}/>
+          <div style={{ fontSize: 15, color: "#e8eaf0", fontWeight: 800, marginBottom: 6 }}>{title}</div>
+          {e.mode === "doc" && <div style={{ ...small, marginBottom: 10, color: e.read ? SUBTEXT : "#ffb84a" }}>{e.read ? "Read from " + e.file.name + ". Check it all before saving." : e.why}</div>}
+          {e.mode === "doc" && e.match && !e.fixed && (
+            <div style={{ background: "#0e1726", border: "1px solid #2a5a8a", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+              <div style={{ fontSize: 13.5, color: "#e8eaf0", fontWeight: 700 }}>This looks like your {policyLabel(e.match)} policy.</div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={() => chooseMatch(true)} style={seg(e.useMatch)}>Add to it</button>
+                <button onClick={() => chooseMatch(false)} style={seg(!e.useMatch)}>Save as new</button>
+              </div>
+            </div>
+          )}
+          {e.mode === "doc" && e.fixed && <div style={{ ...small, marginBottom: 10 }}>Adding to {policyLabel(e.match)}.</div>}
+          {changes.length > 0 && (
+            <div style={{ background: "#111520", border: "1px solid #1e2535", borderRadius: 10, padding: "9px 12px", marginBottom: 12 }}>
+              {changes.map(c => <div key={c.k} style={{ fontSize: 13.5, color: c.up ? "#ffb84a" : "#e8eaf0", fontWeight: 700, padding: "2px 0" }}>{c.t}</div>)}
+            </div>
+          )}
+
+          {lab("Type")}
+          <select value={f.kind} onChange={ev => set({ kind: ev.target.value })} style={{ ...inp, appearance: "auto" }}>
+            {POLICY_KINDS.map(x => <option key={x.k} value={x.k}>{x.e} {x.l}</option>)}
+          </select>
+          {lab("What's it for")}
+          <input value={f.name} onChange={ev => set({ name: ev.target.value })} placeholder={namePh} style={inp}/>
+          {lab("Provider")}
+          <input value={f.provider} onChange={ev => set({ provider: ev.target.value })} placeholder="e.g. Admiral" style={inp}/>
+          {lab("Policy or account number")}
+          <input value={f.policy_number} onChange={ev => set({ policy_number: ev.target.value })} autoCapitalize="characters" autoCorrect="off" spellCheck={false} style={{ ...inp, fontFamily: "ui-monospace,Menlo,Consolas,monospace" }}/>
+          {lab("Price (£)")}
+          <input value={f.price} onChange={ev => set({ price: ev.target.value.replace(/[^0-9.]/g, "") })} inputMode="decimal" placeholder="0.00" style={{ ...inp, marginBottom: 8, fontWeight: 700 }}/>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            {["month", "year", "once"].map(k => <button key={k} onClick={() => set({ price_period: k })} style={seg(f.price_period === k)}>{POLICY_PERIOD[k]}</button>)}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>{lab("Starts")}<input type="date" value={f.start_date} onChange={ev => set({ start_date: ev.target.value })} style={inp}/></div>
+            <div style={{ flex: 1, minWidth: 0 }}>{lab(f.kind === "mot" || f.kind === "cartax" || f.kind === "tv" ? "Due" : "Ends / renews")}<input type="date" value={f.end_date} onChange={ev => set({ end_date: ev.target.value })} style={inp}/></div>
+          </div>
+          {lab("How it's paid")}
+          <input value={f.payment} onChange={ev => set({ payment: ev.target.value })} placeholder="e.g. Direct Debit, monthly" style={inp}/>
+          {lab("Renews by itself?")}
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            {[[true, "Yes"], [false, "No"], [null, "Not sure"]].map(([v, t]) => <button key={t} onClick={() => set({ auto_renew: v })} style={seg(f.auto_renew === v)}>{t}</button>)}
+          </div>
+          {lab("Phone")}
+          <input type="tel" value={f.phone} onChange={ev => set({ phone: ev.target.value })} style={inp}/>
+          {lab("Website")}
+          <input value={f.website} onChange={ev => set({ website: ev.target.value })} autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder="e.g. admiral.com" style={inp}/>
+          {lab("What's covered")}
+          <textarea value={f.cover} onChange={ev => set({ cover: ev.target.value })} rows={2} style={{ ...inp, resize: "vertical" }}/>
+          {lab("Other details")}
+          {f.details.map((d, i) => (
+            <div key={i} style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+              <input value={d.label} onChange={ev => setDetail(i, { label: ev.target.value })} placeholder="e.g. Excess" style={{ ...inp, flex: "0 0 38%", marginBottom: 0, padding: "10px 10px", fontSize: 14 }}/>
+              <input value={d.value} onChange={ev => setDetail(i, { value: ev.target.value })} placeholder="e.g. £350" style={{ ...inp, flex: 1, minWidth: 0, marginBottom: 0, padding: "10px 10px", fontSize: 14 }}/>
+              <button onClick={() => setEdit(x => ({ ...x, form: { ...x.form, details: x.form.details.filter((_, j) => j !== i) } }))} style={{ ...mini, color: "#ff6b8a" }}>✕</button>
+            </div>
+          ))}
+          <button onClick={() => set({ details: [...f.details, { label: "", value: "" }] })} style={{ ...mini, marginBottom: 14 }}>＋ Add a detail</button>
+          {lab("Notes")}
+          <textarea value={f.notes} onChange={ev => set({ notes: ev.target.value })} rows={2} style={{ ...inp, resize: "vertical" }}/>
+
+          {e.err && <div style={{ fontSize: 13.5, color: "#ff6b8a", margin: "4px 0 10px", lineHeight: 1.5 }}>{e.err}</div>}
+          <button onClick={saveEdit} disabled={e.saving} style={{ ...bigBtn, width: "100%", padding: "15px", opacity: e.saving ? 0.7 : 1 }}>
+            {e.saving ? "Saving…" : e.mode === "edit" ? "Save changes" : e.mode === "doc" && e.useMatch ? "Save to " + policyLabel(e.match) : "Save"}
+          </button>
+          <button onClick={close} style={plainBtn}>Cancel</button>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {fileEl}
+      <div style={{ ...card, display: "flex", justifyContent: "space-around", textAlign: "center", padding: "14px 8px" }}>
+        <div><div style={{ ...hdr, marginBottom: 0 }}>Policies</div><div style={{ fontSize: 18, fontWeight: 800, color: "#e8eaf0", marginTop: 2 }}>{live.length}</div></div>
+        <div><div style={{ ...hdr, marginBottom: 0 }}>A year</div><div style={{ fontSize: 18, fontWeight: 800, color: "#e8eaf0", marginTop: 2 }}>{fmt(yearTotal)}</div></div>
+        <div><div style={{ ...hdr, marginBottom: 0 }}>To act on</div><div style={{ fontSize: 18, fontWeight: 800, color: toAct ? "#ffb84a" : "#e8eaf0", marginTop: 2 }}>{toAct}</div></div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <button onClick={() => pick(null)} disabled={!!reading} style={{ ...bigBtn, flex: 1, opacity: reading ? 0.7 : 1 }}>{reading ? "Reading…" : "＋ Add a document"}</button>
+        <button onClick={() => { haptic(); setNote(null); setEdit({ mode: "new", form: policyEmptyForm(), base: null, saving: false, err: "" }); }}
+          style={{ background: "#161b28", border: "1px solid #2a3050", borderRadius: 10, color: SUBTEXT, fontSize: 13.5, fontWeight: 700, padding: "0 14px", cursor: "pointer" }}>By hand</button>
+      </div>
+      {reading && (
+        <div style={{ ...card, display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ fontSize: 20 }}>⏳</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 14, color: "#8ec5ff", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{reading}</div>
+            <div style={small}>Claude's reading the details. This takes a few seconds.</div>
+          </div>
+        </div>
+      )}
+      {note && <div style={{ fontSize: 13.5, color: note.ok ? "#00c88c" : "#ff6b8a", margin: "0 2px 10px", lineHeight: 1.5 }}>{note.text}</div>}
+      {list.length >= 4 && (
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="🔍 Search by name, provider or number" style={{ ...inp, background: "#141824", border: "1px solid #1e2535", marginBottom: 10 }}/>
+      )}
+      {list.length === 0 && (
+        <div style={{ ...card, textAlign: "center", padding: "22px 14px", lineHeight: 1.55 }}>
+          <div style={{ fontSize: 28, marginBottom: 6 }}>🛡️</div>
+          <div style={small}>Keep your policies and deals here: car and pet insurance, energy, broadband, the mortgage and the rest.</div>
+          <div style={{ ...small, marginTop: 6 }}>Tap <b style={{ color: "#e8eaf0" }}>Add a document</b> and pick a PDF or take a photo of the paperwork. Claude fills in the details for you to check.</div>
+        </div>
+      )}
+      {list.length > 0 && qn && shown.length === 0 && oldShown.length === 0 && <div style={{ ...small, textAlign: "center", padding: "12px 0" }}>Nothing matches “{q.trim()}”.</div>}
+      {shown.map(x => row(x.p, x.s))}
+      {oldShown.length > 0 && (
+        <>
+          <div onClick={() => { haptic(); setShowOld(v => !v); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 4px 8px", cursor: "pointer" }}>
+            <div style={{ ...hdr, marginBottom: 0 }}>Old policies ({oldShown.length})</div>
+            <span style={{ color: SUBTEXT, fontSize: 14 }}>{showOld || qn ? "⌃" : "⌄"}</span>
+          </div>
+          {(showOld || qn) && oldShown.map(p => row(p, policyStatus(p, today)))}
+        </>
+      )}
+      {open && policySheet()}
+      {edit && editSheet()}
+    </div>
+  );
+}
+
 export default function App() {
   const [tab,setTab]=useState("Dashboard");
+  const [policyTick,setPolicyTick]=useState(0);        // pull-to-refresh reloads the Policies page too
+  const [shareAsk,setShareAsk]=useState(null);         // shared PDFs not named like payslips: payslip or policy?
+  const [policyShare,setPolicyShare]=useState(null);   // a shared document for the Policies page
+  const takePolicyShare=useCallback(()=>setPolicyShare(null),[]);
   const [isOwner,setIsOwner]=useState(true);   // false = partner (Hollie): restricted view
   const [user,setUser]=useState(null);
   const [authLoading,setAuthLoading]=useState(true);
@@ -3062,7 +3838,7 @@ export default function App() {
   const loadRef = useRef(null);
   loadRef.current = loadAllData;
   // Quiet refresh, always using the latest state.
-  const refreshAll = useCallback(() => loadRef.current ? loadRef.current({ silent: true }) : Promise.resolve(), []);
+  const refreshAll = useCallback(() => { setPolicyTick(t => t + 1); return loadRef.current ? loadRef.current({ silent: true }) : Promise.resolve(); }, []);
 
   // Full load when someone signs in.
   React.useEffect(() => {
@@ -4413,6 +5189,13 @@ export default function App() {
   // cache and redirects here. Once the user is signed in, pull them out, process
   // them through the normal payslip flow, and land on the Diag payslips section.
   const shareIntakeRan=useRef(false);
+  const sharedToPayslips=async files=>{
+    setTab("Diag");
+    setShowPayslipUpload(true);
+    setLastPickerEvent(new Date());
+    localStorage.setItem(SK.pickerEvent,String(Date.now()));
+    await processPayslipFiles(files);
+  };
   useEffect(()=>{
     if(!user||shareIntakeRan.current)return;
     shareIntakeRan.current=true;
@@ -4435,15 +5218,20 @@ export default function App() {
         await share.delete("/shared-meta");
         for(let i=0;i<(meta.count||0);i++)await share.delete(`/shared-file-${i}`);
         if(files.length){
-          setTab("Diag");
-          setShowPayslipUpload(true);
-          setLastPickerEvent(new Date());
-          localStorage.setItem(SK.pickerEvent,String(Date.now()));
-          await processPayslipFiles(files);
+          // Named like a payslip: straight in, as before. Anything else asks: payslip or policy?
+          if(files.every(f=>/pay ?slip|payroll/i.test(f.name||"")))await sharedToPayslips(files);
+          else setShareAsk(files);
         }
       }catch(e){console.error("Share intake failed:",e);}
     })();
   },[user]);
+  // Hollie has no Policies page: anything she shares goes to payslips.
+  useEffect(()=>{
+    if(!shareAsk||isOwner)return;
+    const f=shareAsk;
+    setShareAsk(null);
+    sharedToPayslips(f);
+  },[shareAsk,isOwner]);
 
   const hSplit=(id,mode,value)=>{updSB(sharedBills.map(b=>b.id===id?{...b,splitMode:mode||null,splitValue:mode&&value!=null?value:null}:b));};
   // Editing an amount: a variable bill changes for the month in view; a regular bill from the
@@ -5267,7 +6055,7 @@ const calcTimesheetTotals = days => {
   const shortcutTabs = isOwner ? [...SECONDARY_TABS, ...(showHiddenTabs ? HIDDEN_TABS : [])] : PARTNER_SHORTCUTS;
   const homeTab = primaryTabs[0];
   const goTab = t => { haptic(); setTab(t); window.scrollTo(0, 0); };
-  const sheetOpen = paydayOpen||!!moveBill||catsOpen||schedOpen||giftOpen||settleOpen||moveCatsOpen||!!linkPick||linkReview;
+  const sheetOpen = paydayOpen||!!moveBill||catsOpen||schedOpen||giftOpen||settleOpen||moveCatsOpen||!!linkPick||linkReview||!!shareAsk;
 
   return (
     <ErrorBoundary>
@@ -7564,6 +8352,12 @@ const calcTimesheetTotals = days => {
           );
         })()}
 
+        {tab==="Policies"&&isOwner&&(
+          <PoliciesPage user={user} mfa={mfa} reloadTick={policyTick}
+            onEnterCode={()=>setMfa(m=>({...m,need:true,skipped:false}))}
+            shared={policyShare} onSharedTaken={takePolicyShare}/>
+        )}
+
         {tab==="Settle Up"&&(()=>{
           const me=isOwner?"glyn":"hollie";
           const themName=isOwner?"Hollie":"Glyn";
@@ -8075,6 +8869,24 @@ const calcTimesheetTotals = days => {
           );
         })}
       </div>
+
+      {/* Shared a PDF that isn't named like a payslip: which is it? */}
+      {shareAsk&&isOwner&&(
+        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:225,background:"rgba(0,0,0,0.6)"}}>
+          <div style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"18px 16px 8px",paddingBottom:"calc(12px + env(safe-area-inset-bottom))"}}>
+            <div style={{fontSize:16,color:"#e8eaf0",fontWeight:800}}>What have you shared?</div>
+            <div style={{fontSize:13,color:SUBTEXT,marginTop:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{shareAsk.length===1?shareAsk[0].name:shareAsk.length+" files"}</div>
+            <div style={{display:"flex",gap:8,marginTop:14}}>
+              <button onClick={()=>{haptic();const f=shareAsk;setShareAsk(null);sharedToPayslips(f);}}
+                style={{flex:1,background:"#161b28",border:"1px solid #2a3050",borderRadius:10,color:"#e8eaf0",fontSize:15,fontWeight:700,padding:"16px 8px",cursor:"pointer"}}>📄 Payslip</button>
+              <button onClick={()=>{haptic();const f=shareAsk;setShareAsk(null);setPolicyShare(f[0]);setTab("Policies");window.scrollTo(0,0);}}
+                style={{flex:1,background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"16px 8px",cursor:"pointer"}}>🛡️ Policy</button>
+            </div>
+            {shareAsk.length>1&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:8,lineHeight:1.5}}>Policies take one document at a time, so only the first would be added.</div>}
+            <button onClick={()=>setShareAsk(null)} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"12px",cursor:"pointer",marginTop:4}}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {/* What's new -- after an update, once per phone */}
       {news&&(
