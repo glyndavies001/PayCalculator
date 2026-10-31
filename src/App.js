@@ -3,7 +3,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { createClient } from "@supabase/supabase-js";
 
 // Labels, captions and hints. No grey text anywhere in Vaulted: this is the one colour for it.
-const SUBTEXT = "#e8eaf0";
+const SUBTEXT = "#a8e0ff";   // ice blue
 
 // Module-level error catcher -- only fires if React fails to mount.
 // Once App renders, the ErrorBoundary takes over.
@@ -818,13 +818,16 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.19.0";
+const APP_VERSION = "1.19.1";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.19.1", date: "31 Oct 2026", items: [
+    { b: "Ice blue captions", t: " — labels and captions are a soft ice blue rather than white, so the figures stand out again." },
+  ] },
   { v: "1.19.0", date: "31 Oct 2026", items: [
-    { b: "No more grey text", t: " — labels, captions and notes on every tab are now white, so they're easier to read. The small print in warning boxes is white too." },
+    { b: "No more grey text", t: " — labels, captions and notes on every tab, and the small print in warning boxes, are no longer grey, so they're easier to read." },
     { b: "Bigger small text", t: " — the smallest text across the app is a size or two bigger. Headings and the big figures haven't changed." },
     { b: "Tidier charts", t: " — months along the bottom read \"Apr 25\" and are spaced out so they don't run into each other." },
   ] },
@@ -5612,7 +5615,7 @@ const calcTimesheetTotals = days => {
                   const on=i===selIdx;
                   return (
                     <button key={r.key} onClick={()=>{haptic();setSelPick(i===homeIdx?null:i);}} style={{
-                      flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#0d1117",color:on?"#fff":(i===homeIdx?"#8ec5ff":SUBTEXT),
+                      flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#0d1117",color:on?"#fff":(i===homeIdx?"#4a9eff":SUBTEXT),
                       border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"7px 11px",fontSize:13,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
                       {MONTHS[r.m-1]}{r.m===1||i===0?" "+String(r.yr).slice(2):""}
                       {r.hits.length>0&&<span style={{position:"absolute",top:4,right:4,width:5,height:5,borderRadius:3,background:on?"#fff":"#ffb84a"}}/>}
@@ -7992,8 +7995,8 @@ const calcTimesheetTotals = days => {
         ))}
         <button onClick={()=>{haptic();setShowMore(s=>!s);}} style={{
           flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
-          color:(showMore||secondaryTabs.includes(tab))?"#a0c0ff":SUBTEXT,fontSize:12.5,fontWeight:700,
-          borderTop:"2px solid "+((showMore||secondaryTabs.includes(tab))?"#a0c0ff":"transparent")
+          color:(showMore||secondaryTabs.includes(tab))?"#4a9eff":SUBTEXT,fontSize:12.5,fontWeight:700,
+          borderTop:"2px solid "+((showMore||secondaryTabs.includes(tab))?"#4a9eff":"transparent")
         }}>More ⋯</button>
       </div>
 
