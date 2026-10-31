@@ -455,6 +455,12 @@ const db = {
   // What Glyn's phone shares from Monzo with Hollie: shared bills paid this month and the
   // house-savings pots' total (shared_settings.bank_summary). Quietly skipped before the migration.
   // Resolves true once saved (or when the column isn't there yet), false if it failed.
+  // Paydays set by hand ({"2026-12": "2026-12-22"}): shared_settings.paydays, so both phones use them.
+  async savePaydays(paydays) {
+    const { error } = await supabase.from("shared_settings").upsert({ id: 1, paydays, updated_at: new Date().toISOString() }, { onConflict: "id" });
+    if (missingColumn(error, "paydays")) return;
+    reportDbError("savePaydays", error);
+  },
   async saveBankSummary(summary) {
     const { error } = await supabase.from("shared_settings").upsert({ id: 1, bank_summary: summary }, { onConflict: "id" });
     if (missingColumn(error, "bank_summary")) return true;
@@ -683,24 +689,24 @@ async function trackSave(promiseOrFn) {
   }
 }
 
-// Work out the actual payday for a given month/year (paid on 29th, adjusted)
-function getPayday(year, month) {
-  // A month outside 0-11 rolls into the next or previous year (12 = January next year).
+// Paydays set by hand, by month: {"2026-12": "2026-12-22"} (work paying early for Christmas, say).
+// Kept in shared_settings.paydays and loaded into here, so every payday sum uses them.
+let PAYDAY_SET = {};
+// The usual payday in a month: the 29th (the last day in February), or the working day before it
+// when that's a weekend or a bank holiday. month is 0-11; outside that rolls the year.
+function usualPayday(year, month) {
   const first = new Date(year, month, 1);
   year = first.getFullYear(); month = first.getMonth();
-  // Start with the 29th
-  let d = new Date(year, month, 29);
-  // If month has fewer than 29 days (Feb), go to last day
-  if (d.getMonth() !== month) d = new Date(year, month + 1, 0);
-  const dow = d.getDay();
-  // Saturday -> Friday
-  if (dow === 6) d.setDate(d.getDate() - 1);
-  // Sunday -> Friday
-  if (dow === 0) d.setDate(d.getDate() - 2);
-  // Monday (possible bank holiday) -> check if it's a common UK bank holiday pattern
-  // Simple approach: if Monday, shift to Friday just in case
-  // (Can be refined later)
+  const d = new Date(year, month, Math.min(29, new Date(year, month + 1, 0).getDate()));
+  while (!isWorkingDay(d)) d.setDate(d.getDate() - 1);
   return d;
+}
+// The payday in a month: the one set by hand, if there is one, otherwise the usual one.
+function getPayday(year, month) {
+  const first = new Date(year, month, 1);
+  const set = PAYDAY_SET[monthKeyOf(first.getFullYear(), first.getMonth() + 1)];
+  const d = set ? new Date(set + "T00:00:00") : null;
+  return d && !isNaN(d) ? d : usualPayday(year, month);
 }
 
 // Check if accumulated timesheet data should be reset (new pay period started)
@@ -818,11 +824,18 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.19.7";
+const APP_VERSION = "1.19.8";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.19.8", date: "31 Oct 2026", items: [
+    { b: "No More button", t: " — the other pages are shortcuts at the top of the Dashboard (Payslips, Timesheet, Gifts, Move and Diag)." },
+    { b: "A Home for Hollie", t: " — Hollie's first tab is Home: What's really left, the Joint account card and the joint pots, with shortcuts to Settle Up and Gifts. Her Budget is back to just the budget, and her bar is Home, Budget, Pay Calc, Move and Diag." },
+    { b: "Joint pots", t: " — what's in each joint pot is on the Dashboard, under the Joint account card." },
+    { b: "Paydays dodge bank holidays", t: " — payday is the working day before when the 29th is a weekend or a bank holiday. Tap \"Paid in\" at the top to change a payday, like December's early pay." },
+    { b: "Sort by date", t: " — Budget's bills can be sorted by when they go out." },
+  ] },
   { v: "1.19.7", date: "31 Oct 2026", items: [
     { b: "Bigger bills on Budget", t: " — bill names and their dates are bigger, with the amounts a little bigger to match." },
     { b: "Even totals", t: " — Shared and Mine at the top of Budget are the same size as Left over." },
@@ -910,7 +923,10 @@ function verCmp(a, b) {
   return 0;
 }
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
-const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];
+const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Diag"];   // shortcuts at the top of the Dashboard
+// Hollie's bar, and her shortcuts at the top of Home.
+const PARTNER_TABS = ["Home","Budget","Pay Calc","Move","Diag"];
+const PARTNER_SHORTCUTS = ["Settle Up","Gifts"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
 const HIDDEN_TABS = ["Pay Info","Tax Year","Leave"];
 
@@ -1539,8 +1555,8 @@ function budgetLeft({ accounts, bills, sched = [], match, txns = [], myId = null
 }
 // Who's still to pay into the joint account, in words: "once Hollie's paid in".
 function onceIn(come) {
-  const you = come.some(c => c.who === "you"), her = come.some(c => c.who === "Hollie");
-  return you && her ? "once you've both paid in" : her ? "once Hollie's paid in" : you ? "once you've paid in" : "";
+  const you = come.some(c => c.who === "you"), other = come.find(c => c.who !== "you");
+  return you && other ? "once you've both paid in" : other ? "once " + other.who + "'s paid in" : you ? "once you've paid in" : "";
 }
 // The wage around one payday (3 days either side): £500+ into one of `accounts` (the personal
 // ones) from JLI, or else one Monzo files as income. Transfers from people never count.
@@ -2495,7 +2511,41 @@ function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock,
 
 // Joint account check: both payday transfers against the split, and whether the joint account
 // covers what's still to go out of it before the next payday.
-function JointCard({ check }) {
+// The joint account's pots and what's in each (balances only: Monzo's goals aren't shown).
+function PotsCard({ pots }) {
+  if (!pots || !pots.length) return null;
+  const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
+  const lab = { fontSize: 12.5, color: SUBTEXT, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
+  return (
+    <div data-pots="1" style={card}>
+      <div style={lab}>🏦 Joint pots</div>
+      <div style={{ marginTop: 6 }}>
+        {pots.map((p, i) => (
+          <div key={p.name + i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, padding: "7px 0", borderTop: i ? "1px solid #1a1f2e" : "none" }}>
+            <span style={{ fontSize: 15, color: SUBTEXT, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+            <span style={{ fontSize: 16, fontWeight: 700, color: "#e8eaf0", flexShrink: 0 }}>{fmt(pounds(p.balance))}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+// Shortcuts to the pages that aren't on the bottom bar, at the top of the first page.
+const TAB_ICON = { "Payslips": "📄", "Timesheet": "⏱️", "Gifts": "🎁", "Move": "🏡", "Diag": "🛠️", "Pay Info": "💷", "Tax Year": "📅", "Leave": "🌴", "Settle Up": "🤝" };
+function NavTiles({ tabs, onGo }) {
+  if (!tabs || !tabs.length) return null;
+  return (
+    <div data-shortcuts="1" style={{ display: "grid", gridTemplateColumns: "repeat(" + Math.min(tabs.length, 5) + ",1fr)", gap: 6, marginBottom: 12 }}>
+      {tabs.map(t => (
+        <button key={t} onClick={() => onGo(t)} style={{ minWidth: 0, background: "#141824", border: "1px solid #1e2535", borderRadius: 12, padding: "10px 2px 9px", textAlign: "center", cursor: "pointer" }}>
+          <div style={{ fontSize: 20, lineHeight: 1 }}>{TAB_ICON[t] || "•"}</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaf0", marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t}</div>
+        </button>
+      ))}
+    </div>
+  );
+}
+function JointCard({ check, me = "glyn" }) {
   if (!check) return null;
   const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
   const lab = { fontSize: 12.5, color: SUBTEXT, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
@@ -2503,12 +2553,13 @@ function JointCard({ check }) {
   // Ticked only when the transfer matches the share to the penny (a 50/50 split can come to half a
   // penny, so 1p either way still matches); any other gap is shown, under £1 in pence ("50p").
   const gap = p => (p < 100 ? Math.round(p) + "p" : fmt(pounds(p)));
-  const line = (who, got, want, theirs) => {
+  // whose: "your", or "his" / "her" for the other one.
+  const line = (who, got, want, whose) => {
     const diff = got - want;
     const ok = got > 0 && Math.abs(diff) <= 1;
     const note = !got ? (check.late ? "Not seen yet" : "Not in yet")
-      : ok ? "✓ " + (theirs ? "her" : "your") + " share"
-      : gap(Math.abs(diff)) + (diff > 0 ? " more" : " less") + " than " + (theirs ? "her" : "your") + " share";
+      : ok ? "✓ " + whose + " share"
+      : gap(Math.abs(diff)) + (diff > 0 ? " more" : " less") + " than " + whose + " share";
     return (
       <div key={who} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, padding: "5px 0" }}>
         <span style={{ fontSize: 13.5, color: SUBTEXT, fontWeight: 600 }}>{who}</span>
@@ -2524,8 +2575,8 @@ function JointCard({ check }) {
     <div data-joint="1" style={card}>
       <div style={lab}>🤝 Joint account · payday {dshort(check.payday)}</div>
       <div style={{ marginTop: 6 }}>
-        {line("Glyn in", check.glyn, check.want.glyn, false)}
-        {line("Hollie in", check.hollie, check.want.hollie, true)}
+        {line("Glyn in", check.glyn, check.want.glyn, me === "glyn" ? "your" : "his")}
+        {line("Hollie in", check.hollie, check.want.hollie, me === "hollie" ? "your" : "her")}
       </div>
       {r && <div style={{ borderTop: "1px solid #1a1f2e", marginTop: 6, paddingTop: 8, fontSize: 13, lineHeight: 1.5 }}>
         {r.left >= 0
@@ -2561,7 +2612,7 @@ export default function App() {
   const [newSh,setNewSh]=useState({name:"",total:"",splitMode:null,splitValue:"",freq:"month",months:[],varies:false});
   const [newGl,setNewGl]=useState({name:"",total:"",freq:"month",months:[],varies:false});
   const [collapsed,setCollapsed]=useState(()=>load(SK.collapsed,{}));   // {catId:true}
-  const [billSort,setBillSort]=useState(()=>load(SK.billSort,"manual")); // manual|az|high|low
+  const [billSort,setBillSort]=useState(()=>load(SK.billSort,"manual")); // manual|date|az|high|low
   const [catsOpen,setCatsOpen]=useState(false);    // categories manager sheet
   const [addingCat,setAddingCat]=useState(null);
   const [newCat,setNewCat]=useState("");
@@ -2575,7 +2626,8 @@ export default function App() {
   const [chartRange,setChartRange]=useState("All");
   const [netTrendOpen,setNetTrendOpen]=useState(false);
   const [dbError,setDbError]=useState(lastDbError);
-  const [showMore,setShowMore]=useState(false);            // bottom "More" sheet (secondary tabs)
+  const [paydayOpen,setPaydayOpen]=useState(false);        // the Paydays sheet (tap "Paid in" at the top)
+  const [paydays,setPaydays]=useState({});                 // PAYDAY_SET, kept here so a change re-renders
   const [moveBill,setMoveBill]=useState(null);             // {id,isGlyn} -> move-to-category sheet
   const [settlements,setSettlements]=useState([]);         // shared "settle up" ledger
   const [settleOpen,setSettleOpen]=useState(false);        // add-entry sheet
@@ -2890,7 +2942,7 @@ export default function App() {
   // Partner (Hollie) restricted view: keep her on allowed tabs only
   React.useEffect(() => {
     if (!isOwner) {
-      if (!["Budget","Pay Calc","Settle Up","Gifts","Move","Diag"].includes(tab)) setTab("Budget");
+      if (![...PARTNER_TABS, ...PARTNER_SHORTCUTS].includes(tab)) setTab("Home");
     }
   }, [isOwner, tab]);
 
@@ -2929,6 +2981,7 @@ export default function App() {
     if ("move_plan" in ss) { setMoveMissing(false); setMovePlan(ss.move_plan || {}); }
     else setMoveMissing(true);
     if ("bank_summary" in ss) setBankSummary(ss.bank_summary || null);
+    if ("paydays" in ss) { PAYDAY_SET = ss.paydays || {}; setPaydays(PAYDAY_SET); setNowTick(Date.now()); }
   };
 
   // One loader for the first load and every refresh, fetching everything at once.
@@ -5023,15 +5076,20 @@ const calcTimesheetTotals = days => {
     const nm=it=>String(it.key||"").startsWith("g:")?"Glyn's bill":it.name;
     const left=jr?{next:localISO(bankLeft.next),balance:jr.balance,dueTotal:jr.dueTotal,left:jr.left,comeTotal:jr.comeTotal,
       come:jr.come.map(c=>({who:c.who==="you"?"Glyn":c.who,amount:c.amount})),unlisted:jr.unlisted||0,taken:jr.taken.map(nm),
-      due:jr.due.map(d=>({n:nm(d),a:d.amount,d:d.due?localISO(d.due):null,...(d.late?{l:1}:{}),...(d.pot?{p:d.pot}:{})}))}:null;
+      due:jr.due.map(d=>({n:nm(d),a:d.amount,d:d.due?localISO(d.due):null,...(d.late?{l:1}:{}),...(d.pot?{p:d.pot}:{})})),
+      short:jr.shortAt?{n:nm(jr.shortAt),a:jr.shortAt.amount,d:jr.shortAt.due?localISO(jr.shortAt.due):null}:null}:null;
+    // joint: who's paid into the joint account this payday, against the shares; pots: the joint pots.
+    const joint=jointPay?{payday:localISO(jointPay.payday),month:localISO(jointPay.month),glyn:jointPay.glyn,hollie:jointPay.hollie,
+      want:jointPay.want,late:jointPay.late?1:0}:null;
+    const pots=jointPots?jointPots.map(p=>({n:p.name,b:p.balance})):null;
     const body={v:1,by:user.id,mk:bankMatch.mk,ticks,house:hp.length?{total:hp.reduce((s,p)=>s+(Number(p.balance)||0),0),n:hp.length}:null,
-      pay:ownPay?ownPay.pay:null,left};
+      pay:ownPay?ownPay.pay:null,left,joint,pots};
     const src=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&Date.parse(a.updated_at)>Date.parse(m))?a.updated_at:m,null);
     const key=stableJson(body);
     const newer=s=>!s||(src&&Date.parse(src)-Date.parse(s)>3*3600000);
     const mine=cur&&cur.by===user.id;
     if(mine&&cur.src&&src&&Date.parse(cur.src)>Date.parse(src))return;   // another of your devices has newer figures
-    if(mine&&stableJson({v:cur.v,by:cur.by,mk:cur.mk,ticks:cur.ticks,house:cur.house,pay:cur.pay,left:cur.left??null})===key&&!newer(cur.src)){summarySent.current={key,src:cur.src};return;}
+    if(mine&&stableJson({v:cur.v,by:cur.by,mk:cur.mk,ticks:cur.ticks,house:cur.house,pay:cur.pay,left:cur.left??null,joint:cur.joint??null,pots:cur.pots??null})===key&&!newer(cur.src)){summarySent.current={key,src:cur.src};return;}
     if(sent&&sent.key===key&&!newer(sent.src))return;   // this phone already shared it (so no two phones can keep answering each other)
     sendSummary({...body,src,at:new Date().toISOString()},key,src);
   });
@@ -5053,6 +5111,19 @@ const calcTimesheetTotals = days => {
     }
     return {glyn,hollie};
   };
+  const setPaydayFor=(mk,iso)=>{
+    const [y,m]=mk.split("-").map(Number);
+    const next={...PAYDAY_SET};
+    if(!iso||iso===localISO(usualPayday(y,m-1)))delete next[mk];else next[mk]=iso;
+    PAYDAY_SET=next;setPaydays(next);setNowTick(Date.now());
+    if(user)trackSave(db.savePaydays(next));
+  };
+  const jointPots=(()=>{
+    if(!isOwner||!bank.accounts.length)return null;
+    const jIds=bank.accounts.filter(a=>a.type==="uk_retail_joint").map(a=>a.account_id);
+    return bank.pots.filter(p=>!p.deleted&&jIds.includes(p.account_id))
+      .map(p=>({name:p.name,balance:Number(p.balance)||0})).sort((a,b)=>a.name.localeCompare(b.name));
+  })();
   const jointPay=(()=>{
     if(!isOwner||!bank.accounts.length)return null;
     const j=bank.accounts.find(a=>a.type==="uk_retail_joint");
@@ -5085,10 +5156,18 @@ const calcTimesheetTotals = days => {
     if(!(next.getTime()>nowTick))return null;
     const row={id:"joint",type:"uk_retail_joint",label:BANK_LABEL.uk_retail_joint,balance:L.balance,dueTotal:L.dueTotal,left:L.left,
       comeTotal:L.comeTotal||0,come:(L.come||[]).map(c=>({...c,who:c.who==="Hollie"?"you":c.who})),unlisted:L.unlisted||0,
-      taken:(L.taken||[]).map(n=>({name:n})),shortAt:null,
+      taken:(L.taken||[]).map(n=>({name:n})),
+      shortAt:L.short?{name:L.short.n,amount:L.short.a,due:L.short.d?new Date(L.short.d+"T12:00:00"):null}:null,
       due:(L.due||[]).map((d,i)=>({key:"j"+i,name:d.n,amount:d.a,due:d.d?new Date(d.d+"T12:00:00"):null,late:!!d.l,pot:d.p||null}))};
     return {rows:[row],next,updated:bankSummary.src||null};
   })();
+  const sharedJoint=(()=>{
+    const J=!isOwner&&bankSummary&&bankSummary.joint;
+    if(!J||!sharedLeft)return null;
+    return {payday:new Date(J.payday+"T00:00:00"),month:new Date(J.month+"T00:00:00"),glyn:J.glyn,hollie:J.hollie,
+      want:J.want,late:!!J.late,row:sharedLeft.rows[0]};
+  })();
+  const sharedPots=!isOwner&&bankSummary&&Array.isArray(bankSummary.pots)?bankSummary.pots.map(p=>({name:p.n,balance:p.b})):null;
   const jointCheck=jointPay&&bankLeft?{payday:jointPay.payday,month:jointPay.month,glyn:jointPay.glyn,hollie:jointPay.hollie,
     want:jointPay.want,row:bankLeft.rows.find(r=>r.id===jointPay.jointId),late:jointPay.late}:null;
 
@@ -5184,9 +5263,11 @@ const calcTimesheetTotals = days => {
     :bankLinkInfo.status==="reauth"?"Your Monzo link has stopped. Tap to link it again."
     :bankLinkInfo.status==="approve"&&!(bankLinkInfo.authorisedAt&&Date.now()-Date.parse(bankLinkInfo.authorisedAt)<20*60000)?"Monzo wants you to approve Vaulted again (it asks every 90 days). Tap to do it."
     :null;
-  const primaryTabs = isOwner ? PRIMARY_TABS : ["Budget","Pay Calc","Settle Up","Gifts"];
-  const secondaryTabs = isOwner ? [...SECONDARY_TABS, ...(showHiddenTabs ? HIDDEN_TABS : [])] : ["Move","Diag"];
-  const sheetOpen = showMore||!!moveBill||catsOpen||schedOpen||giftOpen||settleOpen||moveCatsOpen||!!linkPick||linkReview;
+  const primaryTabs = isOwner ? PRIMARY_TABS : PARTNER_TABS;
+  const shortcutTabs = isOwner ? [...SECONDARY_TABS, ...(showHiddenTabs ? HIDDEN_TABS : [])] : PARTNER_SHORTCUTS;
+  const homeTab = primaryTabs[0];
+  const goTab = t => { haptic(); setTab(t); window.scrollTo(0, 0); };
+  const sheetOpen = paydayOpen||!!moveBill||catsOpen||schedOpen||giftOpen||settleOpen||moveCatsOpen||!!linkPick||linkReview;
 
   return (
     <ErrorBoundary>
@@ -5208,21 +5289,37 @@ const calcTimesheetTotals = days => {
             <span style={{color:"#4a9eff"}}>V</span>AULTED
           </h1>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <SyncIndicator onClick={()=>{haptic();setShowMore(false);setTab("Diag");}}/>
+            <SyncIndicator onClick={()=>{haptic();setTab("Diag");}}/>
             <button onClick={()=>{haptic("medium");handleSignOut();}} title="Sign out"
               style={{background:"none",border:"none",color:SUBTEXT,fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:12.5,color:SUBTEXT}}>{history.length} payslips</div>
-            <div style={{fontSize:12.5,color:SUBTEXT}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> - {nextPayday.date}</div>
+            <div onClick={isOwner?()=>{haptic();setPaydayOpen(true);}:undefined} style={{fontSize:12.5,color:SUBTEXT,cursor:isOwner?"pointer":"default"}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> - {nextPayday.date}</div>
           </div>
         </div>
       </div>
 
       <div style={{padding:"14px 12px"}}>
 
+        {tab==="Home"&&!isOwner&&(
+          <div>
+            <NavTiles tabs={shortcutTabs} onGo={goTab}/>
+            <BankCards part="alerts" left={sharedLeft}/>
+            <BankCards part="left" left={sharedLeft}/>
+            <JointCard check={sharedJoint} me="hollie"/>
+            <PotsCard pots={sharedPots}/>
+            {!sharedLeft&&!(sharedPots&&sharedPots.length)&&(
+              <div style={{...card,fontSize:13.5,color:SUBTEXT,textAlign:"center",padding:"20px 12px",lineHeight:1.5}}>
+                The joint account's figures show here once Glyn's phone has checked Monzo.
+              </div>
+            )}
+          </div>
+        )}
+
         {tab==="Dashboard"&&(
           <div>
+            <NavTiles tabs={shortcutTabs} onGo={goTab}/>
             {discrepancies.filter(d=>d.status==="discrepancy"&&!dismissedDiscs.includes(d.month)).length>0&&(
               <div onClick={()=>{haptic();const first=discrepancies.find(d=>d.status==="discrepancy"&&!dismissedDiscs.includes(d.month));if(first)setExpandedMonth(first.month);setTab("Timesheet");}} style={{background:"#1a0a0a",border:"1px solid #ff4a6a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>⚠️</span>
@@ -5369,6 +5466,7 @@ const calcTimesheetTotals = days => {
             {/* Monzo: what's really left and the joint account */}
             <BankCards part="left" left={bankLeft}/>
             <JointCard check={jointCheck}/>
+            <PotsCard pots={jointPots}/>
 
             <div style={{...card,marginBottom:12}}>
               <SectionLabel>Student Loan -- Plan 2</SectionLabel>
@@ -5500,10 +5598,8 @@ const calcTimesheetTotals = days => {
 
           // The date a bill goes out in the month shown (from Monzo), e.g. "8 Dec": a Direct Debit moves
           // on past weekends and bank holidays.
-          const dateFor=b=>{
-            const r=billRule((isG?"g:":"s:")+b.id),d=r&&laSel?ruleDate(r,laSel.yr,laSel.m):null;
-            return d?d.getDate()+" "+MONTHS[d.getMonth()]:null;
-          };
+          const dueOf=b=>{const r=billRule((isG?"g:":"s:")+b.id);return r&&laSel?ruleDate(r,laSel.yr,laSel.m):null;};
+          const dateFor=b=>{const d=dueOf(b);return d?d.getDate()+" "+MONTHS[d.getMonth()]:null;};
           // Ticks: only for this month, against the bill's full amount (or what's typed in, if it varies).
           const tickFor=b=>{
             if(!selIsNow)return null;
@@ -5575,15 +5671,13 @@ const calcTimesheetTotals = days => {
             if(billSort==="az")c.sort((a,b)=>a.name.localeCompare(b.name,"en",{sensitivity:"base"}));
             if(billSort==="high")c.sort((a,b)=>amt(b)-amt(a));
             if(billSort==="low")c.sort((a,b)=>amt(a)-amt(b));
+            if(billSort==="date"){const at=b=>{const d=dueOf(b);return d?d.getTime():Infinity;};c.sort((a,b)=>(at(a)-at(b))||a.name.localeCompare(b.name,"en",{sensitivity:"base"}));}
             return c;
           };
           const uncat=bills.filter(b=>!bmap[b.id]);
 
           return (
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
-
-            {/* Hollie's phone: the joint account's What's really left (Glyn's has it on the Dashboard) */}
-            {sharedLeft&&<div style={{marginBottom:-12}}><BankCards part="left" left={sharedLeft}/></div>}
 
             {/* ── header: month, what's left, and the two totals ── */}
             <div style={{...card,borderRadius:12,padding:"12px 12px 13px",display:"flex",flexDirection:"column",gap:11}}>
@@ -5661,8 +5755,7 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
             <div style={{display:"flex",gap:4,alignItems:"center",marginTop:-4}}>
-              <span style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",paddingLeft:2,marginRight:2}}>Sort</span>
-              {[["manual","Manual"],["az","A–Z"],["high","High"],["low","Low"]].map(([v,l])=>(
+              {[["manual","Manual"],["date","Date"],["az","A–Z"],["high","High"],["low","Low"]].map(([v,l])=>(
                 <button key={v} onClick={()=>{haptic();setBillSort(v);save(SK.billSort,v);}} style={{
                   flex:1,background:billSort===v?"#1a2535":"transparent",color:billSort===v?"#8ec5ff":SUBTEXT,
                   border:"1px solid "+(billSort===v?"#2a5a8a":"#1e2535"),borderRadius:7,padding:"6px 2px",fontSize:12.5,fontWeight:700,cursor:"pointer"
@@ -7971,18 +8064,16 @@ const calcTimesheetTotals = days => {
 
       {/* Bottom navigation */}
       <div style={{position:"fixed",left:0,right:0,bottom:0,zIndex:200,display:"flex",background:"#0d1117",borderTop:"1px solid #1e2535",paddingBottom:"env(safe-area-inset-bottom)"}}>
-        {primaryTabs.map(t=>(
-          <button key={t} onClick={()=>{haptic();setShowMore(false);setTab(t);window.scrollTo(0,0);}} style={{
-            flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
-            color:tab===t?"#4a9eff":SUBTEXT,fontSize:12.5,fontWeight:700,
-            borderTop:"2px solid "+(tab===t?"#4a9eff":"transparent")
-          }}>{t}</button>
-        ))}
-        <button onClick={()=>{haptic();setShowMore(s=>!s);}} style={{
-          flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
-          color:(showMore||secondaryTabs.includes(tab))?"#4a9eff":SUBTEXT,fontSize:12.5,fontWeight:700,
-          borderTop:"2px solid "+((showMore||secondaryTabs.includes(tab))?"#4a9eff":"transparent")
-        }}>More ⋯</button>
+        {primaryTabs.map(t=>{
+          const on=tab===t||(t===homeTab&&shortcutTabs.includes(tab));
+          return (
+            <button key={t} onClick={()=>goTab(t)} style={{
+              flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
+              color:on?"#4a9eff":SUBTEXT,fontSize:12.5,fontWeight:700,
+              borderTop:"2px solid "+(on?"#4a9eff":"transparent")
+            }}>{t}</button>
+          );
+        })}
       </div>
 
       {/* What's new -- after an update, once per phone */}
@@ -8031,21 +8122,34 @@ const calcTimesheetTotals = days => {
         );
       })()}
 
-      {/* "More" sheet -- secondary tabs */}
-      {showMore&&(
-        <div onClick={()=>setShowMore(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
-          <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))"}}>
-            <SheetGrab onClose={()=>setShowMore(false)}/>
-            <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 6px"}}>More</div>
-            {secondaryTabs.map(t=>(
-              <button key={t} onClick={()=>{haptic();setTab(t);setShowMore(false);window.scrollTo(0,0);}} style={{
-                display:"block",width:"100%",textAlign:"left",background:tab===t?"#1a2535":"transparent",
-                border:"none",borderRadius:8,color:tab===t?"#a0c0ff":SUBTEXT,fontSize:15,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginBottom:2
-              }}>{t}</button>
-            ))}
+      {/* Paydays: the next three, any of them changeable (work paying early for Christmas, say) */}
+      {paydayOpen&&(()=>{
+        const close=()=>setPaydayOpen(false);
+        const first=getNextPayday();
+        const rows=[0,1,2].map(i=>{
+          const base=new Date(first.getFullYear(),first.getMonth()+i,1);
+          const mk=monthKeyOf(base.getFullYear(),base.getMonth()+1);
+          return {mk,label:new Date(base).toLocaleDateString("en-GB",{month:"long"}),date:getPayday(base.getFullYear(),base.getMonth()),set:!!paydays[mk]};
+        });
+        return (
+          <div onClick={close} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
+            <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 14px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))"}}>
+              <SheetGrab onClose={close}/>
+              <div style={{fontSize:16,color:"#e8eaf0",fontWeight:800,padding:"2px 2px 6px"}}>Paydays</div>
+              <div style={{fontSize:13.5,color:SUBTEXT,lineHeight:1.5,padding:"0 2px 10px"}}>Usually the 29th, or the working day before when that's a weekend or a bank holiday. Change one if work pays on a different day, like early for Christmas.</div>
+              {rows.map(r=>(
+                <div key={r.mk} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 2px",borderTop:"1px solid #1a1f2e"}}>
+                  <span style={{flex:1,minWidth:0,fontSize:15,color:SUBTEXT}}>{r.label}{r.set&&<span style={{marginLeft:8,fontSize:12,fontWeight:700,color:"#ffb84a"}}>CHANGED</span>}</span>
+                  <input type="date" value={localISO(r.date)} onChange={e=>{haptic();setPaydayFor(r.mk,e.target.value);}}
+                    style={{background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,padding:"8px 10px"}}/>
+                  {r.set&&<button onClick={()=>{haptic();setPaydayFor(r.mk,null);}} style={{background:"transparent",border:"1px solid #2a3050",borderRadius:8,color:SUBTEXT,fontSize:13,fontWeight:700,padding:"8px 10px",cursor:"pointer"}}>Usual</button>}
+                </div>
+              ))}
+              <button onClick={close} style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:10,color:"#000",fontSize:14,fontWeight:700,padding:"12px 14px",cursor:"pointer",marginTop:10}}>Done</button>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Move plan: which bucket each category counts towards */}
       {moveCatsOpen&&(()=>{
