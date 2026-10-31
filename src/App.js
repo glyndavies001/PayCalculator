@@ -818,11 +818,17 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.19.1";
+const APP_VERSION = "1.19.2";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.19.2", date: "31 Oct 2026", items: [
+    { b: "Budget opens on your month", t: " — the month strip starts on the month you're paying in for, with earlier months a swipe back." },
+    { b: "A simpler bill list", t: " — each bill shows its name and the date it usually goes out, from Monzo. Tap a bill to see its total and split." },
+    { b: "Tags are gone", t: " — for now. Anything you'd tagged is kept in the background." },
+    { b: "No Overdraft reminder", t: " — Budget no longer says the Overdraft hasn't been set for the month." },
+  ] },
   { v: "1.19.1", date: "31 Oct 2026", items: [
     { b: "Ice blue captions", t: " — labels and captions are a soft ice blue rather than white, so the figures stand out again." },
   ] },
@@ -2565,12 +2571,12 @@ export default function App() {
   const [newGl,setNewGl]=useState({name:"",total:"",freq:"month",months:[],varies:false});
   const [collapsed,setCollapsed]=useState(()=>load(SK.collapsed,{}));   // {catId:true}
   const [billSort,setBillSort]=useState(()=>load(SK.billSort,"manual")); // manual|az|high|low
-  const [tagDraft,setTagDraft]=useState("");       // tag being typed in the bill sheet
   const [catsOpen,setCatsOpen]=useState(false);    // categories manager sheet
   const [addingCat,setAddingCat]=useState(null);
   const [newCat,setNewCat]=useState("");
   const [dragOver,setDragOver]=useState(null);
   const [budTab,setBudTab]=useState("shared");
+  const monthStrip=useRef(null);                   // Budget tab: the month strip (to slide it to the month being paid in for)
   const [selPick,setSelPick]=useState(null);       // Budget tab: month picked (offset 0-11 from this month), or null = the month being paid in for
   const [laOpen,setLaOpen]=useState(false);        // collapsed 12-month Year view
   const dragBill=useRef(null);
@@ -3944,6 +3950,15 @@ export default function App() {
   });
   const homeIdx=Math.min(11,Math.max(0,(payIn.y*12+payIn.m)-(schedNowYear*12+schedNowMonth)));
   const homeLabel=MONTHS[payIn.m-1];
+  // The Budget's month strip opens on the month being paid in for (or the one you'd picked), not
+  // this calendar month; earlier months are a swipe back. smooth: slide there rather than jump.
+  const stripTo=(i,smooth)=>{
+    const el=monthStrip.current,chip=el&&el.querySelector('[data-mi="'+i+'"]');
+    if(!chip)return;
+    const left=el.scrollLeft+chip.getBoundingClientRect().left-el.getBoundingClientRect().left;
+    if(smooth&&el.scrollTo)el.scrollTo({left,behavior:"smooth"});else el.scrollLeft=left;
+  };
+  useEffect(()=>{if(tab==="Budget")stripTo(selPick!=null?selPick:homeIdx,false);},[tab,homeIdx]);
 
   // The Budget tab shows the month being paid in for, unless another is picked. (totalOut /
   // surplus above are this calendar month's; the Dashboard and Pay Calc show the pay-in month.)
@@ -4174,23 +4189,6 @@ export default function App() {
     saveCatsData({ glynBillCats: bc });
   };
   // Tags live in this user's own settings blob, so they need no schema change.
-  const updTags=(billId,tags,isGlyn)=>{
-    const clean=tags.filter(Boolean);
-    if(isGlyn){
-      const n={...glynBillTags};clean.length?(n[billId]=clean):delete n[billId];
-      setGlynBillTags(n);
-      saveCatsData({glynBillTags:n});
-    }else{
-      const n={...billTags};clean.length?(n[billId]=clean):delete n[billId];
-      setBillTags(n);
-      saveSharedCats(cats,billCats,n);
-      saveCatsData({billTags:n});
-    }
-  };
-  const allTags=(isGlyn)=>{
-    const src=isGlyn?glynBillTags:billTags;
-    return [...new Set(Object.values(src).flat())].sort((a,b)=>a.localeCompare(b));
-  };
   // Restore all four category maps from a backup in ONE write, so the saves
   // can't race and overwrite each other (that race stopped restores sticking).
   const restoreCats = d => {
@@ -4925,6 +4923,17 @@ const calcTimesheetTotals = days => {
   const nowMkBank=(()=>{const d=new Date(nowTick);return monthKeyOf(d.getFullYear(),d.getMonth()+1);})();
   // How a bill stands this month: live on the phone with the Monzo link, or, for shared bills,
   // what Glyn's phone last shared.
+  // The day of the month a bill usually goes out, from its Monzo payment: this phone's link, or for
+  // shared bills, what Glyn's phone shared. null if it isn't matched to a payment.
+  const billDay=(ref)=>{
+    if(bankMatch){
+      const m=bankMatch.byRef[ref];
+      const g=m&&m.kind==="tx"&&m.keys.length?bankMatch.groups.get(m.keys[0]):null;
+      return g&&g.day?g.day:null;
+    }
+    const t=ref.startsWith("s:")&&bankSummary&&bankSummary.ticks?bankSummary.ticks[ref]:null;
+    return t&&t.dd?t.dd:null;
+  };
   const billTick=(ref)=>{
     if(bankMatch){const m=bankMatch.byRef[ref];return m?m.status:null;}
     if(ref.startsWith("s:")&&bankSummary&&bankSummary.mk===nowMkBank&&bankSummary.ticks){
@@ -5010,6 +5019,8 @@ const calcTimesheetTotals = days => {
       if(st.via&&m.joint)t.via=st.via;
       if(st.approx)t.x=1;
       if(st.group)t.g=1;   // (a pot's shortfall isn't shared: it can count your own bills)
+      const g0=m.keys&&m.keys.length?bankMatch.groups.get(m.keys[0]):null;
+      if(g0&&g0.day)t.dd=g0.day;   // the day it usually goes out, for the Budget's dates
       ticks["s:"+b.id]=t;
     }
     const ids=bankPrefs.house_pots||[];
@@ -5484,25 +5495,18 @@ const calcTimesheetTotals = days => {
           };
 
           // One row, used for standing bills and for this month's scheduled ones.
-          const row=(key,{name,sub,amt,her,onName,onAmount,drag,tag,neg,first,tags,tick})=>(
+          const row=(key,{name,date,sub,amt,her,onName,onAmount,drag,tag,neg,first,tick})=>(
             <div key={key} draggable={!!drag} onDragStart={drag}
               style={{display:"flex",alignItems:"center",gap:10,padding:"11px 13px",borderTop:"1px solid #171d2b",
                 ...(first?{borderTop:"none"}:{})}}>
               <div onClick={onName} style={{flex:1,minWidth:0,cursor:onName?"pointer":"default"}}>
-                <div style={{fontSize:14,color:neg?"#4ad07a":SUBTEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                  {name}
-                  {tag&&<span style={{display:"inline-block",fontSize:11.5,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#1d1608",color:"#ffb84a",marginLeft:6,verticalAlign:1}}>{tag}</span>}
+                <div style={{display:"flex",alignItems:"baseline",gap:6,minWidth:0}}>
+                  <span style={{fontSize:14,color:neg?"#4ad07a":SUBTEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{name}</span>
+                  {tag&&<span style={{flex:"0 0 auto",display:"inline-block",fontSize:11.5,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#1d1608",color:"#ffb84a",alignSelf:"center"}}>{tag}</span>}
+                  {date&&<span style={{flex:"0 0 auto",fontSize:12.5,color:SUBTEXT,whiteSpace:"nowrap"}}>· {date}</span>}
                 </div>
                 {sub&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{sub}</div>}
                 {tick&&<div data-tick="1" style={{fontSize:12.5,color:tick.color,marginTop:2,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tick.text}</div>}
-                {tags&&tags.length>0&&(
-                  <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:4}}>
-                    {tags.map(t=>(
-                      <span key={t} style={{fontSize:12,fontWeight:600,color:SUBTEXT,background:"#1a1f2e",
-                        border:"1px solid #232a3d",borderRadius:4,padding:"2px 6px"}}>{t}</span>
-                    ))}
-                  </div>
-                )}
               </div>
               <div onClick={onAmount} style={{textAlign:"right",cursor:onAmount?"pointer":"default"}}>
                 <div style={{fontSize:14,fontWeight:700,color:neg?"#4ad07a":"#e8eaf0"}}>{fmtS(amt)}</div>
@@ -5521,7 +5525,11 @@ const calcTimesheetTotals = days => {
             </div>
           );
 
-          const tagsFor=b=>(isG?glynBillTags:billTags)[b.id]||[];
+          // The date a bill usually goes out in the month shown (from Monzo), e.g. "8 Dec".
+          const dateFor=b=>{
+            const d=billDay((isG?"g:":"s:")+b.id);
+            return d&&laSel?Math.min(d,new Date(laSel.yr,laSel.m,0).getDate())+" "+MONTHS[laSel.m-1]:null;
+          };
           // Ticks: only for this month, against the bill's full amount (or what's typed in, if it varies).
           const tickFor=b=>{
             if(!selIsNow)return null;
@@ -5530,9 +5538,8 @@ const calcTimesheetTotals = days => {
           };
           const billRows=list=>list.map((b,bi)=>editingId===b.id?editRow(b,bi===0):row(b.id,{
             first:bi===0,
-            tags:tagsFor(b),
             name:b.name,
-            sub:isG?(isVariable(b)?"Varies each month":null):splitNote(b),
+            date:dateFor(b),
             tick:tickFor(b),
             amt:isG?amt1(b):mineOf(b),
             her:isG?null:themOf(b),
@@ -5607,14 +5614,14 @@ const calcTimesheetTotals = days => {
                 <span style={{fontSize:14,fontWeight:800,color:"#e8eaf0"}}>{laSel?MONTHS[laSel.m-1]+" "+laSel.yr:""}</span>
                 {selIsHome
                   ? <span style={{fontSize:12.5,fontWeight:700,padding:"3px 8px",borderRadius:20,background:"#0a2018",color:rateCol,border:"1px solid #17553f"}}>{rate}% left over</span>
-                  : <button onClick={()=>{haptic();setSelPick(null);}} style={{background:"transparent",border:"1px solid #2a5a8a",borderRadius:20,color:"#8ec5ff",fontSize:12.5,fontWeight:700,padding:"3px 10px",cursor:"pointer"}}>Back to {homeLabel}</button>}
+                  : <button onClick={()=>{haptic();setSelPick(null);stripTo(homeIdx,true);}} style={{background:"transparent",border:"1px solid #2a5a8a",borderRadius:20,color:"#8ec5ff",fontSize:12.5,fontWeight:700,padding:"3px 10px",cursor:"pointer"}}>Back to {homeLabel}</button>}
               </div>
 
-              <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4,WebkitOverflowScrolling:"touch"}}>
+              <div ref={monthStrip} style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4,WebkitOverflowScrolling:"touch"}}>
                 {lookAheadMonths.map((r,i)=>{
                   const on=i===selIdx;
                   return (
-                    <button key={r.key} onClick={()=>{haptic();setSelPick(i===homeIdx?null:i);}} style={{
+                    <button key={r.key} data-mi={i} onClick={()=>{haptic();setSelPick(i===homeIdx?null:i);}} style={{
                       flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#0d1117",color:on?"#fff":(i===homeIdx?"#4a9eff":SUBTEXT),
                       border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"7px 11px",fontSize:13,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
                       {MONTHS[r.m-1]}{r.m===1||i===0?" "+String(r.yr).slice(2):""}
@@ -5635,7 +5642,9 @@ const calcTimesheetTotals = days => {
 
               {(()=>{
                 if(!selIsNow&&!selIsHome)return null;
-                const pend=[...sharedBills,...glynBills].filter(b=>notSetFor(b,selKey));
+                // Not the Overdraft: it's only known once the month's under way.
+                const isOd=(b,ref)=>{const m=bankMatch&&bankMatch.byRef[ref];return (m&&m.kind==="od")||/\boverdraft\b/i.test(b.name||"");};
+                const pend=[...sharedBills.filter(b=>!isOd(b,"s:"+b.id)),...glynBills.filter(b=>!isOd(b,"g:"+b.id))].filter(b=>notSetFor(b,selKey));
                 if(!pend.length)return null;
                 const names=pend.map(b=>b.name);
                 const label=names.length<=3?names.join(", ")
@@ -5873,7 +5882,7 @@ const calcTimesheetTotals = days => {
                 {lookAheadMonths.map((r,i)=>{
                   const vs=netForIdx(i)+r.income-r.total;
                   return (
-                    <div key={r.key} onClick={()=>{haptic();setSelPick(i===homeIdx?null:i);setLaOpen(false);}}
+                    <div key={r.key} onClick={()=>{haptic();setSelPick(i===homeIdx?null:i);setLaOpen(false);stripTo(i,true);}}
                       style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",alignItems:"center",
                         padding:"9px 6px",fontSize:13.5,borderTop:"1px solid #1e2535",cursor:"pointer",
                         background:i===selIdx?"#15203a":"transparent"}}>
@@ -8171,11 +8180,22 @@ const calcTimesheetTotals = days => {
         return(
           <div onClick={()=>setMoveBill(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"72vh",overflowY:"auto"}}>
-              <SheetGrab onClose={()=>{setMoveBill(null);setTagDraft("");}}/>
+              <SheetGrab onClose={()=>setMoveBill(null)}/>
               <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:700,padding:"0 4px 8px"}}>Edit bill</div>
               <input key={moveBill.id} defaultValue={bill?bill.name:""} placeholder="Bill name"
                 onBlur={e=>{const v=e.target.value.trim();if(v&&bill&&v!==bill.name)renameBill(moveBill.id,v,isG);}}
-                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
+                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:12}}/>
+              {bill&&(()=>{
+                // The bill's total in the month shown and how it's split (the Budget list shows just the name).
+                const split=isG?null:bill.splitMode==="pct"&&bill.splitValue!=null?bill.splitValue+"% mine"
+                  :bill.splitMode==="fixed"&&bill.splitValue!=null?(isOwner?"Hollie":"Glyn")+" "+fmt(bill.splitValue):"50/50";
+                return (
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:10,padding:"0 4px 14px"}}>
+                    <span style={{fontSize:20,fontWeight:800,color:"#e8eaf0"}}>{fmt(amountOf(bill,selKey))}</span>
+                    <span style={{fontSize:13,color:SUBTEXT,textAlign:"right"}}>{selLabel}{isVariable(bill)?" · changes each month":""}{split?" · "+split:""}</span>
+                  </div>
+                );
+              })()}
               {bill&&(()=>{
                 const varies=isVariable(bill);
                 return (
@@ -8214,39 +8234,6 @@ const calcTimesheetTotals = days => {
                       <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref,name:bill.name,shared:!isG,pence:isVariable(bill)?null:Math.round(amountOf(bill,nowMk)*100)});}} style={miniBtn}>{on?"Change":"Link"}</button>
                     </div>
                     <div style={{fontSize:12.5,color:SUBTEXT,padding:"0 4px 14px",lineHeight:1.5}}>Ticks the bill off on the Budget tab once the payment goes out{isVariable(bill)?", and fills in a blank month's amount from it":""}.</div>
-                  </>
-                );
-              })()}
-              {(()=>{
-                const cur=(isG?glynBillTags:billTags)[moveBill.id]||[];
-                const known=allTags(isG).filter(t=>!cur.includes(t));
-                return (
-                  <>
-                    <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Tags</div>
-                    <div style={{display:"flex",flexWrap:"wrap",gap:6,padding:"0 4px",marginBottom:cur.length?8:0}}>
-                      {cur.map(t=>(
-                        <button key={t} onClick={()=>{haptic();updTags(moveBill.id,cur.filter(x=>x!==t),isG);}}
-                          style={{background:"#1a2535",border:"1px solid #2a3a55",borderRadius:6,color:"#8ec5ff",fontSize:13,fontWeight:600,padding:"7px 10px",cursor:"pointer"}}>
-                          {t} <span style={{color:SUBTEXT}}>✕</span>
-                        </button>
-                      ))}
-                    </div>
-                    <div style={{display:"flex",gap:6,marginBottom:known.length?8:14}}>
-                      <input value={tagDraft} onChange={e=>setTagDraft(e.target.value)}
-                        onKeyDown={e=>{if(e.key==="Enter"){const v=tagDraft.trim();if(v&&!cur.includes(v))updTags(moveBill.id,[...cur,v],isG);setTagDraft("");}}}
-                        placeholder="Add a tag"
-                        style={{flex:1,background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:13.5,padding:"10px 12px"}}/>
-                      <button onClick={()=>{const v=tagDraft.trim();if(v&&!cur.includes(v)){haptic();updTags(moveBill.id,[...cur,v],isG);}setTagDraft("");}}
-                        style={{background:"#1a2535",border:"1px solid #2a5a8a",borderRadius:8,color:"#8ec5ff",fontSize:13.5,fontWeight:700,padding:"10px 14px",cursor:"pointer"}}>Add</button>
-                    </div>
-                    {known.length>0&&(
-                      <div style={{display:"flex",flexWrap:"wrap",gap:5,padding:"0 4px",marginBottom:14}}>
-                        {known.slice(0,10).map(t=>(
-                          <button key={t} onClick={()=>{haptic();updTags(moveBill.id,[...cur,t],isG);}}
-                            style={{background:"transparent",border:"1px dashed #2a3050",borderRadius:6,color:SUBTEXT,fontSize:12.5,fontWeight:600,padding:"5px 9px",cursor:"pointer"}}>+ {t}</button>
-                        ))}
-                      </div>
-                    )}
                   </>
                 );
               })()}
