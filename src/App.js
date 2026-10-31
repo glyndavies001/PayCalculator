@@ -2,6 +2,9 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from "react"
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 import { createClient } from "@supabase/supabase-js";
 
+// Labels, captions and hints. No grey text anywhere in Vaulted: this is the one colour for it.
+const SUBTEXT = "#e8eaf0";
+
 // Module-level error catcher -- only fires if React fails to mount.
 // Once App renders, the ErrorBoundary takes over.
 (function setupGlobalErrorHandler() {
@@ -815,11 +818,16 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.18.10";
+const APP_VERSION = "1.19.0";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.19.0", date: "31 Oct 2026", items: [
+    { b: "No more grey text", t: " — labels, captions and notes on every tab are now white, so they're easier to read. The small print in warning boxes is white too." },
+    { b: "Bigger small text", t: " — the smallest text across the app is a size or two bigger. Headings and the big figures haven't changed." },
+    { b: "Tidier charts", t: " — months along the bottom read \"Apr 25\" and are spaced out so they don't run into each other." },
+  ] },
   { v: "1.18.10", date: "30 Oct 2026", items: [
     { b: "Top-ups count", t: " — a small extra transfer into the joint account that makes up what your share was short (like 50p after a bill changed) now counts towards it, so the Joint account card ticks it. Small transfers for anything else still don't." },
   ] },
@@ -998,14 +1006,14 @@ function groupByFY(history) {
 }
 
 function SectionLabel({children}) {
-  return <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>{children}</div>;
+  return <div style={{fontSize:12.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>{children}</div>;
 }
 
 function StatRow({label,value,color,last}) {
   return (
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 0",borderBottom:last?"none":"1px solid #1a1f2e"}}>
-      <span style={{fontSize:13,color:"#8892b0"}}>{label}</span>
-      <span style={{fontSize:13,fontWeight:700,color:color||"#e8eaf0"}}>{value}</span>
+      <span style={{fontSize:13.5,color:SUBTEXT}}>{label}</span>
+      <span style={{fontSize:13.5,fontWeight:700,color:color||"#e8eaf0"}}>{value}</span>
     </div>
   );
 }
@@ -1017,22 +1025,26 @@ function inferPerfAllowance(r) {
   return (r.bonus || 0) > 0;
 }
 
+// Chart month labels: "Apr 25" rather than "Apr 2025", about five along the bottom, so they don't run into each other.
+const chartMonth = m => String(m).replace(/ 20(\d\d)$/, " $1");
+const chartEvery = n => Math.max(0, Math.ceil(n / 5) - 1);
+
 function CollapsibleChart({title,data,dataKey,color}) {
   const [open,setOpen]=useState(false);
   return (
     <div style={{border:"1px solid #1e2535",borderRadius:10,overflow:"hidden",marginBottom:8}}>
       <button onClick={()=>setOpen(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 14px",background:"#141824",border:"none",cursor:"pointer",color:"#e8eaf0"}}>
-        <span style={{fontSize:13,fontWeight:600,color:"#8892b0"}}>{title}</span>
-        <span style={{fontSize:12,color:"#3a4460"}}>{open?"▾":"▸"}</span>
+        <span style={{fontSize:13.5,fontWeight:600,color:SUBTEXT}}>{title}</span>
+        <span style={{fontSize:13,color:SUBTEXT}}>{open?"▾":"▸"}</span>
       </button>
       {open&&(
         <div style={{padding:"12px",background:"#111520"}}>
           <ResponsiveContainer width="100%" height={130}>
-            <BarChart data={data} margin={{top:4,right:4,left:0,bottom:0}}>
+            <BarChart data={data} margin={{top:8,right:12,left:0,bottom:0}}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
-              <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(data.length/6)-1)}/>
-              <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
-              <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
+              <XAxis dataKey="month" tick={{fill:SUBTEXT,fontSize:11}} tickLine={false} interval={chartEvery(data.length)} tickFormatter={chartMonth}/>
+              <YAxis tick={{fill:SUBTEXT,fontSize:11}} tickLine={false} tickFormatter={v=>"£"+v}/>
+              <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:12.5}} formatter={v=>fmt(v)}/>
               <Bar dataKey={dataKey} fill={color} radius={[2,2,0,0]}/>
             </BarChart>
           </ResponsiveContainer>
@@ -1825,13 +1837,13 @@ function tickLine(st, expectPence) {
     return st.short > 0 ? { text: "✓ " + what + " · top-up " + fmt(pounds(st.short)) + " short", color: "#ffb84a" } : { text: "✓ " + what, color: "#00c88c" };
   }
   if (st.state === "live") return st.amount > 0 ? { text: "Overdrawn now · " + fmt(pounds(st.amount)), color: "#ffb84a" } : { text: "✓ Not overdrawn now", color: "#00c88c" };
-  if (st.state === "due" && st.date) return { text: st.od ? "Clears when pay lands ~" + day(st.date) : "Due ~" + day(st.date) + into, color: "#5a6480" };
+  if (st.state === "due" && st.date) return { text: st.od ? "Clears when pay lands ~" + day(st.date) : "Due ~" + day(st.date) + into, color: SUBTEXT };
   if (st.state === "late" && st.date) return { text: "Not seen yet · usually ~" + day(st.date) + into, color: "#ffb84a" };
-  if (st.state === "none" && st.last) return { text: "Last paid " + day(st.last), color: "#5a6480" };
+  if (st.state === "none" && st.last) return { text: "Last paid " + day(st.last), color: SUBTEXT };
   return null;
 }
-const lnkStyle = { background: "none", border: "none", color: "#5a6480", fontSize: 11.5, textDecoration: "underline", cursor: "pointer", padding: 0 };
-const miniBtn = { background: "#1e2535", border: "1px solid #2a3050", borderRadius: 6, color: "#8ec5ff", fontSize: 11, fontWeight: 700, padding: "7px 10px", cursor: "pointer", flexShrink: 0 };
+const lnkStyle = { background: "none", border: "none", color: SUBTEXT, fontSize: 13, textDecoration: "underline", cursor: "pointer", padding: 0 };
+const miniBtn = { background: "#1e2535", border: "1px solid #2a3050", borderRadius: 6, color: "#8ec5ff", fontSize: 12.5, fontWeight: 700, padding: "7px 10px", cursor: "pointer", flexShrink: 0 };
 
 // -- Error Boundary -----------------------------------------------------------
 class ErrorBoundary extends React.Component {
@@ -1844,7 +1856,7 @@ class ErrorBoundary extends React.Component {
         <div style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans',sans-serif",padding:"24px 20px"}}>
           <div style={{fontSize:32,marginBottom:16}}>💥</div>
           <h2 style={{color:"#ff6b8a",marginBottom:12}}>Vaulted crashed</h2>
-          <div style={{background:"#1a0a0a",border:"1px solid #5a1a2a",borderRadius:10,padding:"14px",fontSize:12,color:"#ff8c8c",fontFamily:"monospace",wordBreak:"break-all",lineHeight:1.6,marginBottom:16}}>
+          <div style={{background:"#1a0a0a",border:"1px solid #5a1a2a",borderRadius:10,padding:"14px",fontSize:13,color:"#ff8c8c",fontFamily:"monospace",wordBreak:"break-all",lineHeight:1.6,marginBottom:16}}>
             {this.state.error.toString()}
           </div>
           <button onClick={()=>this.setState({error:null})} style={{background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontWeight:700,padding:"12px 24px",cursor:"pointer",fontSize:14}}>
@@ -1889,9 +1901,9 @@ function LoginScreen({ onLogin }) {
     <div style={bg}>
       <div style={{fontSize:48,marginBottom:16}}>🔐</div>
       <h1 style={{margin:"0 0 4px",fontSize:22,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
-      <p style={{color:"#5a6480",fontSize:13,marginBottom:32}}>Sign in to continue</p>
-      {error && <div style={{color: error.includes("Check") ? "#00c88c" : "#ff6b8a",fontSize:13,marginBottom:14,background: error.includes("Check") ? "#0a1a10" : "#2a0f15",padding:"10px 16px",borderRadius:8,border:"1px solid "+(error.includes("Check")?"#1a4030":"#5a1a2a"),width:"100%",boxSizing:"border-box",textAlign:"center"}}>{error}</div>}
-      {resetSent && <div style={{color:"#00c88c",fontSize:13,marginBottom:14,textAlign:"center"}}>Password reset email sent!</div>}
+      <p style={{color:SUBTEXT,fontSize:13.5,marginBottom:32}}>Sign in to continue</p>
+      {error && <div style={{color: error.includes("Check") ? "#00c88c" : "#ff6b8a",fontSize:13.5,marginBottom:14,background: error.includes("Check") ? "#0a1a10" : "#2a0f15",padding:"10px 16px",borderRadius:8,border:"1px solid "+(error.includes("Check")?"#1a4030":"#5a1a2a"),width:"100%",boxSizing:"border-box",textAlign:"center"}}>{error}</div>}
+      {resetSent && <div style={{color:"#00c88c",fontSize:13.5,marginBottom:14,textAlign:"center"}}>Password reset email sent!</div>}
       <div style={{width:"100%",maxWidth:320}}>
         <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} style={inp} onKeyDown={e=>e.key==="Enter"&&handleSubmit()}/>
         {!resetSent && <input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} style={inp} onKeyDown={e=>e.key==="Enter"&&handleSubmit()}/>}
@@ -1899,8 +1911,8 @@ function LoginScreen({ onLogin }) {
           style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:10,color:"#000",fontSize:15,fontWeight:700,padding:"14px",cursor:loading?"not-allowed":"pointer",marginBottom:10,opacity:loading?0.7:1}}>
           {loading ? "Please wait..." : "Sign In"}
         </button>
-        <div style={{display:"flex",justifyContent:"flex-end",fontSize:12}}>
-          <button onClick={handleReset} style={{background:"none",border:"none",color:"#3a4460",cursor:"pointer",fontSize:12}}>Forgot password?</button>
+        <div style={{display:"flex",justifyContent:"flex-end",fontSize:13}}>
+          <button onClick={handleReset} style={{background:"none",border:"none",color:SUBTEXT,cursor:"pointer",fontSize:13}}>Forgot password?</button>
         </div>
       </div>
     </div>
@@ -2002,17 +2014,17 @@ function DiagProbe({ prompt, user }) {
   const urlBad = !!info && !isLocal && !isProd;
 
   const Row = ({ k, v, warn }) => (
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "3px 0", fontSize: 11.5 }}>
-      <span style={{ color: "#5a6480" }}>{k}</span>
-      <span style={{ color: warn ? "#ff6b8a" : "#c8cee0", textAlign: "right", wordBreak: "break-all", fontWeight: warn ? 700 : 400 }}>{String(v)}</span>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "3px 0", fontSize: 13 }}>
+      <span style={{ color: SUBTEXT }}>{k}</span>
+      <span style={{ color: warn ? "#ff6b8a" : SUBTEXT, textAlign: "right", wordBreak: "break-all", fontWeight: warn ? 700 : 400 }}>{String(v)}</span>
     </div>
   );
 
-  if (!info) return <div style={{ fontSize: 11, color: "#5a6480" }}>Checking...</div>;
+  if (!info) return <div style={{ fontSize: 12.5, color: SUBTEXT }}>Checking...</div>;
   return (
     <div>
       <Row k="deploy URL" v={info.host} warn={urlBad} />
-      {urlBad && <div style={{ fontSize: 10.5, color: "#ff6b8a", padding: "2px 0 4px" }}>This isn't the stable URL. Use pay-calculator-iota.vercel.app so install &amp; updates work.</div>}
+      {urlBad && <div style={{ fontSize: 12.5, color: "#ff6b8a", padding: "2px 0 4px" }}>This isn't the stable URL. Use pay-calculator-iota.vercel.app so install &amp; updates work.</div>}
       <Row k="install prompt fired" v={prompt ? "YES" : "no"} />
       <Row k="installed (standalone)" v={info.standalone} />
       <Row k="online" v={info.online} warn={!info.online} />
@@ -2026,7 +2038,7 @@ function DiagProbe({ prompt, user }) {
       {info.regErr && <Row k="reg error" v={info.regErr} warn />}
       {info.manifestErr && <Row k="manifest error" v={info.manifestErr} warn />}
       {info.swFetchErr && <Row k="sw fetch error" v={info.swFetchErr} warn />}
-      <button onClick={run} style={{ marginTop: 8, width: "100%", background: "#1a2535", border: "1px solid #4a9eff", borderRadius: 6, color: "#4a9eff", fontSize: 11, fontWeight: 700, padding: "8px", cursor: "pointer" }}>Re-check</button>
+      <button onClick={run} style={{ marginTop: 8, width: "100%", background: "#1a2535", border: "1px solid #4a9eff", borderRadius: 6, color: "#4a9eff", fontSize: 12.5, fontWeight: 700, padding: "8px", cursor: "pointer" }}>Re-check</button>
     </div>
   );
 }
@@ -2050,24 +2062,24 @@ function TwoStepScreen({ factorId, onDone, onSkip, onSignOut }) {
     haptic("success");
     onDone();
   };
-  const lnk = { background: "none", border: "none", color: "#5a6480", cursor: "pointer", fontSize: 12.5, padding: "6px 2px" };
+  const lnk = { background: "none", border: "none", color: SUBTEXT, cursor: "pointer", fontSize: 13.5, padding: "6px 2px" };
   return (
     <div style={{ minHeight: "100vh", background: "#0d0f14", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans','Segoe UI',sans-serif", padding: "24px 20px", color: "#e8eaf0" }}>
       <div style={{ fontSize: 44, marginBottom: 14 }}>🔐</div>
       <h1 style={{ margin: "0 0 6px", fontSize: 22, fontWeight: 800, color: "#fff", letterSpacing: 3 }}><span style={{ color: "#4a9eff" }}>V</span>AULTED</h1>
-      <p style={{ color: "#8892b0", fontSize: 13.5, margin: "0 0 22px", textAlign: "center", lineHeight: 1.5, maxWidth: 300 }}>Two-step sign-in: enter the 6-digit code from Google Authenticator.</p>
+      <p style={{ color: SUBTEXT, fontSize: 14, margin: "0 0 22px", textAlign: "center", lineHeight: 1.5, maxWidth: 300 }}>Two-step sign-in: enter the 6-digit code from Google Authenticator.</p>
       <div style={{ width: "100%", maxWidth: 300 }}>
         <input autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} placeholder="••••••" aria-label="6-digit code"
           onChange={e => { const v = e.target.value.replace(/\D/g, "").slice(0, 6); setCode(v); setErr(""); if (v.length === 6) submit(v); }}
           onKeyDown={e => { if (e.key === "Enter") submit(); }}
           style={{ width: "100%", boxSizing: "border-box", background: "#141824", border: "1px solid " + (err ? "#ff4a6a" : "#1e2535"), borderRadius: 10, color: "#fff", fontSize: 26, letterSpacing: 8, textAlign: "center", padding: "12px", fontFamily: "inherit", outline: "none" }}/>
-        {err && <div style={{ color: "#ff6b8a", fontSize: 12.5, marginTop: 10, textAlign: "center" }}>{err}</div>}
+        {err && <div style={{ color: "#ff6b8a", fontSize: 13.5, marginTop: 10, textAlign: "center" }}>{err}</div>}
         <button onClick={() => submit()} disabled={busy} style={{ width: "100%", marginTop: 14, background: "#4a9eff", border: "none", borderRadius: 10, color: "#000", fontSize: 15, fontWeight: 700, padding: "14px", cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.7 : 1 }}>{busy ? "Checking…" : "Continue"}</button>
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12 }}>
           <button onClick={onSkip} style={lnk}>Not now</button>
           <button onClick={onSignOut} style={lnk}>Sign out</button>
         </div>
-        <div style={{ fontSize: 11, color: "#3a4460", marginTop: 14, textAlign: "center", lineHeight: 1.5 }}>"Not now" opens Vaulted with your bank details hidden.</div>
+        <div style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 14, textAlign: "center", lineHeight: 1.5 }}>"Not now" opens Vaulted with your bank details hidden.</div>
       </div>
     </div>
   );
@@ -2109,17 +2121,17 @@ function TwoStepSetup({ onDone, onCancel }) {
   };
   const cancel = async () => { haptic(); if (f) { try { await supabase.auth.mfa.unenroll({ factorId: f.id }); } catch (e) {} } onCancel(); };
   const copy = async () => { try { await navigator.clipboard.writeText(f.secret); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch (e) {} };
-  const small = { fontSize: 11.5, color: "#5a6480", lineHeight: 1.55 };
-  const step = { fontSize: 12.5, fontWeight: 700, color: "#e8eaf0", margin: "2px 0 6px" };
+  const small = { fontSize: 13, color: SUBTEXT, lineHeight: 1.55 };
+  const step = { fontSize: 13.5, fontWeight: 700, color: "#e8eaf0", margin: "2px 0 6px" };
   if (err && !f) return <div><div style={{ ...small, color: "#ff6b8a" }}>{err}</div><button onClick={onCancel} style={{ ...lnkStyle, marginTop: 8 }}>Close</button></div>;
   if (!f) return <div style={small}>Setting up…</div>;
   return (
     <div>
       <div style={step}>1. Add Vaulted to Google Authenticator</div>
-      <a href={f.uri} onClick={() => haptic()} style={{ display: "block", textAlign: "center", textDecoration: "none", background: "#4a9eff", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700, padding: "11px" }}>Open Google Authenticator</a>
+      <a href={f.uri} onClick={() => haptic()} style={{ display: "block", textAlign: "center", textDecoration: "none", background: "#4a9eff", borderRadius: 8, color: "#000", fontSize: 13.5, fontWeight: 700, padding: "11px" }}>Open Google Authenticator</a>
       <div style={{ ...small, marginTop: 8 }}>If that doesn't open it: in Google Authenticator tap <b>+</b> → <b>Enter a setup key</b>, call it Vaulted, and paste this key:</div>
       <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
-        <code style={{ flex: 1, fontSize: 12, color: "#c8cee0", background: "#0d1117", border: "1px solid #1e2535", borderRadius: 6, padding: "7px 8px", wordBreak: "break-all", letterSpacing: 1 }}>{f.secret}</code>
+        <code style={{ flex: 1, fontSize: 13, color: SUBTEXT, background: "#0d1117", border: "1px solid #1e2535", borderRadius: 6, padding: "7px 8px", wordBreak: "break-all", letterSpacing: 1 }}>{f.secret}</code>
         <button onClick={copy} style={miniBtn}>{copied ? "Copied" : "Copy"}</button>
       </div>
       {f.qr && <button onClick={() => setShowQr(s => !s)} style={{ ...lnkStyle, marginTop: 8 }}>{showQr ? "Hide the QR code" : "Show a QR code (to scan from another phone)"}</button>}
@@ -2128,8 +2140,8 @@ function TwoStepSetup({ onDone, onCancel }) {
       <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} placeholder="••••••" aria-label="6-digit code"
         onChange={e => { const v = e.target.value.replace(/\D/g, "").slice(0, 6); setCode(v); setErr(""); if (v.length === 6) verify(v); }}
         style={{ width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid " + (err ? "#ff4a6a" : "#1e2535"), borderRadius: 8, color: "#fff", fontSize: 20, letterSpacing: 6, textAlign: "center", padding: "10px", fontFamily: "inherit", outline: "none" }}/>
-      {err && <div style={{ color: "#ff6b8a", fontSize: 12, marginTop: 6 }}>{err}</div>}
-      <button onClick={() => verify()} disabled={busy} style={{ width: "100%", marginTop: 10, background: "#00c88c", border: "none", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700, padding: "11px", cursor: "pointer", opacity: busy ? 0.7 : 1 }}>{busy ? "Checking…" : "Turn on two-step"}</button>
+      {err && <div style={{ color: "#ff6b8a", fontSize: 13, marginTop: 6 }}>{err}</div>}
+      <button onClick={() => verify()} disabled={busy} style={{ width: "100%", marginTop: 10, background: "#00c88c", border: "none", borderRadius: 8, color: "#000", fontSize: 13.5, fontWeight: 700, padding: "11px", cursor: "pointer", opacity: busy ? 0.7 : 1 }}>{busy ? "Checking…" : "Turn on two-step"}</button>
       <button onClick={cancel} style={{ ...lnkStyle, marginTop: 10 }}>Cancel</button>
     </div>
   );
@@ -2204,11 +2216,11 @@ function BankSettings({ isOwner, mfa, onMfaChanged, onEnterCode, bank, reloadBan
   };
   const copyRedirect = async () => { try { await navigator.clipboard.writeText(st.redirect); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch (e) {} };
   const box = { background: "#111520", border: "1px solid #1e2535", borderRadius: 8, padding: "11px 12px", marginBottom: 10 };
-  const h = { fontSize: 13, fontWeight: 700, color: "#e8eaf0", marginBottom: 4 };
-  const small = { fontSize: 11.5, color: "#5a6480", lineHeight: 1.55 };
-  const btn = { width: "100%", background: "#4a9eff", border: "none", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700, padding: "11px", cursor: "pointer" };
-  const btn2 = { flex: 1, background: "#1e2535", border: "none", borderRadius: 8, color: "#8ec5ff", fontSize: 12, fontWeight: 700, padding: "10px", cursor: "pointer" };
-  const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #1e2535", borderRadius: 8, color: "#e8eaf0", fontSize: 13, padding: "10px 12px", fontFamily: "inherit", marginTop: 8 };
+  const h = { fontSize: 13.5, fontWeight: 700, color: "#e8eaf0", marginBottom: 4 };
+  const small = { fontSize: 13, color: SUBTEXT, lineHeight: 1.55 };
+  const btn = { width: "100%", background: "#4a9eff", border: "none", borderRadius: 8, color: "#000", fontSize: 13.5, fontWeight: 700, padding: "11px", cursor: "pointer" };
+  const btn2 = { flex: 1, background: "#1e2535", border: "none", borderRadius: 8, color: "#8ec5ff", fontSize: 13, fontWeight: 700, padding: "10px", cursor: "pointer" };
+  const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #1e2535", borderRadius: 8, color: "#e8eaf0", fontSize: 13.5, padding: "10px 12px", fontFamily: "inherit", marginTop: 8 };
   const ready = !!(st && !st.error);
   const recent = ready && st.authorisedAt && Date.now() - Date.parse(st.authorisedAt) < 20 * 60000;
   const again = ready && st.approvedAt ? new Date(Date.parse(st.approvedAt) + 90 * DAY_MS) : null;
@@ -2245,7 +2257,7 @@ function BankSettings({ isOwner, mfa, onMfaChanged, onEnterCode, bank, reloadBan
             <li>Tap <b>Clients</b> → <b>New OAuth Client</b>. Name: Vaulted. Confidentiality: <b>Confidential</b>. Redirect URL:</li>
           </ol>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <code style={{ flex: 1, fontSize: 10.5, color: "#c8cee0", background: "#0d1117", border: "1px solid #1e2535", borderRadius: 6, padding: "7px 8px", wordBreak: "break-all" }}>{st.redirect}</code>
+            <code style={{ flex: 1, fontSize: 12.5, color: SUBTEXT, background: "#0d1117", border: "1px solid #1e2535", borderRadius: 6, padding: "7px 8px", wordBreak: "break-all" }}>{st.redirect}</code>
             <button onClick={copyRedirect} style={miniBtn}>{copied ? "Copied" : "Copy"}</button>
           </div>
           <div style={{ ...small, marginTop: 8 }}>3. Paste the Client ID and Client secret here. They're kept on Vaulted's server only and never shown again.</div>
@@ -2275,8 +2287,8 @@ function BankSettings({ isOwner, mfa, onMfaChanged, onEnterCode, bank, reloadBan
           </>}
           {st.status === "ok" && <>
             {bank.accounts.map(a => (
-              <div key={a.account_id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "5px 0", borderBottom: "1px solid #1a1f2e" }}>
-                <span style={{ color: "#8892b0" }}>{BANK_LABEL[a.type] || "Account"}</span>
+              <div key={a.account_id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "5px 0", borderBottom: "1px solid #1a1f2e" }}>
+                <span style={{ color: SUBTEXT }}>{BANK_LABEL[a.type] || "Account"}</span>
                 <span style={{ color: "#e8eaf0", fontWeight: 700 }}>{fmtS(pounds(a.balance))}</span>
               </div>
             ))}
@@ -2291,7 +2303,7 @@ function BankSettings({ isOwner, mfa, onMfaChanged, onEnterCode, bank, reloadBan
           {st.status !== "ok" && <button onClick={unlink} disabled={!!busy} style={{ ...lnkStyle, marginTop: 10 }}>Unlink</button>}
         </>}
       </div>}
-      {msg && <div style={{ fontSize: 12, color: msg.ok ? "#00c88c" : "#ff6b8a", lineHeight: 1.5 }}>{msg.text}</div>}
+      {msg && <div style={{ fontSize: 13, color: msg.ok ? "#00c88c" : "#ff6b8a", lineHeight: 1.5 }}>{msg.text}</div>}
     </div>
   );
 }
@@ -2314,8 +2326,8 @@ function BankLinkSheet({ sheet, aal2, onEnterCode, onClose }) {
       <div role="dialog" aria-label={title} style={{ width: "100%", maxWidth: 520, background: "#141824", borderTop: "1px solid #2a3050", borderRadius: "16px 16px 0 0", padding: "20px 18px calc(22px + env(safe-area-inset-bottom))", boxSizing: "border-box", textAlign: "center" }}>
         <div style={{ fontSize: 34 }}>{icon}</div>
         <div style={{ fontSize: 16, fontWeight: 800, color: "#e8eaf0", marginTop: 6 }}>{title}</div>
-        <div style={{ fontSize: 13, color: "#8892b0", marginTop: 8, lineHeight: 1.55 }}>{body}</div>
-        {((sheet.phase === "wait" && aal2) || sheet.phase === "signin") && <div style={{ fontSize: 11, color: "#3a4460", marginTop: 10 }}>Checking every few seconds…</div>}
+        <div style={{ fontSize: 13.5, color: SUBTEXT, marginTop: 8, lineHeight: 1.55 }}>{body}</div>
+        {((sheet.phase === "wait" && aal2) || sheet.phase === "signin") && <div style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 10 }}>Checking every few seconds…</div>}
         {button && <button onClick={() => { haptic(); button[1](); }} style={{ width: "100%", marginTop: 16, background: "#4a9eff", border: "none", borderRadius: 10, color: "#000", fontSize: 14, fontWeight: 700, padding: "13px", cursor: "pointer" }}>{button[0]}</button>}
         {(sheet.phase === "wait" || sheet.phase === "signin") && <button onClick={() => { haptic(); onClose(); }} style={{ ...lnkStyle, marginTop: 14 }}>Hide</button>}
       </div>
@@ -2330,7 +2342,7 @@ function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock,
   const alerts = part !== "left", leftCard = part !== "alerts";
   const [open, setOpen] = useState(false);
   const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
-  const lab = { fontSize: 11, color: "#5a6480", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
+  const lab = { fontSize: 12.5, color: SUBTEXT, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
   const dshort = d => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
   let payBox = null;
   if (pay) {
@@ -2342,14 +2354,14 @@ function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock,
       <div style={{ ...card, border: "1px solid " + (diff == null ? "#1e2535" : match ? "#1a4030" : "#4a3a1a") }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
           <div style={lab}>💷 Pay landed · {dshort(pay.when)}</div>
-          <button onClick={onDismissPay} aria-label="Dismiss" style={{ background: "none", border: "none", color: "#3a4460", fontSize: 15, cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>✕</button>
+          <button onClick={onDismissPay} aria-label="Dismiss" style={{ background: "none", border: "none", color: SUBTEXT, fontSize: 15, cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>✕</button>
         </div>
         <div style={{ fontSize: 24, fontWeight: 800, color: "#e8eaf0", marginTop: 4 }}>{fmt(pay.landed)}</div>
-        {pay.payer && <div style={{ fontSize: 11, color: "#5a6480", marginTop: 2 }}>from {pay.payer}</div>}
-        {ref != null && <div style={{ fontSize: 12.5, marginTop: 8, color: match ? "#00c88c" : "#ffb84a", fontWeight: 600 }}>
-          {match ? `✓ Matches ${what}` : `${fmt(Math.abs(diff))} ${diff > 0 ? "more" : "less"} than ${what}`} <span style={{ color: "#5a6480", fontWeight: 500 }}>({fmt(ref)})</span>
+        {pay.payer && <div style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 2 }}>from {pay.payer}</div>}
+        {ref != null && <div style={{ fontSize: 13.5, marginTop: 8, color: match ? "#00c88c" : "#ffb84a", fontWeight: 600 }}>
+          {match ? `✓ Matches ${what}` : `${fmt(Math.abs(diff))} ${diff > 0 ? "more" : "less"} than ${what}`} <span style={{ color: SUBTEXT, fontWeight: 500 }}>({fmt(ref)})</span>
         </div>}
-        {pay.slipNet == null && pay.est && !pay.est.complete && <div style={{ fontSize: 10.5, color: "#5a6480", marginTop: 4 }}>The estimate is missing some timesheet days.</div>}
+        {pay.slipNet == null && pay.est && !pay.est.complete && <div style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 4 }}>The estimate is missing some timesheet days.</div>}
       </div>
     );
   }
@@ -2357,19 +2369,19 @@ function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock,
   return (<>
     {alerts && locked && <div onClick={onUnlock} style={{ ...card, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
       <span style={{ fontSize: 18 }}>🔒</span>
-      <div style={{ flex: 1, fontSize: 12.5, color: "#8892b0" }}>Enter your two-step code to see your Monzo balance</div>
-      <span style={{ fontSize: 11, color: "#4a9eff", fontWeight: 700 }}>Unlock →</span>
+      <div style={{ flex: 1, fontSize: 13.5, color: SUBTEXT }}>Enter your two-step code to see your Monzo balance</div>
+      <span style={{ fontSize: 12.5, color: "#4a9eff", fontWeight: 700 }}>Unlock →</span>
     </div>}
     {alerts && attention && <div onClick={onOpenBank} style={{ ...card, background: "#1a1500", border: "1px solid #ffb84a", display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
       <span style={{ fontSize: 18 }}>🏦</span>
-      <div style={{ flex: 1, fontSize: 12.5, color: "#ffb84a" }}>{attention}</div>
+      <div style={{ flex: 1, fontSize: 13.5, color: "#ffb84a" }}>{attention}</div>
     </div>}
     {alerts && left && left.rows.filter(r => r.shortAt && r.type === "uk_retail_joint").map(r => (   // the joint account only
       <div key={"short" + r.id} data-short="1" style={{ ...card, background: "#1a0a0a", border: "1px solid #ff4a6a", display: "flex", alignItems: "flex-start", gap: 10 }}>
         <span style={{ fontSize: 18 }}>⚠️</span>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#ff6b8a" }}>{r.label} account is {fmt(pounds(-r.left))} short before payday</div>
-          <div style={{ fontSize: 11.5, color: "#b06070", marginTop: 3, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: "#ff6b8a" }}>{r.label} account is {fmt(pounds(-r.left))} short before payday</div>
+          <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 3, lineHeight: 1.5 }}>
             {r.balance < 0
               ? `It's already ${fmt(pounds(-r.balance))} overdrawn, with ${fmt(pounds(r.dueTotal))} still to go out.`
               : `${r.shortAt.name} (${fmt(pounds(r.shortAt.amount))})${r.shortAt.due ? " on " + dshort(r.shortAt.due) : ""} is the first payment it won't cover${r.comeTotal > 0 ? ", even " + onceIn(r.come) : ""}.`}
@@ -2381,32 +2393,32 @@ function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock,
     {leftCard && left && <div style={{ ...card, cursor: "pointer" }} onClick={() => { haptic(); setOpen(o => !o); }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
         <div style={lab}>💰 What's really left</div>
-        <div style={{ fontSize: 11, color: "#5a6480" }}>to payday {dshort(left.next)}</div>
+        <div style={{ fontSize: 12.5, color: SUBTEXT }}>to payday {dshort(left.next)}</div>
       </div>
       {left.rows.map((r, i) => (
         <div key={r.id} style={{ marginTop: i ? 10 : 6, paddingTop: i ? 10 : 0, borderTop: i ? "1px solid #1a1f2e" : "none" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
-            <span style={{ fontSize: 12, color: "#8892b0", fontWeight: 600 }}>{r.label}</span>
+            <span style={{ fontSize: 13, color: SUBTEXT, fontWeight: 600 }}>{r.label}</span>
             <span style={{ fontSize: i ? 17 : 24, fontWeight: 800, color: r.left >= 0 ? "#00c88c" : "#ff4a6a" }}>{fmtS(pounds(r.left))}</span>
           </div>
-          <div style={{ fontSize: 11, color: "#5a6480", marginTop: 2, textAlign: "right" }}>{fmtS(pounds(r.balance))} now − {fmt(pounds(r.dueTotal))} still to go</div>
-          {r.comeTotal > 0 && <div data-come="1" style={{ fontSize: 11, color: "#8892b0", marginTop: 2, textAlign: "right" }}>+ {fmt(pounds(r.comeTotal))} from {r.come.map(c => c.who).join(" and ")}, not in yet</div>}
-          {r.unlisted > 0 && <div data-unlisted="1" style={{ fontSize: 10.5, color: "#8892b0", marginTop: 3, textAlign: "right", lineHeight: 1.45 }}>{fmt(pounds(r.unlisted))} already taken that Monzo hasn't listed yet{r.taken.length ? " (" + r.taken.map(d => d.name).join(", ") + ")" : ""}, so not counted again</div>}
+          <div style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 2, textAlign: "right" }}>{fmtS(pounds(r.balance))} now − {fmt(pounds(r.dueTotal))} still to go</div>
+          {r.comeTotal > 0 && <div data-come="1" style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 2, textAlign: "right" }}>+ {fmt(pounds(r.comeTotal))} from {r.come.map(c => c.who).join(" and ")}, not in yet</div>}
+          {r.unlisted > 0 && <div data-unlisted="1" style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 3, textAlign: "right", lineHeight: 1.45 }}>{fmt(pounds(r.unlisted))} already taken that Monzo hasn't listed yet{r.taken.length ? " (" + r.taken.map(d => d.name).join(", ") + ")" : ""}, so not counted again</div>}
         </div>
       ))}
-      <div style={{ fontSize: 11.5, color: "#4a9eff", marginTop: 10 }}>{n ? `${open ? "▾" : "▸"} ${n} Budget payment${n === 1 ? "" : "s"} still to go` : "Nothing in your Budget left to go out before payday"}</div>
+      <div style={{ fontSize: 13, color: "#4a9eff", marginTop: 10 }}>{n ? `${open ? "▾" : "▸"} ${n} Budget payment${n === 1 ? "" : "s"} still to go` : "Nothing in your Budget left to go out before payday"}</div>
       {open && left.rows.map(r => r.due.length > 0 && (
         <div key={"d" + r.id} style={{ marginTop: 6 }}>
-          {left.rows.length > 1 && <div style={{ fontSize: 10, color: "#5a6480", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, margin: "6px 0 2px" }}>{r.label}</div>}
+          {left.rows.length > 1 && <div style={{ fontSize: 12, color: SUBTEXT, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, margin: "6px 0 2px" }}>{r.label}</div>}
           {r.due.map(d => (
-            <div key={d.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, padding: "3px 0" }}>
-              <span style={{ color: "#8892b0", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span style={{ color: d.late ? "#ffb84a" : "#5a6480" }}>{d.due ? d.due.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "No date"}</span> {d.name}{d.pot && <span style={{ color: "#5a6480" }}> · into {d.pot} pot</span>}</span>
+            <div key={d.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, padding: "3px 0" }}>
+              <span style={{ color: SUBTEXT, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span style={{ color: d.late ? "#ffb84a" : SUBTEXT }}>{d.due ? d.due.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "No date"}</span> {d.name}{d.pot && <span style={{ color: SUBTEXT }}> · into {d.pot} pot</span>}</span>
               <span style={{ color: "#e8eaf0", fontWeight: 600, flexShrink: 0 }}>{fmt(pounds(d.amount))}</span>
             </div>
           ))}
         </div>
       ))}
-      <div style={{ fontSize: 10, color: "#3a4460", marginTop: 8 }}>Your Budget's bills, ticked off as Monzo sees them go · Monzo updated {agoText(left.updated)}</div>
+      <div style={{ fontSize: 12, color: SUBTEXT, marginTop: 8 }}>Your Budget's bills, ticked off as Monzo sees them go · Monzo updated {agoText(left.updated)}</div>
     </div>}
   </>);
 }
@@ -2416,7 +2428,7 @@ function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock,
 function JointCard({ check }) {
   if (!check) return null;
   const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
-  const lab = { fontSize: 11, color: "#5a6480", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
+  const lab = { fontSize: 12.5, color: SUBTEXT, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
   const dshort = d => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   const mon = check.month.toLocaleDateString("en-GB", { month: "long" });
   // Ticked only when the transfer matches the share to the penny (a 50/50 split can come to half a
@@ -2430,10 +2442,10 @@ function JointCard({ check }) {
       : gap(Math.abs(diff)) + (diff > 0 ? " more" : " less") + " than " + (theirs ? "her" : "your") + " share";
     return (
       <div key={who} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, padding: "5px 0" }}>
-        <span style={{ fontSize: 12.5, color: "#8892b0", fontWeight: 600 }}>{who}</span>
+        <span style={{ fontSize: 13.5, color: SUBTEXT, fontWeight: 600 }}>{who}</span>
         <span style={{ textAlign: "right" }}>
-          <span style={{ fontSize: 14, fontWeight: 800, color: got ? "#e8eaf0" : "#3a4460" }}>{got ? fmt(pounds(got)) : "—"}</span>
-          <span style={{ display: "block", fontSize: 10.5, fontWeight: 600, color: !got ? (check.late ? "#ffb84a" : "#5a6480") : ok ? "#00c88c" : "#ffb84a" }}>{note}{!ok || !got ? " (" + fmt(pounds(want)) + ")" : ""}</span>
+          <span style={{ fontSize: 14, fontWeight: 800, color: got ? "#e8eaf0" : SUBTEXT }}>{got ? fmt(pounds(got)) : "—"}</span>
+          <span style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: !got ? (check.late ? "#ffb84a" : SUBTEXT) : ok ? "#00c88c" : "#ffb84a" }}>{note}{!ok || !got ? " (" + fmt(pounds(want)) + ")" : ""}</span>
         </span>
       </div>
     );
@@ -2446,11 +2458,11 @@ function JointCard({ check }) {
         {line("Glyn in", check.glyn, check.want.glyn, false)}
         {line("Hollie in", check.hollie, check.want.hollie, true)}
       </div>
-      {r && <div style={{ borderTop: "1px solid #1a1f2e", marginTop: 6, paddingTop: 8, fontSize: 12, lineHeight: 1.5 }}>
+      {r && <div style={{ borderTop: "1px solid #1a1f2e", marginTop: 6, paddingTop: 8, fontSize: 13, lineHeight: 1.5 }}>
         {r.left >= 0
           ? <span style={{ color: "#00c88c", fontWeight: 600 }}>{r.dueTotal > 0 ? `✓ Covers the ${fmt(pounds(r.dueTotal))} still to go, with ${fmt(pounds(r.left))} spare` : `✓ Nothing else due before payday · ${fmt(pounds(r.left))} spare`}{r.comeTotal > 0 ? " " + onceIn(r.come) : ""}</span>
           : <span style={{ color: "#ff6b8a", fontWeight: 700 }}>⚠ {fmt(pounds(-r.left))} short of the {fmt(pounds(r.dueTotal))} still to go{r.comeTotal > 0 ? ", even " + onceIn(r.come) : ""}</span>}
-        <div style={{ fontSize: 10.5, color: "#3a4460", marginTop: 2 }}>Shares are your split for {mon}'s shared bills · {fmt(pounds(r.balance))} in the joint account now{r.unlisted > 0 ? ", after " + fmt(pounds(r.unlisted)) + " Monzo has taken but not listed yet" : ""}</div>
+        <div style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 2 }}>Shares are your split for {mon}'s shared bills · {fmt(pounds(r.balance))} in the joint account now{r.unlisted > 0 ? ", after " + fmt(pounds(r.unlisted)) + " Monzo has taken but not listed yet" : ""}</div>
       </div>}
     </div>
   );
@@ -2463,7 +2475,7 @@ function SpendCard({ data }) {
   const [all, setAll] = useState(false);
   if (!data || !data.accs.length) return null;
   const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
-  const lab = { fontSize: 11, color: "#5a6480", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
+  const lab = { fontSize: 12.5, color: SUBTEXT, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
   const dshort = d => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   const a = data.accs[Math.min(acc, data.accs.length - 1)];
   const rows = all ? a.cats : a.cats.slice(0, 6);
@@ -2476,19 +2488,19 @@ function SpendCard({ data }) {
         <div style={lab}>📊 Spending</div>
         {data.accs.length > 1 && <div style={{ display: "flex", gap: 4 }}>
           {data.accs.map((x, i) => (
-            <button key={x.id} onClick={() => { haptic(); setAcc(i); setAll(false); }} style={{ background: i === acc ? "#4a9eff" : "#0d1117", color: i === acc ? "#fff" : "#5a6480", border: "1px solid " + (i === acc ? "#4a9eff" : "#1e2535"), borderRadius: 7, fontSize: 11, fontWeight: 700, padding: "5px 10px", cursor: "pointer" }}>{x.label}</button>
+            <button key={x.id} onClick={() => { haptic(); setAcc(i); setAll(false); }} style={{ background: i === acc ? "#4a9eff" : "#0d1117", color: i === acc ? "#fff" : SUBTEXT, border: "1px solid " + (i === acc ? "#4a9eff" : "#1e2535"), borderRadius: 7, fontSize: 12.5, fontWeight: 700, padding: "5px 10px", cursor: "pointer" }}>{x.label}</button>
           ))}
         </div>}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 78px 78px", gap: 6, fontSize: 9.5, color: "#5a6480", fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", marginTop: 10, paddingBottom: 4, borderBottom: "1px solid #1a1f2e" }}>
-        <span></span><span style={{ textAlign: "right" }}>This month</span><span style={{ textAlign: "right" }}>Last month</span>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 6, fontSize: 12, color: SUBTEXT, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", marginTop: 10, paddingBottom: 4, borderBottom: "1px solid #1a1f2e" }}>
+        <span></span><span style={{ textAlign: "right", whiteSpace: "nowrap" }}>This month</span><span style={{ textAlign: "right", whiteSpace: "nowrap" }}>Last month</span>
       </div>
       {rows.map(r => (
         <div key={r.c} style={{ padding: "6px 0", borderBottom: "1px solid #161b28" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 78px 78px", gap: 6, alignItems: "baseline", fontSize: 12.5 }}>
-            <span style={{ color: "#c8cee0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{catLabel(r.c)}</span>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 6, alignItems: "baseline", fontSize: 13.5 }}>
+            <span style={{ color: SUBTEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{catLabel(r.c)}</span>
             <span style={{ textAlign: "right", fontWeight: 700, color: r.last && r.now > r.last ? "#ffb84a" : "#e8eaf0" }}>{fmt(pounds(r.now))}</span>
-            <span style={{ textAlign: "right", color: "#5a6480" }}>{fmt(pounds(r.last))}</span>
+            <span style={{ textAlign: "right", color: SUBTEXT }}>{fmt(pounds(r.last))}</span>
           </div>
           <div style={{ position: "relative", height: 4, borderRadius: 2, background: "#1e2535", marginTop: 5, overflow: "hidden" }}>
             <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: (r.last / top * 100) + "%", background: "#2a3050" }} />
@@ -2496,22 +2508,22 @@ function SpendCard({ data }) {
           </div>
         </div>
       ))}
-      {a.cats.length === 0 && <div style={{ fontSize: 12, color: "#5a6480", padding: "10px 0" }}>No spending on this account in the last two months.</div>}
+      {a.cats.length === 0 && <div style={{ fontSize: 13, color: SUBTEXT, padding: "10px 0" }}>No spending on this account in the last two months.</div>}
       {a.cats.length > 6 && <button onClick={() => { haptic(); setAll(v => !v); }} style={{ ...lnkStyle, marginTop: 8, color: "#4a9eff", textDecoration: "none" }}>{all ? "▾ Show less" : "▸ Show all " + a.cats.length}</button>}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 78px 78px", gap: 6, fontSize: 12.5, fontWeight: 800, marginTop: 8 }}>
-        <span style={{ color: "#8892b0" }}>Total</span>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 6, fontSize: 13.5, fontWeight: 800, marginTop: 8 }}>
+        <span style={{ color: SUBTEXT }}>Total</span>
         <span style={{ textAlign: "right", color: "#e8eaf0" }}>{fmt(pounds(a.now))}</span>
-        <span style={{ textAlign: "right", color: "#5a6480" }}>{fmt(pounds(a.last))}</span>
+        <span style={{ textAlign: "right", color: SUBTEXT }}>{fmt(pounds(a.last))}</span>
       </div>
       {allow.length > 0 && <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #1e2535" }}>
-        <div style={{ ...lab, fontSize: 10, marginBottom: 4 }}>Allowances · left in the pot</div>
+        <div style={{ ...lab, fontSize: 12, marginBottom: 4 }}>Allowances · left in the pot</div>
         {allow.map(x => {
           const pct = x.amount > 0 ? Math.max(0, Math.min(100, x.left / x.amount * 100)) : 0;
           return (
             <div key={x.ref} style={{ padding: "6px 0" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
-                <span style={{ color: "#c8cee0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.name} <span style={{ color: "#5a6480", fontSize: 10.5 }}>· {x.pot} pot</span></span>
-                <span style={{ flexShrink: 0 }}><b style={{ color: x.left > 0 ? "#e8eaf0" : "#ff6b8a" }}>{fmt(pounds(x.left))}</b><span style={{ color: "#5a6480" }}> of {fmt(pounds(x.amount))}</span></span>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13.5 }}>
+                <span style={{ color: SUBTEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.name} <span style={{ color: SUBTEXT, fontSize: 12.5 }}>· {x.pot} pot</span></span>
+                <span style={{ flexShrink: 0 }}><b style={{ color: x.left > 0 ? "#e8eaf0" : "#ff6b8a" }}>{fmt(pounds(x.left))}</b><span style={{ color: SUBTEXT }}> of {fmt(pounds(x.amount))}</span></span>
               </div>
               <div style={{ height: 4, borderRadius: 2, background: "#1e2535", marginTop: 5, overflow: "hidden" }}>
                 <div style={{ height: "100%", width: pct + "%", background: pct < 15 ? "#ff6b8a" : pct < 40 ? "#ffb84a" : "#00c88c" }} />
@@ -2520,7 +2532,7 @@ function SpendCard({ data }) {
           );
         })}
       </div>}
-      <div style={{ fontSize: 10, color: "#3a4460", marginTop: 8 }}>Monzo's categories · this month is since payday ({dshort(data.start)}), last month {dshort(data.prevStart)} – {dshort(lastEnd)} · transfers, savings and pots not counted</div>
+      <div style={{ fontSize: 12, color: SUBTEXT, marginTop: 8 }}>Monzo's categories · this month is since payday ({dshort(data.start)}), last month {dshort(data.prevStart)} – {dshort(lastEnd)} · transfers, savings and pots not counted</div>
     </div>
   );
 }
@@ -4820,10 +4832,10 @@ const calcTimesheetTotals = days => {
   };
 
   const card={background:"#141824",borderRadius:10,border:"1px solid #1e2535",padding:"14px 12px"};
-  const hdr={fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6};
-  const inp={background:"#1e2535",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:13,padding:"8px 10px",width:"100%",boxSizing:"border-box"};
+  const hdr={fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6};
+  const inp={background:"#1e2535",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:13.5,padding:"8px 10px",width:"100%",boxSizing:"border-box"};
   const numI={...inp,textAlign:"right",fontWeight:700};
-  const row={display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:12};
+  const row={display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #1a1f2e",fontSize:13};
 
   const allSorted=useMemo(()=>sortH(history),[history]);
   const missingMonths=useMemo(()=>getMissingMonths(history),[history]);
@@ -5127,7 +5139,7 @@ const calcTimesheetTotals = days => {
     return <div style={{minHeight:"100vh",background:"#0d0f14",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
       <div style={{fontSize:42,opacity:0.7}}>🔐</div>
       <h1 style={{margin:0,fontSize:18,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
-      <div style={{color:"#3a4460",fontSize:11}}>Checking session...</div>
+      <div style={{color:SUBTEXT,fontSize:12.5}}>Checking session...</div>
     </div>;
   }
 
@@ -5153,7 +5165,7 @@ const calcTimesheetTotals = days => {
         <div style={{background:"linear-gradient(135deg,#1a1f2e,#0d1117)",borderBottom:"1px solid #1e2535",padding:"14px 14px 12px",position:"sticky",top:0,zIndex:10}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <h1 style={{margin:0,fontSize:20,fontWeight:800,color:"#fff",letterSpacing:3}}><span style={{color:"#4a9eff"}}>V</span>AULTED</h1>
-            <div style={{color:"#4a9eff",fontSize:11,fontWeight:600}}>Loading...</div>
+            <div style={{color:"#4a9eff",fontSize:12.5,fontWeight:600}}>Loading...</div>
           </div>
         </div>
         <div style={{padding:"14px 12px"}}>
@@ -5189,7 +5201,7 @@ const calcTimesheetTotals = days => {
       style={{minHeight:"100vh",background:"#0d0f14",color:"#e8eaf0",fontFamily:"'DM Sans','Segoe UI',sans-serif",paddingBottom:"calc(96px + env(safe-area-inset-bottom))"}}>
       {/* Auto-import toast */}
       {tsAutoMsg && (
-        <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:999,background:tsAutoMsg.ok?"#0a1a10":"#1a0a10",border:"1px solid "+(tsAutoMsg.ok?"#00c88c":"#ff4a6a"),borderRadius:10,padding:"10px 18px",fontSize:13,fontWeight:600,color:tsAutoMsg.ok?"#00c88c":"#ff6b8a",boxShadow:"0 4px 20px #000a",whiteSpace:"nowrap"}}>
+        <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:999,background:tsAutoMsg.ok?"#0a1a10":"#1a0a10",border:"1px solid "+(tsAutoMsg.ok?"#00c88c":"#ff4a6a"),borderRadius:10,padding:"10px 18px",fontSize:13.5,fontWeight:600,color:tsAutoMsg.ok?"#00c88c":"#ff6b8a",boxShadow:"0 4px 20px #000a",whiteSpace:"nowrap"}}>
           {tsAutoMsg.text}
         </div>
       )}
@@ -5202,11 +5214,11 @@ const calcTimesheetTotals = days => {
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <SyncIndicator onClick={()=>{haptic();setShowMore(false);setTab("Diag");}}/>
             <button onClick={()=>{haptic("medium");handleSignOut();}} title="Sign out"
-              style={{background:"none",border:"none",color:"#3a4460",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
+              style={{background:"none",border:"none",color:SUBTEXT,fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>🔒</button>
           </div>
           <div style={{textAlign:"right"}}>
-            <div style={{fontSize:11,color:"#5a6480"}}>{history.length} payslips</div>
-            <div style={{fontSize:11,color:"#3a4460"}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> - {nextPayday.date}</div>
+            <div style={{fontSize:12.5,color:SUBTEXT}}>{history.length} payslips</div>
+            <div style={{fontSize:12.5,color:SUBTEXT}}>Paid in <span style={{color:"#ffb84a",fontWeight:700}}>{nextPayday.days}d</span> - {nextPayday.date}</div>
           </div>
         </div>
       </div>
@@ -5219,12 +5231,12 @@ const calcTimesheetTotals = days => {
               <div onClick={()=>{haptic();const first=discrepancies.find(d=>d.status==="discrepancy"&&!dismissedDiscs.includes(d.month));if(first)setExpandedMonth(first.month);setTab("Timesheet");}} style={{background:"#1a0a0a",border:"1px solid #ff4a6a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>⚠️</span>
                 <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:700,color:"#ff6b8a"}}>Pay discrepancy detected</div>
-                  <div style={{fontSize:11,color:"#8a3040",marginTop:2}}>
+                  <div style={{fontSize:13.5,fontWeight:700,color:"#ff6b8a"}}>Pay discrepancy detected</div>
+                  <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>
                     {discrepancies.filter(d=>d.status==="discrepancy"&&!dismissedDiscs.includes(d.month)).map(d=>d.month).join(", ")} - Tap to review
                   </div>
                 </div>
-                <span style={{fontSize:11,color:"#ff6b8a",fontWeight:700}}>Review →</span>
+                <span style={{fontSize:12.5,color:"#ff6b8a",fontWeight:700}}>Review →</span>
               </div>
             )}
 
@@ -5232,14 +5244,14 @@ const calcTimesheetTotals = days => {
               <div style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
                 <span style={{fontSize:20}}>⏰</span>
                 <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Session expiring soon</div>
-                  <div style={{fontSize:11,color:"#7a6030",marginTop:2}}>You'll be signed out shortly. Refresh data or sign in again to extend.</div>
+                  <div style={{fontSize:13.5,fontWeight:700,color:"#ffb84a"}}>Session expiring soon</div>
+                  <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>You'll be signed out shortly. Refresh data or sign in again to extend.</div>
                 </div>
                 <button onClick={async () => {
                   haptic("medium");
                   const { error } = await supabase.auth.refreshSession();
                   if (!error) { setSessionWarning(false); refreshAll(); }
-                }} style={{background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"6px 10px",cursor:"pointer"}}>Refresh</button>
+                }} style={{background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:12.5,fontWeight:700,padding:"6px 10px",cursor:"pointer"}}>Refresh</button>
               </div>
             )}
 
@@ -5247,18 +5259,18 @@ const calcTimesheetTotals = days => {
               <div onClick={triggerInstall} style={{background:"#0a1520",border:"1px solid #4a9eff44",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>📲</span>
                 <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:700,color:"#4a9eff"}}>Add Vaulted to Home Screen</div>
-                  <div style={{fontSize:11,color:"#3a4460",marginTop:2}}>Install for quick access -- works offline</div>
+                  <div style={{fontSize:13.5,fontWeight:700,color:"#4a9eff"}}>Add Vaulted to Home Screen</div>
+                  <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>Install for quick access -- works offline</div>
                 </div>
-                <span style={{fontSize:11,color:"#4a9eff",fontWeight:700}}>Install →</span>
+                <span style={{fontSize:12.5,color:"#4a9eff",fontWeight:700}}>Install →</span>
               </div>
             )}
             {showTsReminder&&(
               <div onClick={()=>{setShowPayslipUpload(true);setTab("Diag");}} style={{background:"#1a1500",border:"1px solid #ffb84a",borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
                 <span style={{fontSize:20}}>⚠️</span>
                 <div>
-                  <div style={{fontSize:13,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
-                  <div style={{fontSize:12,color:"#8a7040",marginTop:2}}>{tsDue==="monthly"?"Monthly - ":"Weekly - "}{tsLastReceived?`Last uploaded ${Math.floor((new Date()-new Date(tsLastReceived))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} - Tap to upload</div>
+                  <div style={{fontSize:13.5,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
+                  <div style={{fontSize:13,color:SUBTEXT,marginTop:2}}>{tsDue==="monthly"?"Monthly - ":"Weekly - "}{tsLastReceived?`Last uploaded ${Math.floor((new Date()-new Date(tsLastReceived))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} - Tap to upload</div>
                 </div>
               </div>
             )}
@@ -5273,9 +5285,9 @@ const calcTimesheetTotals = days => {
               <div style={{background:"#1a0f1a",border:"1px solid #c84aff",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                   <span style={{fontSize:16}}>📭</span>
-                  <span style={{fontSize:13,fontWeight:700,color:"#c84aff"}}>Missing payslips detected</span>
+                  <span style={{fontSize:13.5,fontWeight:700,color:"#c84aff"}}>Missing payslips detected</span>
                 </div>
-                <div style={{fontSize:12,color:"#8a5080",lineHeight:1.8}}>{missingMonths.join(", ")}</div>
+                <div style={{fontSize:13,color:SUBTEXT,lineHeight:1.8}}>{missingMonths.join(", ")}</div>
               </div>
             )}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
@@ -5286,9 +5298,9 @@ const calcTimesheetTotals = days => {
                 {label:"FY Avg Net",      value:fmt(ts.avgNet),   sub:"Apr to now",      accent:"#ffb84a"},
               ].map(k=>(
                 <div key={k.label} style={{...card,textAlign:"center",padding:"14px 10px"}}>
-                  <div style={{fontSize:11,color:"#5a6480",fontWeight:600,letterSpacing:0.5,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
+                  <div style={{fontSize:12.5,color:SUBTEXT,fontWeight:600,letterSpacing:0.5,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
                   <div style={{fontSize:22,fontWeight:700,color:k.accent,letterSpacing:-0.5}}>{k.value}</div>
-                  <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>{k.sub}</div>
+                  <div style={{fontSize:12.5,color:SUBTEXT,marginTop:4}}>{k.sub}</div>
                 </div>
               ))}
             </div>
@@ -5299,17 +5311,17 @@ const calcTimesheetTotals = days => {
               return(
                 <div style={{...card,marginBottom:12}}>
                   <SectionLabel>Tax Year {fyt.fyLabel} — On Track</SectionLabel>
-                  <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>Projected full year · based on {fyt.count}/12 payslips</div>
+                  <div style={{fontSize:12,color:SUBTEXT,marginBottom:8}}>Projected full year · based on {fyt.count}/12 payslips</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                     <div style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
-                      <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>Gross</div>
+                      <div style={{fontSize:12.5,color:SUBTEXT,marginBottom:4}}>Gross</div>
                       <div style={{fontSize:16,fontWeight:700,color:"#7c6fff"}}>{fmt(fyt.projGross)}</div>
-                      <div style={{fontSize:10,color:"#3a4460",marginTop:3}}>{fmt(fyt.gross)} so far</div>
+                      <div style={{fontSize:12,color:SUBTEXT,marginTop:3}}>{fmt(fyt.gross)} so far</div>
                     </div>
                     <div style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
-                      <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>Net</div>
+                      <div style={{fontSize:12.5,color:SUBTEXT,marginBottom:4}}>Net</div>
                       <div style={{fontSize:16,fontWeight:700,color:"#4a9eff"}}>{fmt(fyt.projNet)}</div>
-                      <div style={{fontSize:10,color:"#3a4460",marginTop:3}}>{fmt(fyt.net)} so far</div>
+                      <div style={{fontSize:12,color:SUBTEXT,marginTop:3}}>{fmt(fyt.net)} so far</div>
                     </div>
                   </div>
                 </div>
@@ -5320,7 +5332,7 @@ const calcTimesheetTotals = days => {
               return(
                 <div style={{...card,marginBottom:12}}>
                   <SectionLabel>Latest vs Previous Month</SectionLabel>
-                  <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>{latest.month} vs {prevMonth.month}</div>
+                  <div style={{fontSize:12,color:SUBTEXT,marginBottom:8}}>{latest.month} vs {prevMonth.month}</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
                     {[
                       {label:"Gross",diff:latest.gross-prevMonth.gross,prev:prevMonth.gross,val:fmt(latest.gross)},
@@ -5330,11 +5342,11 @@ const calcTimesheetTotals = days => {
                       const pct = k.prev > 0 ? Math.round((k.diff/k.prev)*1000)/10 : null;
                       return (
                         <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
-                          <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>{k.label}</div>
+                          <div style={{fontSize:12.5,color:SUBTEXT,marginBottom:4}}>{k.label}</div>
                           <div style={{fontSize:14,fontWeight:700,color:"#e8eaf0"}}>{k.val}</div>
-                          <div style={{fontSize:11,fontWeight:600,color:k.diff>=0?"#00c88c":"#ff6b8a",marginTop:3}}>
-                            {k.diff>=0?"+":""}{fmt(Math.abs(k.diff))}
-                            {pct !== null && <span style={{fontSize:9,marginLeft:4,opacity:0.7}}>({pct>=0?"+":""}{pct}%)</span>}
+                          <div style={{fontSize:12.5,fontWeight:600,color:k.diff>=0?"#00c88c":"#ff6b8a",marginTop:3}}>
+                            <span style={{whiteSpace:"nowrap"}}>{k.diff>=0?"+":""}{fmt(Math.abs(k.diff))}</span>
+                            {pct !== null && <span style={{display:"block",fontSize:11.5,opacity:0.7}}>({pct>=0?"+":""}{pct}%)</span>}
                           </div>
                         </div>
                       );
@@ -5346,7 +5358,7 @@ const calcTimesheetTotals = days => {
 
             <div style={{...card,marginBottom:12}}>
               <SectionLabel>Monthly Budget · {homeName}</SectionLabel>
-              <div style={{fontSize:10,color:"#3a4460",marginBottom:8}}>Your {homePayDay} pay against {homeName}'s bills — the month you're paying in for</div>
+              <div style={{fontSize:12,color:SUBTEXT,marginBottom:8}}>Your {homePayDay} pay against {homeName}'s bills — the month you're paying in for</div>
               {[
                 ["Net Pay",               fmt(homeNet),   "#4a9eff"],
                 ...(laHome&&laHome.income?[["Other Income",fmtS(laHome.income),"#00c88c"]]:[]),
@@ -5367,15 +5379,15 @@ const calcTimesheetTotals = days => {
             <div style={{...card,marginBottom:12}}>
               <SectionLabel>Student Loan -- Plan 2</SectionLabel>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
-                <span style={{fontSize:13,color:"#8892b0"}}>{slProgress.elapsed} of {slProgress.total} years</span>
-                <span style={{fontSize:13,fontWeight:700,color:"#c84aff"}}>{slProgress.pct}% complete</span>
+                <span style={{fontSize:13.5,color:SUBTEXT}}>{slProgress.elapsed} of {slProgress.total} years</span>
+                <span style={{fontSize:13.5,fontWeight:700,color:"#c84aff"}}>{slProgress.pct}% complete</span>
               </div>
               <div style={{background:"#1e2535",borderRadius:99,height:8,overflow:"hidden",marginBottom:6}}>
                 <div style={{width:slProgress.pct+"%",height:"100%",background:"linear-gradient(90deg,#7c6fff,#c84aff)",borderRadius:99}}/>
               </div>
-              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#3a4460"}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:SUBTEXT}}>
                 <span>Started {SL_START_YEAR}</span>
-                <span style={{color:"#5a6480"}}>{slProgress.yearsLeft} years to write-off</span>
+                <span style={{color:SUBTEXT}}>{slProgress.yearsLeft} years to write-off</span>
                 <span>Write-off {SL_WRITEOFF_YEAR}</span>
               </div>
             </div>
@@ -5383,7 +5395,7 @@ const calcTimesheetTotals = days => {
             <div style={{...card,marginBottom:12}}>
               <button onClick={()=>setShowAllTimeTotals(o=>!o)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"none",border:"none",cursor:"pointer",padding:0,marginBottom:showAllTimeTotals?12:0}}>
                 <SectionLabel>All-Time Totals</SectionLabel>
-                <span style={{fontSize:12,color:"#3a4460",marginTop:-10}}>{showAllTimeTotals?"A":"V"}</span>
+                <span style={{fontSize:13,color:SUBTEXT,marginTop:-10}}>{showAllTimeTotals?"A":"V"}</span>
               </button>
               {showAllTimeTotals&&[
                 ["Total Earned (Gross)", fmt(ts.gross), "#7c6fff"],
@@ -5399,28 +5411,28 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
 
-            <div style={{fontSize:12,color:"#5a6480",fontWeight:600,marginBottom:8}}>Historical Charts</div>
+            <div style={{fontSize:13,color:SUBTEXT,fontWeight:600,marginBottom:8}}>Historical Charts</div>
             <div style={{border:"1px solid #1e2535",borderRadius:10,overflow:"hidden",marginBottom:8}}>
               <button onClick={()=>{haptic();setNetTrendOpen(o=>!o);}} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 14px",background:"#141824",border:"none",cursor:"pointer",color:"#e8eaf0"}}>
-                <span style={{fontSize:13,fontWeight:600,color:"#8892b0"}}>Net Pay Trend</span>
-                <span style={{fontSize:12,color:"#3a4460"}}>{netTrendOpen?"A":"V"}</span>
+                <span style={{fontSize:13.5,fontWeight:600,color:SUBTEXT}}>Net Pay Trend</span>
+                <span style={{fontSize:13,color:SUBTEXT}}>{netTrendOpen?"A":"V"}</span>
               </button>
               {netTrendOpen&&(
                 <div style={{padding:"12px",background:"#111520"}}>
                   <div style={{display:"flex",justifyContent:"flex-end",gap:3,marginBottom:10}}>
                     {RANGES.map(r=>(
                       <button key={r} onClick={()=>setChartRange(r)} style={{
-                        background:chartRange===r?"#4a9eff":"#1e2535",color:chartRange===r?"#fff":"#3a4460",
-                        border:"none",borderRadius:4,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer"
+                        background:chartRange===r?"#4a9eff":"#1e2535",color:chartRange===r?"#fff":SUBTEXT,
+                        border:"none",borderRadius:4,padding:"3px 7px",fontSize:12,fontWeight:600,cursor:"pointer"
                       }}>{r}</button>
                     ))}
                   </div>
                   <ResponsiveContainer width="100%" height={160}>
-                    <LineChart data={chartData}>
+                    <LineChart data={chartData} margin={{top:8,right:12,left:0,bottom:0}}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#1e2535"/>
-                      <XAxis dataKey="month" tick={{fill:"#3a4460",fontSize:8}} tickLine={false} interval={Math.max(0,Math.floor(chartData.length/7)-1)}/>
-                      <YAxis tick={{fill:"#3a4460",fontSize:8}} tickLine={false} tickFormatter={v=>"£"+v}/>
-                      <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:11}} formatter={v=>fmt(v)}/>
+                      <XAxis dataKey="month" tick={{fill:SUBTEXT,fontSize:11}} tickLine={false} interval={chartEvery(chartData.length)} tickFormatter={chartMonth}/>
+                      <YAxis tick={{fill:SUBTEXT,fontSize:11}} tickLine={false} tickFormatter={v=>"£"+v}/>
+                      <Tooltip contentStyle={{background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:6,color:"#e8eaf0",fontSize:12.5}} formatter={v=>fmt(v)}/>
                       <Line type="monotone" dataKey="net" stroke="#4a9eff" strokeWidth={2} dot={false} name="Net Pay"/>
                     </LineChart>
                   </ResponsiveContainer>
@@ -5474,35 +5486,35 @@ const calcTimesheetTotals = days => {
               style={{display:"flex",alignItems:"center",gap:10,padding:"11px 13px",borderTop:"1px solid #171d2b",
                 ...(first?{borderTop:"none"}:{})}}>
               <div onClick={onName} style={{flex:1,minWidth:0,cursor:onName?"pointer":"default"}}>
-                <div style={{fontSize:13.5,color:neg?"#4ad07a":"#c8cee0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                <div style={{fontSize:14,color:neg?"#4ad07a":SUBTEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   {name}
-                  {tag&&<span style={{display:"inline-block",fontSize:9,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#1d1608",color:"#ffb84a",marginLeft:6,verticalAlign:1}}>{tag}</span>}
+                  {tag&&<span style={{display:"inline-block",fontSize:11.5,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#1d1608",color:"#ffb84a",marginLeft:6,verticalAlign:1}}>{tag}</span>}
                 </div>
-                {sub&&<div style={{fontSize:10.5,color:"#3a4460",marginTop:2}}>{sub}</div>}
-                {tick&&<div data-tick="1" style={{fontSize:10.5,color:tick.color,marginTop:2,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tick.text}</div>}
+                {sub&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{sub}</div>}
+                {tick&&<div data-tick="1" style={{fontSize:12.5,color:tick.color,marginTop:2,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tick.text}</div>}
                 {tags&&tags.length>0&&(
                   <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:4}}>
                     {tags.map(t=>(
-                      <span key={t} style={{fontSize:9.5,fontWeight:600,color:"#8892b0",background:"#1a1f2e",
+                      <span key={t} style={{fontSize:12,fontWeight:600,color:SUBTEXT,background:"#1a1f2e",
                         border:"1px solid #232a3d",borderRadius:4,padding:"2px 6px"}}>{t}</span>
                     ))}
                   </div>
                 )}
               </div>
               <div onClick={onAmount} style={{textAlign:"right",cursor:onAmount?"pointer":"default"}}>
-                <div style={{fontSize:13.5,fontWeight:700,color:neg?"#4ad07a":"#e8eaf0"}}>{fmtS(amt)}</div>
-                {her!=null&&<div style={{fontSize:10.5,color:"#3a4460",marginTop:2}}>{themName.toLowerCase()} {fmtS(her)}</div>}
+                <div style={{fontSize:14,fontWeight:700,color:neg?"#4ad07a":"#e8eaf0"}}>{fmtS(amt)}</div>
+                {her!=null&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{themName.toLowerCase()} {fmtS(her)}</div>}
               </div>
             </div>
           );
 
           const editRow=(b,first)=>(
             <div key={b.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 13px",borderTop:first?"none":"1px solid #171d2b",background:"#0f141f"}}>
-              <span style={{flex:1,fontSize:12,color:"#5a6480"}}>{isVariable(b)?b.name+" in "+selLabel:b.name+" from "+selLabel+" on"}</span>
+              <span style={{flex:1,fontSize:13,color:SUBTEXT}}>{isVariable(b)?b.name+" in "+selLabel:b.name+" from "+selLabel+" on"}</span>
               <input autoFocus type="number" defaultValue={String(amt1(b))}
                 onBlur={e=>onAmt(b.id,e.target.value)}
                 onKeyDown={e=>{if(e.key==="Enter")onAmt(b.id,e.target.value);}}
-                style={{width:96,background:"#1e2535",border:"1px solid "+accent,borderRadius:6,color:"#e8eaf0",fontSize:13,padding:"7px 8px",textAlign:"right"}}/>
+                style={{width:96,background:"#1e2535",border:"1px solid "+accent,borderRadius:6,color:"#e8eaf0",fontSize:13.5,padding:"7px 8px",textAlign:"right"}}/>
             </div>
           );
 
@@ -5535,12 +5547,12 @@ const calcTimesheetTotals = days => {
               borderBottom:isShut?"none":"1px solid "+(tint?tint+"33":"#1e2535")}}>
               <span style={{display:"flex",alignItems:"center",gap:7,minWidth:0}}>
                 {tint&&<span style={{flex:"0 0 auto",width:7,height:7,borderRadius:4,background:tint}}/>}
-                <span style={{fontSize:12,fontWeight:700,color:tint||"#c8cee0",letterSpacing:.2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
-                {count!=null&&<span style={{flex:"0 0 auto",fontSize:11,color:"#3a4460",fontWeight:600}}>{count}</span>}
+                <span style={{fontSize:13,fontWeight:700,color:tint||SUBTEXT,letterSpacing:.2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
+                {count!=null&&<span style={{flex:"0 0 auto",fontSize:12.5,color:SUBTEXT,fontWeight:600}}>{count}</span>}
               </span>
               <span style={{flex:"0 0 auto",display:"flex",alignItems:"center",gap:8}}>
-                <span style={{fontSize:12.5,fontWeight:700,color:"#7a8499"}}>{fmtS(value)}</span>
-                {onToggle&&<span style={{fontSize:11,color:tint||"#5a6480",width:9,textAlign:"center"}}>{isShut?"▸":"▾"}</span>}
+                <span style={{fontSize:13.5,fontWeight:700,color:SUBTEXT}}>{fmtS(value)}</span>
+                {onToggle&&<span style={{fontSize:12.5,color:tint||SUBTEXT,width:9,textAlign:"center"}}>{isShut?"▸":"▾"}</span>}
               </span>
             </div>
           );
@@ -5564,7 +5576,7 @@ const calcTimesheetTotals = days => {
                 onDrop={catId!==undefined?(()=>drop(catId,isG)):undefined}>
                 {groupCard(label+(catId||""),<>
                   {band(label,value,list.length,tint,()=>toggleCat(catId),shut)}
-                  {!shut&&list.length===0&&<div style={{fontSize:11,color:"#2a3050",fontStyle:"italic",padding:"11px 13px"}}>Drop bills here</div>}
+                  {!shut&&list.length===0&&<div style={{fontSize:12.5,color:SUBTEXT,fontStyle:"italic",padding:"11px 13px"}}>Drop bills here</div>}
                   {!shut&&billRows(sortBills(list))}
                 </>,on,tint)}
               </div>
@@ -5591,8 +5603,8 @@ const calcTimesheetTotals = days => {
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
                 <span style={{fontSize:14,fontWeight:800,color:"#e8eaf0"}}>{laSel?MONTHS[laSel.m-1]+" "+laSel.yr:""}</span>
                 {selIsHome
-                  ? <span style={{fontSize:10.5,fontWeight:700,padding:"3px 8px",borderRadius:20,background:"#0a2018",color:rateCol,border:"1px solid #17553f"}}>{rate}% left over</span>
-                  : <button onClick={()=>{haptic();setSelPick(null);}} style={{background:"transparent",border:"1px solid #2a5a8a",borderRadius:20,color:"#8ec5ff",fontSize:10.5,fontWeight:700,padding:"3px 10px",cursor:"pointer"}}>Back to {homeLabel}</button>}
+                  ? <span style={{fontSize:12.5,fontWeight:700,padding:"3px 8px",borderRadius:20,background:"#0a2018",color:rateCol,border:"1px solid #17553f"}}>{rate}% left over</span>
+                  : <button onClick={()=>{haptic();setSelPick(null);}} style={{background:"transparent",border:"1px solid #2a5a8a",borderRadius:20,color:"#8ec5ff",fontSize:12.5,fontWeight:700,padding:"3px 10px",cursor:"pointer"}}>Back to {homeLabel}</button>}
               </div>
 
               <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4,WebkitOverflowScrolling:"touch"}}>
@@ -5600,8 +5612,8 @@ const calcTimesheetTotals = days => {
                   const on=i===selIdx;
                   return (
                     <button key={r.key} onClick={()=>{haptic();setSelPick(i===homeIdx?null:i);}} style={{
-                      flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#0d1117",color:on?"#fff":(i===homeIdx?"#8ec5ff":"#5a6480"),
-                      border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"7px 11px",fontSize:11.5,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                      flex:"0 0 auto",position:"relative",background:on?"#4a9eff":"#0d1117",color:on?"#fff":(i===homeIdx?"#8ec5ff":SUBTEXT),
+                      border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"7px 11px",fontSize:13,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
                       {MONTHS[r.m-1]}{r.m===1||i===0?" "+String(r.yr).slice(2):""}
                       {r.hits.length>0&&<span style={{position:"absolute",top:4,right:4,width:5,height:5,borderRadius:3,background:on?"#fff":"#ffb84a"}}/>}
                     </button>
@@ -5611,9 +5623,9 @@ const calcTimesheetTotals = days => {
 
               {/* Payday: who's paid into the joint account for this month so far (from Monzo). */}
               {selIsHome&&payIn.who&&(
-                <div style={{fontSize:11,color:"#5a6480",lineHeight:1.5,padding:"0 2px"}}>
-                  Paid in for {homeLabel}: <b style={{color:payIn.who.glyn?"#00c88c":"#8892b0"}}>Glyn {payIn.who.glyn?"✓":"not yet"}</b>
-                  {" · "}<b style={{color:payIn.who.hollie?"#00c88c":"#8892b0"}}>Hollie {payIn.who.hollie?"✓":"not yet"}</b>
+                <div style={{fontSize:12.5,color:SUBTEXT,lineHeight:1.5,padding:"0 2px"}}>
+                  Paid in for {homeLabel}: <b style={{color:payIn.who.glyn?"#00c88c":SUBTEXT}}>Glyn {payIn.who.glyn?"✓":"not yet"}</b>
+                  {" · "}<b style={{color:payIn.who.hollie?"#00c88c":SUBTEXT}}>Hollie {payIn.who.hollie?"✓":"not yet"}</b>
                   {" — moves on to "+MONTHS[payIn.m%12]+" once you're both in"}
                 </div>
               )}
@@ -5627,7 +5639,7 @@ const calcTimesheetTotals = days => {
                   :names.slice(0,2).join(", ")+" and "+(names.length-2)+" more";
                 return (
                   <div style={{background:"#1d160833",border:"1px solid #4a3a1a",borderRadius:8,padding:"8px 10px",
-                    fontSize:11,color:"#ffb84a",lineHeight:1.5}}>
+                    fontSize:12.5,color:"#ffb84a",lineHeight:1.5}}>
                     <b>{label}</b> {names.length===1?"hasn't":"haven't"} been set for {selLabel} — counted as £0 until you do.
                   </div>
                 );
@@ -5635,16 +5647,16 @@ const calcTimesheetTotals = days => {
 
               <div style={{display:"flex",alignItems:"flex-end",gap:14}}>
                 <div style={{flex:1}}>
-                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Left over</div>
+                  <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Left over</div>
                   <div style={{fontSize:21,fontWeight:800,color:selSurplus>=0?"#00c88c":"#ff4a6a"}}>{fmtS(selSurplus)}</div>
-                  {selIncome>0&&<div style={{fontSize:10,color:"#4ad07a",marginTop:2}}>incl. {fmt(selIncome)} income</div>}
+                  {selIncome>0&&<div style={{fontSize:12,color:"#4ad07a",marginTop:2}}>incl. {fmt(selIncome)} income</div>}
                 </div>
                 <div style={{flex:1}}>
-                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Shared</div>
+                  <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Shared</div>
                   <div style={{fontSize:15,fontWeight:700,color:"#4a9eff"}}>{fmtS(selShMine)}</div>
                 </div>
                 <div style={{flex:1}}>
-                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Mine</div>
+                  <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Mine</div>
                   <div style={{fontSize:15,fontWeight:700,color:"#ff8c4a"}}>{fmtS(selPersonal)}</div>
                 </div>
               </div>
@@ -5654,17 +5666,17 @@ const calcTimesheetTotals = days => {
             <div style={{display:"flex",gap:4}}>
               {[["shared","Shared"],["glyn","Mine"]].map(([v,l])=>(
                 <button key={v} onClick={()=>setBudTab(v)} style={{
-                  flex:1,background:budTab===v?"#4a9eff":"#141824",color:budTab===v?"#fff":"#5a6480",
-                  border:"1px solid "+(budTab===v?"#4a9eff":"#1e2535"),borderRadius:8,padding:"9px",fontSize:12,fontWeight:600,cursor:"pointer"
+                  flex:1,background:budTab===v?"#4a9eff":"#141824",color:budTab===v?"#fff":SUBTEXT,
+                  border:"1px solid "+(budTab===v?"#4a9eff":"#1e2535"),borderRadius:8,padding:"9px",fontSize:13,fontWeight:600,cursor:"pointer"
                 }}>{l}</button>
               ))}
             </div>
             <div style={{display:"flex",gap:4,alignItems:"center",marginTop:-4}}>
-              <span style={{fontSize:9.5,color:"#3a4460",fontWeight:700,letterSpacing:1,textTransform:"uppercase",paddingLeft:2,marginRight:2}}>Sort</span>
+              <span style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",paddingLeft:2,marginRight:2}}>Sort</span>
               {[["manual","Manual"],["az","A–Z"],["high","High"],["low","Low"]].map(([v,l])=>(
                 <button key={v} onClick={()=>{haptic();setBillSort(v);save(SK.billSort,v);}} style={{
-                  flex:1,background:billSort===v?"#1a2535":"transparent",color:billSort===v?"#8ec5ff":"#5a6480",
-                  border:"1px solid "+(billSort===v?"#2a5a8a":"#1e2535"),borderRadius:7,padding:"6px 2px",fontSize:10.5,fontWeight:700,cursor:"pointer"
+                  flex:1,background:billSort===v?"#1a2535":"transparent",color:billSort===v?"#8ec5ff":SUBTEXT,
+                  border:"1px solid "+(billSort===v?"#2a5a8a":"#1e2535"),borderRadius:7,padding:"6px 2px",fontSize:12.5,fontWeight:700,cursor:"pointer"
                 }}>{l}</button>
               ))}
               <button onClick={()=>{
@@ -5674,13 +5686,13 @@ const calcTimesheetTotals = days => {
                 const n={...collapsed};
                 keys.forEach(k=>{anyOpen?n[k]=true:delete n[k];});
                 setCollapsed(n);save(SK.collapsed,n);
-              }} style={{flex:"0 0 auto",background:"transparent",border:"1px solid #1e2535",borderRadius:7,color:"#5a6480",fontSize:11,fontWeight:700,padding:"6px 9px",cursor:"pointer"}}>⇕</button>
+              }} style={{flex:"0 0 auto",background:"transparent",border:"1px solid #1e2535",borderRadius:7,color:SUBTEXT,fontSize:12.5,fontWeight:700,padding:"6px 9px",cursor:"pointer"}}>⇕</button>
             </div>
 
             {/* ── Monzo: bills with no payment matched yet, or where Hollie's ticks come from ── */}
             {selIsNow&&(unlinkedBills.length>0||potUnmatched.length>0)&&(
               <div onClick={()=>{haptic();setLinkReview(true);}} style={{background:"#0f1a2b",border:"1px solid #2a4a7a",borderRadius:10,padding:"10px 12px",
-                fontSize:11.5,color:"#8ec5ff",display:"flex",alignItems:"center",gap:8,cursor:"pointer",marginTop:-2}}>
+                fontSize:13,color:"#8ec5ff",display:"flex",alignItems:"center",gap:8,cursor:"pointer",marginTop:-2}}>
                 <span>🔗</span>
                 <span style={{flex:1}}>
                   {unlinkedBills.length>0&&`${unlinkedBills.length} bill${unlinkedBills.length===1?"":"s"} not matched to a Monzo payment yet`}
@@ -5693,7 +5705,7 @@ const calcTimesheetTotals = days => {
               </div>
             )}
             {selIsNow&&!isG&&!bankMatch&&bankSummary&&bankSummary.mk===nowMkBank&&bankSummary.at&&(
-              <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px",marginTop:-4}}>✓ Paid ticks come from Glyn's Monzo · checked {agoText(bankSummary.src||bankSummary.at)}</div>
+              <div style={{fontSize:12.5,color:SUBTEXT,padding:"0 4px",marginTop:-4}}>✓ Paid ticks come from Glyn's Monzo · checked {agoText(bankSummary.src||bankSummary.at)}</div>
             )}
 
             {/* ── the bills ── */}
@@ -5716,7 +5728,7 @@ const calcTimesheetTotals = days => {
                 bills.filter(b=>bmap[b.id]===c.id),c.id,catColor(c,ci)))}
               {uncat.length>0&&section("Uncategorised",
                 uncat.reduce((s,b)=>s+(isG?amt1(b):mineOf(b)),0),uncat,null)}
-              {bills.length===0&&groupCard("empty",<div style={{fontSize:12,color:"#3a4460",textAlign:"center",padding:"18px 12px"}}>No bills yet — add your first below.</div>)}
+              {bills.length===0&&groupCard("empty",<div style={{fontSize:13,color:SUBTEXT,textAlign:"center",padding:"18px 12px"}}>No bills yet — add your first below.</div>)}
 
               {schedRows.length>0&&groupCard("sched",<>
                   {band("Only in "+selLabel,
@@ -5740,8 +5752,8 @@ const calcTimesheetTotals = days => {
                 </>)}
 
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 13px",
-                background:"#141824",border:"1px solid #2a3050",borderRadius:12,fontSize:13.5,fontWeight:800}}>
-                <span style={{color:"#8892b0"}}>{isG?"My bills":"My share"} · {selLabel}</span>
+                background:"#141824",border:"1px solid #2a3050",borderRadius:12,fontSize:14,fontWeight:800}}>
+                <span style={{color:SUBTEXT}}>{isG?"My bills":"My share"} · {selLabel}</span>
                 <span style={{color:accent}}>{fmtS(listTotal)}</span>
               </div>
             </div>
@@ -5750,11 +5762,11 @@ const calcTimesheetTotals = days => {
             {!(isG?addGl:addSh)&&(
               <div style={{display:"flex",gap:8}}>
                 <button onClick={()=>{haptic();isG?setAddGl(true):setAddSh(true);}}
-                  style={{flex:1,background:"#4a9eff",border:"none",borderRadius:10,color:"#06101c",fontSize:13.5,fontWeight:700,padding:"13px",cursor:"pointer"}}>
+                  style={{flex:1,background:"#4a9eff",border:"none",borderRadius:10,color:"#06101c",fontSize:14,fontWeight:700,padding:"13px",cursor:"pointer"}}>
                   + Add bill
                 </button>
                 <button onClick={()=>{haptic();setSchedForm({id:null,name:"",total:"",splitMode:null,splitValue:"",scope:"income",freq:"once",months:[laSel?laSel.m:schedNowMonth],year:laSel?laSel.yr:schedNowYear});setSchedOpen(true);}}
-                  style={{flex:"0 0 auto",background:"transparent",border:"1px solid #17553f",borderRadius:10,color:"#00c88c",fontSize:12.5,fontWeight:700,padding:"13px 14px",cursor:"pointer"}}>
+                  style={{flex:"0 0 auto",background:"transparent",border:"1px solid #17553f",borderRadius:10,color:"#00c88c",fontSize:13.5,fontWeight:700,padding:"13px 14px",cursor:"pointer"}}>
                   + Income
                 </button>
               </div>
@@ -5763,45 +5775,45 @@ const calcTimesheetTotals = days => {
             {addSh&&!isG&&(
               <div style={{background:"#0a1a10",border:"1px solid #00c88c",borderRadius:10,padding:12}}>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:8}}>
-                  <input autoFocus placeholder="Bill name" value={newSh.name} onChange={e=>setNewSh(r=>({...r,name:e.target.value}))} style={{...inp,padding:"8px",fontSize:12}}/>
-                  <input placeholder="£ Total" type="number" value={newSh.total} onChange={e=>setNewSh(r=>({...r,total:e.target.value}))} style={{...inp,padding:"8px",fontSize:12,textAlign:"right"}}/>
+                  <input autoFocus placeholder="Bill name" value={newSh.name} onChange={e=>setNewSh(r=>({...r,name:e.target.value}))} style={{...inp,padding:"8px",fontSize:13}}/>
+                  <input placeholder="£ Total" type="number" value={newSh.total} onChange={e=>setNewSh(r=>({...r,total:e.target.value}))} style={{...inp,padding:"8px",fontSize:13,textAlign:"right"}}/>
                 </div>
-                <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
+                <div style={{fontSize:11.5,fontWeight:700,color:SUBTEXT,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
                 <div style={{display:"flex",gap:6,marginBottom:8}}>
                   {[{k:"month",l:"Every month"},{k:"once",l:selIsNow?"This month":selLabel+" only"},{k:"annual",l:"Every year"}].map(o=>(
                     <button key={o.k} onClick={()=>setNewSh(r=>({...r,freq:o.k,months:o.k==="annual"?(r.months.length?r.months:[laSel?laSel.m:schedNowMonth]):[]}))}
-                      style={{flex:1,background:newSh.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.freq===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"7px 2px",cursor:"pointer"}}>{o.l}</button>
+                      style={{flex:1,background:newSh.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.freq===o.k?"#00c88c":SUBTEXT,fontSize:12.5,fontWeight:700,padding:"7px 2px",cursor:"pointer"}}>{o.l}</button>
                   ))}
                 </div>
                 {newSh.freq==="annual"&&(
                   <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>
                     {MONTHS.map((mn,i)=>{const m=i+1;const on=newSh.months.includes(m);return (
                       <button key={m} onClick={()=>setNewSh(r=>({...r,months:on?r.months.filter(x=>x!==m):[...r.months,m]}))}
-                        style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":"#5a6480",fontSize:10,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
+                        style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":SUBTEXT,fontSize:12,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
                     );})}
                   </div>
                 )}
                 {newSh.freq==="month"&&(
-                  <label style={{display:"flex",alignItems:"center",gap:8,fontSize:11.5,color:"#8892b0",marginBottom:8,cursor:"pointer"}}>
+                  <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:SUBTEXT,marginBottom:8,cursor:"pointer"}}>
                     <input type="checkbox" checked={newSh.varies} onChange={e=>setNewSh(r=>({...r,varies:e.target.checked}))}/>
                     Amount changes each month (upcoming months start at £0)
                   </label>
                 )}
-                <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>Split</div>
+                <div style={{fontSize:11.5,fontWeight:700,color:SUBTEXT,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>Split</div>
                 <div style={{display:"flex",gap:6,marginBottom:8}}>
                   {[{k:null,l:"50/50"},{k:"pct",l:"% split"},{k:"fixed",l:"£ fixed"}].map(o=>(
                     <button key={o.l} onClick={()=>setNewSh(r=>({...r,splitMode:o.k,splitValue:""}))}
-                      style={{flex:1,background:newSh.splitMode===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.splitMode===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.splitMode===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"7px 2px",cursor:"pointer"}}>{o.l}</button>
+                      style={{flex:1,background:newSh.splitMode===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newSh.splitMode===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newSh.splitMode===o.k?"#00c88c":SUBTEXT,fontSize:12.5,fontWeight:700,padding:"7px 2px",cursor:"pointer"}}>{o.l}</button>
                   ))}
                 </div>
                 {newSh.splitMode&&(
                   <input placeholder={newSh.splitMode==="pct"?"Your % (e.g. 60)":themName+" pays £"} type="number" value={newSh.splitValue}
                     onChange={e=>setNewSh(r=>({...r,splitValue:e.target.value}))}
-                    style={{...inp,padding:"8px",fontSize:12,marginBottom:8,width:"100%",boxSizing:"border-box"}}/>
+                    style={{...inp,padding:"8px",fontSize:13,marginBottom:8,width:"100%",boxSizing:"border-box"}}/>
                 )}
                 <div style={{display:"flex",gap:6}}>
-                  <button onClick={addShBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:7,color:"#000",fontWeight:700,fontSize:12.5,padding:"10px",cursor:"pointer"}}>Add bill</button>
-                  <button onClick={()=>setAddSh(false)} style={{background:"#1e2535",border:"none",borderRadius:7,color:"#5a6480",fontSize:12.5,padding:"10px 14px",cursor:"pointer"}}>Cancel</button>
+                  <button onClick={addShBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:7,color:"#000",fontWeight:700,fontSize:13.5,padding:"10px",cursor:"pointer"}}>Add bill</button>
+                  <button onClick={()=>setAddSh(false)} style={{background:"#1e2535",border:"none",borderRadius:7,color:SUBTEXT,fontSize:13.5,padding:"10px 14px",cursor:"pointer"}}>Cancel</button>
                 </div>
               </div>
             )}
@@ -5809,47 +5821,47 @@ const calcTimesheetTotals = days => {
             {addGl&&isG&&(
               <div style={{background:"#0a1a10",border:"1px solid #00c88c",borderRadius:10,padding:12}}>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 90px",gap:6,marginBottom:8}}>
-                  <input autoFocus placeholder="Bill name" value={newGl.name} onChange={e=>setNewGl(r=>({...r,name:e.target.value}))} style={{...inp,padding:"8px",fontSize:12}}/>
-                  <input placeholder="£ Total" type="number" value={newGl.total} onChange={e=>setNewGl(r=>({...r,total:e.target.value}))} style={{...inp,padding:"8px",fontSize:12,textAlign:"right"}}/>
+                  <input autoFocus placeholder="Bill name" value={newGl.name} onChange={e=>setNewGl(r=>({...r,name:e.target.value}))} style={{...inp,padding:"8px",fontSize:13}}/>
+                  <input placeholder="£ Total" type="number" value={newGl.total} onChange={e=>setNewGl(r=>({...r,total:e.target.value}))} style={{...inp,padding:"8px",fontSize:13,textAlign:"right"}}/>
                 </div>
-                <div style={{fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
+                <div style={{fontSize:11.5,fontWeight:700,color:SUBTEXT,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>How often</div>
                 <div style={{display:"flex",gap:6,marginBottom:8}}>
                   {[{k:"month",l:"Every month"},{k:"once",l:selIsNow?"This month":selLabel+" only"},{k:"annual",l:"Every year"}].map(o=>(
                     <button key={o.k} onClick={()=>setNewGl(r=>({...r,freq:o.k,months:o.k==="annual"?(r.months.length?r.months:[laSel?laSel.m:schedNowMonth]):[]}))}
-                      style={{flex:1,background:newGl.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newGl.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newGl.freq===o.k?"#00c88c":"#5a6480",fontSize:10.5,fontWeight:700,padding:"7px 2px",cursor:"pointer"}}>{o.l}</button>
+                      style={{flex:1,background:newGl.freq===o.k?"#1a3a2a":"#1e2535",border:"1px solid "+(newGl.freq===o.k?"#00c88c":"#2a3050"),borderRadius:6,color:newGl.freq===o.k?"#00c88c":SUBTEXT,fontSize:12.5,fontWeight:700,padding:"7px 2px",cursor:"pointer"}}>{o.l}</button>
                   ))}
                 </div>
                 {newGl.freq==="annual"&&(
                   <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>
                     {MONTHS.map((mn,i)=>{const m=i+1;const on=newGl.months.includes(m);return (
                       <button key={m} onClick={()=>setNewGl(r=>({...r,months:on?r.months.filter(x=>x!==m):[...r.months,m]}))}
-                        style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":"#5a6480",fontSize:10,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
+                        style={{width:"calc(16.666% - 4px)",background:on?"#1a3a2a":"#0d1117",border:"1px solid "+(on?"#00c88c":"#2a3050"),borderRadius:5,color:on?"#00c88c":SUBTEXT,fontSize:12,fontWeight:700,padding:"5px 0",cursor:"pointer"}}>{mn}</button>
                     );})}
                   </div>
                 )}
                 {newGl.freq==="month"&&(
-                  <label style={{display:"flex",alignItems:"center",gap:8,fontSize:11.5,color:"#8892b0",marginBottom:8,cursor:"pointer"}}>
+                  <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:SUBTEXT,marginBottom:8,cursor:"pointer"}}>
                     <input type="checkbox" checked={newGl.varies} onChange={e=>setNewGl(r=>({...r,varies:e.target.checked}))}/>
                     Amount changes each month (upcoming months start at £0)
                   </label>
                 )}
                 <div style={{display:"flex",gap:6}}>
-                  <button onClick={addGlBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:7,color:"#000",fontWeight:700,fontSize:12.5,padding:"10px",cursor:"pointer"}}>Add bill</button>
-                  <button onClick={()=>setAddGl(false)} style={{background:"#1e2535",border:"none",borderRadius:7,color:"#5a6480",fontSize:12.5,padding:"10px 14px",cursor:"pointer"}}>Cancel</button>
+                  <button onClick={addGlBill} style={{flex:1,background:"#00c88c",border:"none",borderRadius:7,color:"#000",fontWeight:700,fontSize:13.5,padding:"10px",cursor:"pointer"}}>Add bill</button>
+                  <button onClick={()=>setAddGl(false)} style={{background:"#1e2535",border:"none",borderRadius:7,color:SUBTEXT,fontSize:13.5,padding:"10px 14px",cursor:"pointer"}}>Cancel</button>
                 </div>
               </div>
             )}
 
             {/* ── quiet footer ── */}
             <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>{haptic();setLaOpen(v=>!v);}} style={{flex:1,background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:"#8892b0",fontSize:11.5,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>📆 Year view</button>
-              <button onClick={()=>{haptic();setCatsOpen(true);}} style={{flex:1,background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:"#8892b0",fontSize:11.5,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>🗂 Categories</button>
-              <button onClick={()=>{haptic();setSchedForm(null);setSchedOpen(true);}} style={{flex:1,background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:"#8892b0",fontSize:11.5,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>📅 Non-monthly{schedRows.length?" · "+schedRows.length:""}</button>
+              <button onClick={()=>{haptic();setLaOpen(v=>!v);}} style={{flex:"1 1 auto",background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:SUBTEXT,fontSize:13,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>📆 Year view</button>
+              <button onClick={()=>{haptic();setCatsOpen(true);}} style={{flex:"1 1 auto",background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:SUBTEXT,fontSize:13,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>🗂 Categories</button>
+              <button onClick={()=>{haptic();setSchedForm(null);setSchedOpen(true);}} style={{flex:"1 1 auto",background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:SUBTEXT,fontSize:13,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>📅 Non-monthly{schedRows.length?" · "+schedRows.length:""}</button>
             </div>
 
             {laOpen&&(
               <div style={{...card,borderRadius:12,padding:"4px 10px 10px"}}>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",padding:"10px 6px 8px",fontSize:9,fontWeight:700,color:"#5a6480",letterSpacing:1,textTransform:"uppercase"}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",padding:"10px 6px 8px",fontSize:11.5,fontWeight:700,color:SUBTEXT,letterSpacing:1,textTransform:"uppercase"}}>
                   <span>Month</span>
                   <span style={{textAlign:"right",color:"#4a9eff"}}>Shared</span>
                   <span style={{textAlign:"right",color:"#ff8c4a"}}>Mine</span>
@@ -5860,11 +5872,11 @@ const calcTimesheetTotals = days => {
                   return (
                     <div key={r.key} onClick={()=>{haptic();setSelPick(i===homeIdx?null:i);setLaOpen(false);}}
                       style={{display:"grid",gridTemplateColumns:"1fr 68px 62px 66px",alignItems:"center",
-                        padding:"9px 6px",fontSize:12.5,borderTop:"1px solid #1e2535",cursor:"pointer",
+                        padding:"9px 6px",fontSize:13.5,borderTop:"1px solid #1e2535",cursor:"pointer",
                         background:i===selIdx?"#15203a":"transparent"}}>
-                      <span style={{color:i===selIdx?"#8ec5ff":"#d8dcea",fontWeight:i===selIdx?700:500}}>
+                      <span style={{color:i===selIdx?"#8ec5ff":SUBTEXT,fontWeight:i===selIdx?700:500}}>
                         {MONTHS[r.m-1]} {String(r.yr).slice(2)}
-                        {r.extra!==0&&<span style={{color:r.extra<0?"#4ad07a":"#ffb84a",fontSize:10.5,fontWeight:700,marginLeft:5}}>{r.extra<0?"−":"+"}{fmt(r.extra)}</span>}
+                        {r.extra!==0&&<span style={{color:r.extra<0?"#4ad07a":"#ffb84a",fontSize:12.5,fontWeight:700,marginLeft:5}}>{r.extra<0?"−":"+"}{fmt(r.extra)}</span>}
                       </span>
                       <span style={{textAlign:"right",color:"#4a9eff",fontWeight:600}}>{fmt(r.shared)}</span>
                       <span style={{textAlign:"right",color:"#ff8c4a",fontWeight:600}}>{fmt(r.personal)}</span>
@@ -5872,7 +5884,7 @@ const calcTimesheetTotals = days => {
                     </div>
                   );
                 })}
-                <div style={{fontSize:10,color:"#3a4460",padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
+                <div style={{fontSize:12,color:SUBTEXT,padding:"9px 6px 2px",lineHeight:1.5,borderTop:"1px solid #1e2535"}}>
                   Tap a month to open it. Each month is paid for by the payday before it, so {liveLabel} uses your live estimate ({fmt(viewerNet)} net, overtime included){isOwner?", months already paid for use the payslip,":""} and later months assume contracted hours only — no overtime — so they shift a little with each month's working days.
                 </div>
               </div>
@@ -5882,7 +5894,7 @@ const calcTimesheetTotals = days => {
               <button onClick={()=>{
                 if(isG){if(!window.confirm("Reset all personal bills to defaults? This cannot be undone."))return;updGB(INITIAL_GLYN_BILLS);updGC([]);updGBC({});}
                 else{if(!window.confirm("Reset all shared bills to defaults? This cannot be undone."))return;updSB(INITIAL_SHARED_BILLS);updC([]);updBC({});}
-              }} style={{background:"transparent",border:"none",color:"#2a3050",fontSize:10.5,padding:"2px 0 4px",cursor:"pointer",alignSelf:"center"}}>
+              }} style={{background:"transparent",border:"none",color:SUBTEXT,fontSize:12.5,padding:"2px 0 4px",cursor:"pointer",alignSelf:"center"}}>
                 Reset {isG?"my":"shared"} bills to defaults
               </button>
             )}
@@ -5894,15 +5906,15 @@ const calcTimesheetTotals = days => {
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
             <div style={{...card,background:"linear-gradient(135deg,#1a0a25,#0d1117)",border:"1px solid #c84aff"}}>
               <div style={{textAlign:"center",marginBottom:14}}>
-                <div style={{fontSize:11,color:"#c84aff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
+                <div style={{fontSize:12.5,color:"#c84aff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
                 <div style={{fontSize:38,fontWeight:700,color:"#c84aff"}}>{fmt(hollieCalc.net)}</div>
-                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after {liveLabel}'s bills: <span style={{color:liveSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(liveSurplus)}</span></div>
+                <div style={{fontSize:12.5,color:SUBTEXT,marginTop:4}}>Surplus after {liveLabel}'s bills: <span style={{color:liveSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(liveSurplus)}</span></div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                 {[["Annual Gross",fmt(hollieYear.annualGross)],["Annual Net",fmt(hollieYear.annualNet)]].map(([l,v])=>(
                   <div key={l} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
-                    <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
-                    <div style={{fontSize:14,fontWeight:700,color:"#c8cee0"}}>{v}</div>
+                    <div style={{fontSize:11.5,color:SUBTEXT,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                    <div style={{fontSize:14,fontWeight:700,color:SUBTEXT}}>{v}</div>
                   </div>
                 ))}
               </div>
@@ -5910,61 +5922,61 @@ const calcTimesheetTotals = days => {
 
             <div style={card}>
               <SectionLabel>Overtime worked this month</SectionLabel>
-              <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}>
-                <span>Hours worked <span style={{color:"#3a4460"}}>@ £{(HOLLIE_RATE*1.5).toFixed(2)}/h</span></span><span style={{color:"#c84aff",fontWeight:700}}>{hollieOtAccruing}h</span>
+              <label style={{fontSize:12.5,color:SUBTEXT,display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <span>Hours worked <span style={{color:SUBTEXT}}>@ £{(HOLLIE_RATE*1.5).toFixed(2)}/h</span></span><span style={{color:"#c84aff",fontWeight:700}}>{hollieOtAccruing}h</span>
               </label>
               <input type="number" inputMode="decimal" value={hollieOtAccruing} onChange={e=>setHollieOt(parseFloat(e.target.value)||0)} style={numI}/>
-              <div style={{fontSize:10,color:"#3a4460",marginTop:6}}>Paid a month in arrears — these {hollieOtAccruing||0}h ({fmt(hollieOtAccruing*HOLLIE_RATE*1.5)}) land in <b style={{color:"#5a6480"}}>next month's</b> pay, not this one.</div>
+              <div style={{fontSize:12,color:SUBTEXT,marginTop:6}}>Paid a month in arrears — these {hollieOtAccruing||0}h ({fmt(hollieOtAccruing*HOLLIE_RATE*1.5)}) land in <b style={{color:SUBTEXT}}>next month's</b> pay, not this one.</div>
             </div>
 
             <div style={card}>
               <SectionLabel>Sick days this month</SectionLabel>
-              <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}>
-                <span>Days off sick <span style={{color:"#3a4460"}}>(half days are fine)</span></span><span style={{color:"#c84aff",fontWeight:700}}>{hollieSickNow}</span>
+              <label style={{fontSize:12.5,color:SUBTEXT,display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <span>Days off sick <span style={{color:SUBTEXT}}>(half days are fine)</span></span><span style={{color:"#c84aff",fontWeight:700}}>{hollieSickNow}</span>
               </label>
               <input type="number" inputMode="decimal" step="0.5" min="0" value={hollieSickNow} aria-label="Days off sick this month"
                 onChange={e=>setHollieSick(Math.max(0,Math.min(31,parseFloat(e.target.value)||0)))} style={numI}/>
-              <div style={{fontSize:10,color:"#3a4460",marginTop:6}}>Comes off <b style={{color:"#5a6480"}}>this month's</b> pay: each day takes off a day's pay ({fmt(HOLLIE_DAY_PAY)}) and adds Statutory Sick Pay ({fmt(hollieCalc.sspDay)} a day, whole days only){hollieSickNow>0?<> — {fmt(hollieCalc.sickOff-hollieCalc.sickPay)} less before tax</>:null}.</div>
+              <div style={{fontSize:12,color:SUBTEXT,marginTop:6}}>Comes off <b style={{color:SUBTEXT}}>this month's</b> pay: each day takes off a day's pay ({fmt(HOLLIE_DAY_PAY)}) and adds Statutory Sick Pay ({fmt(hollieCalc.sspDay)} a day, whole days only){hollieSickNow>0?<> — {fmt(hollieCalc.sickOff-hollieCalc.sickPay)} less before tax</>:null}.</div>
             </div>
 
             <div style={card}>
               <SectionLabel>This month</SectionLabel>
               {[
-                [`Base pay (flat monthly)`, fmt(hollieCalc.stdPay), "#c8cee0", false],
+                [`Base pay (flat monthly)`, fmt(hollieCalc.stdPay), SUBTEXT, false],
                 [`Overtime (worked ${holliePrevName})`, fmt(hollieCalc.otPay), "#c84aff", false],
                 ...(hollieCalc.sick>0?[[`Sick days (${hollieCalc.sick})`, "−"+fmt(hollieCalc.sickOff), "#ff6b8a", false]]:[]),
                 ...(hollieCalc.sickPay>0?[["Sick pay (SSP)", "+"+fmt(hollieCalc.sickPay), "#00c88c", false]]:[]),
                 ["Gross", fmt(hollieCalc.gross), "#e8eaf0", true],
                 ["NOW Pension (salary sacrifice)", "−"+fmt(hollieCalc.pension), "#00c88c", false],
-                ["Taxable pay", fmt(hollieCalc.taxable), "#5a6480", false],
+                ["Taxable pay", fmt(hollieCalc.taxable), SUBTEXT, false],
                 ["Tax", "−"+fmt(hollieCalc.tax), "#ff6b8a", false],
                 ["NI", "−"+fmt(hollieCalc.ni), "#ff8c4a", false],
                 ["Student loan (Plan 2)", "−"+fmt(hollieCalc.sl), "#ffb84a", false],
                 ["Net pay", fmt(hollieCalc.net), "#c84aff", true],
               ].map(([l,v,c,bold],i)=>(
-                <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderTop:i?"1px solid #161b28":"none",fontSize:13}}>
-                  <span style={{color:"#8892b0"}}>{l}</span><span style={{color:c,fontWeight:bold?800:600}}>{v}</span>
+                <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderTop:i?"1px solid #161b28":"none",fontSize:13.5}}>
+                  <span style={{color:SUBTEXT}}>{l}</span><span style={{color:c,fontWeight:bold?800:600}}>{v}</span>
                 </div>
               ))}
             </div>
 
             <div style={card}>
               <SectionLabel>Surplus · {liveName}</SectionLabel>
-              <div style={{fontSize:10,color:"#3a4460",marginBottom:4}}>This pay against {liveName}'s bills — the month it pays for</div>
+              <div style={{fontSize:12,color:SUBTEXT,marginBottom:4}}>This pay against {liveName}'s bills — the month it pays for</div>
               {[
-                ["Net pay", fmt(hollieCalc.net), "#c8cee0", false],
+                ["Net pay", fmt(hollieCalc.net), SUBTEXT, false],
                 ...(laLive&&laLive.income?[["Other income", "+"+fmt(laLive.income), "#00c88c", false]]:[]),
                 ["Your share of shared bills", "−"+fmt(laLive?laLive.shared:shHollie), "#ff6b8a", false],
                 ["Your personal bills", "−"+fmt(laLive?laLive.personal:glOnly), "#ff8c4a", false],
                 ["Left over", fmtS(liveSurplus), liveSurplus>=0?"#00c88c":"#ff4a6a", true],
               ].map(([l,v,c,bold],i)=>(
-                <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderTop:i?"1px solid #161b28":"none",fontSize:13}}>
-                  <span style={{color:"#8892b0"}}>{l}</span><span style={{color:c,fontWeight:bold?800:600}}>{v}</span>
+                <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderTop:i?"1px solid #161b28":"none",fontSize:13.5}}>
+                  <span style={{color:SUBTEXT}}>{l}</span><span style={{color:c,fontWeight:bold?800:600}}>{v}</span>
                 </div>
               ))}
             </div>
 
-            <p style={{fontSize:10,color:"#3a4460",textAlign:"center"}}>Estimate based on a flat {fmt(HOLLIE_FLAT_GROSS)}/month gross plus overtime at £{(HOLLIE_RATE*1.5).toFixed(2)}/h, with NOW Pension taken as salary sacrifice (before tax, NI &amp; student loan), then tax, NI and Plan 2 student loan on what's left. Each sick day takes off {fmt(HOLLIE_DAY_PAY)} (7.5 hours) and adds Statutory Sick Pay of {fmt(hollieCalc.sspDay)} for each whole day.</p>
+            <p style={{fontSize:12,color:SUBTEXT,textAlign:"center"}}>Estimate based on a flat {fmt(HOLLIE_FLAT_GROSS)}/month gross plus overtime at £{(HOLLIE_RATE*1.5).toFixed(2)}/h, with NOW Pension taken as salary sacrifice (before tax, NI &amp; student loan), then tax, NI and Plan 2 student loan on what's left. Each sick day takes off {fmt(HOLLIE_DAY_PAY)} (7.5 hours) and adds Statutory Sick Pay of {fmt(hollieCalc.sspDay)} for each whole day.</p>
           </div>
         )}
 
@@ -5972,14 +5984,14 @@ const calcTimesheetTotals = days => {
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
             <div style={{...card,background:"linear-gradient(135deg,#0a1525,#0d1117)",border:"1px solid #4a9eff"}}>
               <div style={{textAlign:"center",marginBottom:14}}>
-                <div style={{fontSize:11,color:"#4a9eff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
+                <div style={{fontSize:12.5,color:"#4a9eff",fontWeight:700,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Estimated Net Pay</div>
                 <div style={{fontSize:38,fontWeight:700,color:"#4a9eff"}}>{fmt(cr.net)}</div>
-                <div style={{fontSize:11,color:"#3a4460",marginTop:4}}>Surplus after {liveLabel}'s bills: <span style={{color:liveSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(liveSurplus)}</span></div>
+                <div style={{fontSize:12.5,color:SUBTEXT,marginTop:4}}>Surplus after {liveLabel}'s bills: <span style={{color:liveSurplus>=0?"#00c88c":"#ff4a6a",fontWeight:700}}>{fmtS(liveSurplus)}</span></div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                 {[["Annual Gross",fmt(cr.annualGross),"#7c6fff"],["Annual Net",fmt(cr.annualNet),"#4a9eff"],["Annual Tax",fmt(cr.annualTax),"#ff6b8a"],["Annual NI",fmt(cr.annualNI),"#ff8c4a"]].map(([l,v,c])=>(
                   <div key={l} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
-                    <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                    <div style={{fontSize:11.5,color:SUBTEXT,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
                     <div style={{fontSize:14,fontWeight:700,color:c}}>{v}</div>
                   </div>
                 ))}
@@ -5988,28 +6000,28 @@ const calcTimesheetTotals = days => {
             <div style={card}>
               <SectionLabel>Inputs</SectionLabel>
               <div style={{marginBottom:10}}>
-                <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}>
-                  <span>Standard Hours</span><span style={{color:"#3a4460"}}>{getCurrentMonthHours()}hrs this month</span>
+                <label style={{fontSize:12.5,color:SUBTEXT,display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                  <span>Standard Hours</span><span style={{color:SUBTEXT}}>{getCurrentMonthHours()}hrs this month</span>
                 </label>
                 <input type="number" value={ci.stdHrs} onChange={e=>setC("stdHrs",parseFloat(e.target.value)||0)} style={numI}/>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
                 <div>
-                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Overtime Hrs <span style={{color:"#3a4460"}}>@£{PAY.otRate}</span></span><span style={{color:"#4affd4",fontWeight:700}}>{ci.otHrs}h</span></label>
+                  <label style={{fontSize:12.5,color:SUBTEXT,display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6,marginBottom:5}}><span>Overtime Hrs<span style={{display:"block",fontSize:11.5}}>@£{PAY.otRate}</span></span><span style={{color:"#4affd4",fontWeight:700}}>{ci.otHrs}h</span></label>
                   <input type="range" min={0} max={80} step={0.25} value={ci.otHrs}
                     onChange={e=>setC("otHrs",parseFloat(e.target.value))}
                     style={{width:"100%",accentColor:"#4affd4",marginBottom:6,cursor:"pointer"}}/>
                   <input type="number" value={ci.otHrs} onChange={e=>setC("otHrs",parseFloat(e.target.value)||0)} style={numI}/>
                 </div>
                 <div>
-                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Weekend OT <span style={{color:"#3a4460"}}>@£{PAY.weekendOtRate}</span></span><span style={{color:"#00c88c",fontWeight:700}}>{ci.weekendOtHrs}h</span></label>
+                  <label style={{fontSize:12.5,color:SUBTEXT,display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6,marginBottom:5}}><span>Weekend OT<span style={{display:"block",fontSize:11.5}}>@£{PAY.weekendOtRate}</span></span><span style={{color:"#00c88c",fontWeight:700}}>{ci.weekendOtHrs}h</span></label>
                   <input type="range" min={0} max={40} step={0.25} value={ci.weekendOtHrs}
                     onChange={e=>setC("weekendOtHrs",parseFloat(e.target.value))}
                     style={{width:"100%",accentColor:"#00c88c",marginBottom:6,cursor:"pointer"}}/>
                   <input type="number" value={ci.weekendOtHrs} onChange={e=>setC("weekendOtHrs",parseFloat(e.target.value)||0)} style={numI}/>
                 </div>
                 <div>
-                  <label style={{fontSize:11,color:"#5a6480",display:"flex",justifyContent:"space-between",marginBottom:5}}><span>Holiday Hrs <span style={{color:"#3a4460"}}>paid @ base rate</span></span><span style={{color:"#ffb84a",fontWeight:700}}>{ci.holidayHrs||0}h</span></label>
+                  <label style={{fontSize:12.5,color:SUBTEXT,display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6,marginBottom:5}}><span>Holiday Hrs<span style={{display:"block",fontSize:11.5}}>paid @ base rate</span></span><span style={{color:"#ffb84a",fontWeight:700}}>{ci.holidayHrs||0}h</span></label>
                   <input type="range" min={0} max={80} step={0.25} value={ci.holidayHrs||0}
                     onChange={e=>setC("holidayHrs",parseFloat(e.target.value))}
                     style={{width:"100%",accentColor:"#ffb84a",marginBottom:6,cursor:"pointer"}}/>
@@ -6017,47 +6029,47 @@ const calcTimesheetTotals = days => {
                 </div>
               </div>
               <div style={{marginBottom:10}}>
-                <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Performance Bonus</label>
+                <label style={{fontSize:12.5,color:SUBTEXT,display:"block",marginBottom:5}}>Performance Bonus</label>
                 <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
                   {PAY.bonusTiers.map(t=>(
                     <button key={t.bonus} onClick={()=>setC("bonus",t.bonus)} style={{
-                      background:ci.bonus===t.bonus?"#4a9eff":"#1e2535",color:ci.bonus===t.bonus?"#fff":"#5a6480",
-                      border:"1px solid "+(ci.bonus===t.bonus?"#4a9eff":"#2a3050"),borderRadius:6,padding:"5px 10px",fontSize:11,fontWeight:600,cursor:"pointer"
+                      background:ci.bonus===t.bonus?"#4a9eff":"#1e2535",color:ci.bonus===t.bonus?"#fff":SUBTEXT,
+                      border:"1px solid "+(ci.bonus===t.bonus?"#4a9eff":"#2a3050"),borderRadius:6,padding:"5px 10px",fontSize:12.5,fontWeight:600,cursor:"pointer"
                     }}>{t.bonus===0?"None":fmt(t.bonus)}</button>
                   ))}
                 </div>
                 <input type="number" value={ci.bonus} onChange={e=>setC("bonus",parseFloat(e.target.value)||0)} style={numI}/>
               </div>
               <div style={{marginTop:4}}>
-                <label style={{fontSize:13,color:"#5a6480",display:"block",marginBottom:8}}>Performance Tier</label>
+                <label style={{fontSize:13.5,color:SUBTEXT,display:"block",marginBottom:8}}>Performance Tier</label>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:8}}>
                   {PAY.bonusTiers.map((tier,i)=>{
                     const isActive=effectiveTierIdx===i;
                     const isAuto=tierOverride===null&&isActive;
-                    const colors=["#3a4460","#4a9eff","#7c6fff","#c84aff","#ffb84a","#00c88c"];
+                    const colors=[SUBTEXT,"#4a9eff","#7c6fff","#c84aff","#ffb84a","#00c88c"];
                     return(
                       <button key={i} onClick={()=>saveTierOverride(tierOverride===i&&i===effectiveTierIdx?null:i)} style={{
                         background:isActive?colors[i]+"22":"#1e2535",
                         border:"1px solid "+(isActive?colors[i]:"#2a3050"),
                         borderRadius:8,padding:"8px 4px",cursor:"pointer",textAlign:"center"
                       }}>
-                        <div style={{fontSize:11,fontWeight:700,color:isActive?colors[i]:"#5a6480"}}>{tier.label}</div>
-                        <div style={{fontSize:10,color:isActive?colors[i]:"#3a4460",marginTop:2}}>+£{tier.allowance.toFixed(2)}/hr</div>
-                        {isAuto&&<div style={{fontSize:9,color:colors[i],marginTop:2,opacity:0.8}}>auto</div>}
+                        <div style={{fontSize:12.5,fontWeight:700,color:isActive?colors[i]:SUBTEXT}}>{tier.label}</div>
+                        <div style={{fontSize:12,color:isActive?colors[i]:SUBTEXT,marginTop:2}}>+£{tier.allowance.toFixed(2)}/hr</div>
+                        {isAuto&&<div style={{fontSize:11.5,color:colors[i],marginTop:2,opacity:0.8}}>auto</div>}
                       </button>
                     );
                   })}
                 </div>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:"#5a6480"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:13,color:SUBTEXT}}>
                   <span>Effective rate: <span style={{color:"#e8eaf0",fontWeight:700}}>£{(PAY.baseRate+effectiveAllowance).toFixed(2)}/hr</span></span>
                   {tierOverride!==null&&(
-                    <button onClick={()=>saveTierOverride(null)} style={{background:"none",border:"none",color:"#3a4460",fontSize:11,cursor:"pointer",textDecoration:"underline"}}>
+                    <button onClick={()=>saveTierOverride(null)} style={{background:"none",border:"none",color:SUBTEXT,fontSize:12.5,cursor:"pointer",textDecoration:"underline"}}>
                       Reset to auto
                     </button>
                   )}
                 </div>
                 {tierOverride!==null&&(
-                  <div style={{fontSize:11,color:"#ffb84a",marginTop:6}}>⚠ Manual override active -- resets next month</div>
+                  <div style={{fontSize:12.5,color:"#ffb84a",marginTop:6}}>⚠ Manual override active -- resets next month</div>
                 )}
               </div>
             </div>
@@ -6070,8 +6082,8 @@ const calcTimesheetTotals = days => {
                 ["Perf. Bonus",  "", fmt(cr.bonus), "#ffb84a"],
               ].map(([l,sub,v,c])=>(
                 <div key={l} style={{...row,flexDirection:"column",gap:2}}>
-                  <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#8892b0"}}>{l}</span><span style={{fontWeight:700,color:c}}>{v}</span></div>
-                  {sub&&<span style={{fontSize:10,color:"#3a4460"}}>{sub}</span>}
+                  <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:SUBTEXT}}>{l}</span><span style={{fontWeight:700,color:c}}>{v}</span></div>
+                  {sub&&<span style={{fontSize:12,color:SUBTEXT}}>{sub}</span>}
                 </div>
               ))}
               <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderTop:"1px solid #2a3050",marginTop:4}}>
@@ -6088,8 +6100,8 @@ const calcTimesheetTotals = days => {
                 ["Student Loan P2",   "9% above "+fmt(slThresholdFor(payDateForKey(getCurrentPayPeriodKey())))+"/mo", fmt(cr.sl),   "#c84aff"],
               ].map(([l,sub,v,c])=>(
                 <div key={l} style={{...row,flexDirection:"column",gap:2}}>
-                  <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:"#8892b0"}}>{l}</span><span style={{fontWeight:700,color:c}}>-{v}</span></div>
-                  <span style={{fontSize:10,color:"#3a4460"}}>{sub}</span>
+                  <div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:SUBTEXT}}>{l}</span><span style={{fontWeight:700,color:c}}>-{v}</span></div>
+                  <span style={{fontSize:12,color:SUBTEXT}}>{sub}</span>
                 </div>
               ))}
               <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderTop:"1px solid #2a3050",marginTop:4}}>
@@ -6117,9 +6129,9 @@ const calcTimesheetTotals = days => {
                   const diff=cur-prev;
                   return(
                     <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<arr.length-1?"1px solid #1a1f2e":"none"}}>
-                      <span style={{fontSize:13,color:"#8892b0",width:60}}>{l}</span>
-                      <span style={{fontSize:13,fontWeight:700,color:c}}>{fmt(cur)}</span>
-                      <span style={{fontSize:12,fontWeight:600,color:diff===0?"#3a4460":diff>0?"#00c88c":"#ff6b8a",width:80,textAlign:"right"}}>{diff===0?"--":(diff>0?"+":"")+fmt(Math.abs(diff))}</span>
+                      <span style={{fontSize:13.5,color:SUBTEXT,width:60}}>{l}</span>
+                      <span style={{fontSize:13.5,fontWeight:700,color:c}}>{fmt(cur)}</span>
+                      <span style={{fontSize:13,fontWeight:600,color:diff===0?SUBTEXT:diff>0?"#00c88c":"#ff6b8a",width:80,textAlign:"right"}}>{diff===0?"--":(diff>0?"+":"")+fmt(Math.abs(diff))}</span>
                     </div>
                   );
                 })}
@@ -6135,9 +6147,9 @@ const calcTimesheetTotals = days => {
                   {label:"Weekend OT", value:"£"+PAY.weekendOtRate+"/hr",  sub:"Weekend OT",        accent:"#ffb84a"},
                 ].map(k=>(
                   <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
-                    <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>{k.label}</div>
+                    <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>{k.label}</div>
                     <div style={{fontSize:18,fontWeight:700,color:k.accent}}>{k.value}</div>
-                    <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{k.sub}</div>
+                    <div style={{fontSize:12,color:SUBTEXT,marginTop:2}}>{k.sub}</div>
                   </div>
                 ))}
               </div>
@@ -6159,18 +6171,18 @@ const calcTimesheetTotals = days => {
             </div>
             <div style={card}>
               <SectionLabel>Performance Bonus Tiers</SectionLabel>
-              <p style={{fontSize:12,color:"#3a4460",marginBottom:14,marginTop:0}}>Based on team average performance % each month</p>
+              <p style={{fontSize:13,color:SUBTEXT,marginBottom:14,marginTop:0}}>Based on team average performance % each month</p>
               {PAY.bonusTiers.map((tier,i)=>{
-                const colors=["#3a4460","#4a9eff","#7c6fff","#c84aff","#ffb84a","#00c88c"];
+                const colors=[SUBTEXT,"#4a9eff","#7c6fff","#c84aff","#ffb84a","#00c88c"];
                 return(
                   <div key={tier.label} style={{background:"#0d1117",borderRadius:8,padding:"10px 14px",borderLeft:"3px solid "+colors[i],marginBottom:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <div>
-                      <div style={{fontSize:13,fontWeight:700,color:tier.bonus===0?"#3a4460":colors[i]}}>{tier.label} - {tier.range}</div>
-                      <div style={{fontSize:11,color:"#5a6480",marginTop:3}}>{tier.bonus===0?"No bonus":"Bonus: "+fmt(tier.bonus)}</div>
+                      <div style={{fontSize:13.5,fontWeight:700,color:tier.bonus===0?SUBTEXT:colors[i]}}>{tier.label} - {tier.range}</div>
+                      <div style={{fontSize:12.5,color:SUBTEXT,marginTop:3}}>{tier.bonus===0?"No bonus":"Bonus: "+fmt(tier.bonus)}</div>
                     </div>
                     <div style={{textAlign:"right"}}>
-                      <div style={{fontSize:13,fontWeight:700,color:tier.allowance>0?colors[i]:"#3a4460"}}>+£{tier.allowance.toFixed(2)}/hr</div>
-                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>allowance</div>
+                      <div style={{fontSize:13.5,fontWeight:700,color:tier.allowance>0?colors[i]:SUBTEXT}}>+£{tier.allowance.toFixed(2)}/hr</div>
+                      <div style={{fontSize:12,color:SUBTEXT,marginTop:2}}>allowance</div>
                     </div>
                   </div>
                 );
@@ -6179,7 +6191,7 @@ const calcTimesheetTotals = days => {
             <div style={card}>
               <SectionLabel>Recent Bonus History</SectionLabel>
               {allSorted.slice(-10).reverse().map((r,i,arr)=>(
-                <StatRow key={r.month} label={r.month} color={r.bonus>=240?"#00c88c":r.bonus>=200?"#ffb84a":r.bonus>=160?"#7c6fff":r.bonus>0?"#4a9eff":"#3a4460"} value={r.bonus>0?fmt(r.bonus):"--"} last={i===arr.length-1}/>
+                <StatRow key={r.month} label={r.month} color={r.bonus>=240?"#00c88c":r.bonus>=200?"#ffb84a":r.bonus>=160?"#7c6fff":r.bonus>0?"#4a9eff":SUBTEXT} value={r.bonus>0?fmt(r.bonus):"--"} last={i===arr.length-1}/>
               ))}
             </div>
           </div>
@@ -6193,15 +6205,15 @@ const calcTimesheetTotals = days => {
               <span style={{position:"absolute",top:"50%",left:12,transform:"translateY(-50%)",fontSize:14,pointerEvents:"none"}}>🔍</span>
             </div>
               <div style={{background:"#2a0f15",border:"1px solid #ff4a6a",borderRadius:10,padding:"16px 14px",marginBottom:14,display:deleteConfirm?"block":"none"}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#ff4a6a",marginBottom:8}}>Delete {deleteConfirm}?</div>
-                <div style={{fontSize:11,color:"#8a4050",marginBottom:14}}>This will permanently remove this payslip from your history.</div>
+                <div style={{fontSize:13.5,fontWeight:700,color:"#ff4a6a",marginBottom:8}}>Delete {deleteConfirm}?</div>
+                <div style={{fontSize:12.5,color:SUBTEXT,marginBottom:14}}>This will permanently remove this payslip from your history.</div>
                 <div style={{display:"flex",gap:8}}>
-                  <button onClick={()=>deletePayslip(deleteConfirm)} style={{flex:1,background:"#ff4a6a",border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Delete</button>
-                  <button onClick={()=>setDeleteConfirm(null)} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px",cursor:"pointer"}}>Cancel</button>
+                  <button onClick={()=>deletePayslip(deleteConfirm)} style={{flex:1,background:"#ff4a6a",border:"none",borderRadius:8,color:"#fff",fontSize:13.5,fontWeight:700,padding:"10px",cursor:"pointer"}}>Delete</button>
+                  <button onClick={()=>setDeleteConfirm(null)} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:SUBTEXT,fontSize:13.5,padding:"10px",cursor:"pointer"}}>Cancel</button>
                 </div>
               </div>
             <div style={{...card,padding:0,overflow:"hidden",marginBottom:10}}>
-              <div style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"9px 10px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase"}}>
+              <div style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"9px 10px",background:"#0d1117",fontSize:11.5,fontWeight:700,color:SUBTEXT,letterSpacing:0.5,textTransform:"uppercase"}}>
                 <span>Month</span>
                 <span style={{textAlign:"right"}}>Gross / Net</span>
                 <span style={{textAlign:"right"}}>Tax / NI</span>
@@ -6211,18 +6223,18 @@ const calcTimesheetTotals = days => {
                 {filteredHistory.map((r,i)=>(
                   <div key={r.month}>
                     <div onClick={()=>setExpandedPayslip(expandedPayslip===r.month?null:r.month)}
-                      style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"10px",fontSize:11,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"pointer",alignItems:"center"}}>
-                      <span style={{fontSize:12,fontWeight:600,color:"#8892b0"}}>{r.month}</span>
+                      style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"10px",fontSize:12.5,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",cursor:"pointer",alignItems:"center"}}>
+                      <span style={{fontSize:13,fontWeight:600,color:SUBTEXT}}>{r.month}</span>
                       <span style={{textAlign:"right"}}>
-                        <div style={{color:"#7c6fff",fontSize:11}}>{fmt(r.gross)}</div>
-                        <div style={{color:"#4a9eff",fontWeight:700,fontSize:12}}>{fmt(r.net)}</div>
+                        <div style={{color:"#7c6fff",fontSize:12.5}}>{fmt(r.gross)}</div>
+                        <div style={{color:"#4a9eff",fontWeight:700,fontSize:13}}>{fmt(r.net)}</div>
                       </span>
                       <span style={{textAlign:"right"}}>
-                        <div style={{color:"#ff6b8a",fontSize:11}}>{fmt(r.tax)}</div>
-                        <div style={{color:"#ff8c4a",fontSize:11}}>{fmt(r.ni)}</div>
+                        <div style={{color:"#ff6b8a",fontSize:12.5}}>{fmt(r.tax)}</div>
+                        <div style={{color:"#ff8c4a",fontSize:12.5}}>{fmt(r.ni)}</div>
                       </span>
                       <button onClick={e=>{e.stopPropagation();setDeleteConfirm(r.month);}}
-                        style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
+                        style={{background:"none",border:"none",color:SUBTEXT,fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
                     </div>
                     {expandedPayslip===r.month&&(
                       <div style={{background:"#0d1525",borderBottom:"1px solid #1e2535",padding:"12px 14px"}}>
@@ -6236,18 +6248,18 @@ const calcTimesheetTotals = days => {
                             ["Bonus",    r.bonus>0?fmt(r.bonus):"--", "#c84aff"],
                             ["OT Pay",   r.ot>0?fmt(r.ot):"--",      "#4affd4"],
                             ["St. Loan", r.sl>0?fmt(r.sl):"--",      "#ffb84a"],
-                            ["Date",     r.date||"--",                "#5a6480"],
+                            ["Date",     r.date||"--",                SUBTEXT],
                           ].map(([l,v,c])=>(
                             <div key={l} style={{background:"#111827",borderRadius:8,padding:"8px",textAlign:"center"}}>
-                              <div style={{fontSize:9,color:"#5a6480",marginBottom:3,textTransform:"uppercase",letterSpacing:0.5}}>{l}</div>
-                              <div style={{fontSize:12,fontWeight:700,color:c}}>{v}</div>
+                              <div style={{fontSize:11.5,color:SUBTEXT,marginBottom:3,textTransform:"uppercase",letterSpacing:0.5}}>{l}</div>
+                              <div style={{fontSize:13,fontWeight:700,color:c}}>{v}</div>
                             </div>
                           ))}
                         </div>
-                        {r.note&&<div style={{fontSize:11.5,color:"#a0c0ff",background:"#111827",borderRadius:8,padding:"8px 10px",marginBottom:8,whiteSpace:"pre-line",lineHeight:1.5}}>{r.note}</div>}
+                        {r.note&&<div style={{fontSize:13,color:"#a0c0ff",background:"#111827",borderRadius:8,padding:"8px 10px",marginBottom:8,whiteSpace:"pre-line",lineHeight:1.5}}>{r.note}</div>}
                         <textarea placeholder="Add a note for this month..." value={notes[r.month]||""}
                           onChange={e=>{const n={...notes,[r.month]:e.target.value};updNotes(n);}}
-                          style={{width:"100%",boxSizing:"border-box",background:"#111827",border:"1px solid #2a3050",borderRadius:8,color:"#8892b0",fontSize:12,padding:"10px",resize:"vertical",minHeight:60,fontFamily:"inherit",lineHeight:1.5}}/>
+                          style={{width:"100%",boxSizing:"border-box",background:"#111827",border:"1px solid #2a3050",borderRadius:8,color:SUBTEXT,fontSize:13,padding:"10px",resize:"vertical",minHeight:60,fontFamily:"inherit",lineHeight:1.5}}/>
                       </div>
                     )}
                   </div>
@@ -6256,16 +6268,16 @@ const calcTimesheetTotals = days => {
                   history.length === 0 ? (
                     <div style={{padding:"40px 20px",textAlign:"center"}}>
                       <div style={{fontSize:36,marginBottom:8}}>💼</div>
-                      <div style={{fontSize:14,color:"#8892b0",fontWeight:600,marginBottom:6}}>No payslips yet</div>
-                      <div style={{fontSize:12,color:"#3a4460",marginBottom:14}}>Upload your first payslip PDF to start tracking</div>
-                      <button onClick={()=>{haptic();setShowPayslipUpload(true);setTab("Diag");}} style={{background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:12,fontWeight:700,padding:"10px 18px",cursor:"pointer"}}>Go to Upload</button>
+                      <div style={{fontSize:14,color:SUBTEXT,fontWeight:600,marginBottom:6}}>No payslips yet</div>
+                      <div style={{fontSize:13,color:SUBTEXT,marginBottom:14}}>Upload your first payslip PDF to start tracking</div>
+                      <button onClick={()=>{haptic();setShowPayslipUpload(true);setTab("Diag");}} style={{background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"10px 18px",cursor:"pointer"}}>Go to Upload</button>
                     </div>
                   ) : (
-                    <div style={{padding:"32px",textAlign:"center",color:"#3a4460",fontSize:13}}>No payslips match "{payslipSearch}"</div>
+                    <div style={{padding:"32px",textAlign:"center",color:SUBTEXT,fontSize:13.5}}>No payslips match "{payslipSearch}"</div>
                   )
                 )}
-                <div style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"10px",fontSize:11,fontWeight:700,background:"#0d1117",borderTop:"2px solid #2a3050"}}>
-                  <span style={{color:"#5a6480",fontSize:10,textTransform:"uppercase",letterSpacing:0.5}}>Totals</span>
+                <div style={{display:"grid",gridTemplateColumns:"68px 1fr 1fr 26px",padding:"10px",fontSize:12.5,fontWeight:700,background:"#0d1117",borderTop:"2px solid #2a3050"}}>
+                  <span style={{color:SUBTEXT,fontSize:12,textTransform:"uppercase",letterSpacing:0.5}}>Totals</span>
                   <span style={{textAlign:"right"}}>
                     <div style={{color:"#7c6fff"}}>{fmt(ts.gross)}</div>
                     <div style={{color:"#4a9eff"}}>{fmt(ts.net)}</div>
@@ -6278,7 +6290,7 @@ const calcTimesheetTotals = days => {
                 </div>
               </div>
             </div>
-            <p style={{fontSize:10,color:"#3a4460",textAlign:"center",marginTop:4,marginBottom:12}}>Tap a row to expand full detail - add notes or delete</p>
+            <p style={{fontSize:12,color:SUBTEXT,textAlign:"center",marginTop:4,marginBottom:12}}>Tap a row to expand full detail - add notes or delete</p>
 
             {latest&&(()=>{
               const active = inferPerfAllowance(latest);
@@ -6292,11 +6304,11 @@ const calcTimesheetTotals = days => {
                 <div style={{marginTop:12,background:active?"#0a1a10":"#1a0f0a",border:"1px solid "+(active?"#00c88c":"#ff8c4a"),borderRadius:12,padding:"14px 16px"}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
                     <span style={{fontSize:18}}>{active?"✅":"❌"}</span>
-                    <span style={{fontSize:13,fontWeight:700,color:active?"#00c88c":"#ff8c4a"}}>
+                    <span style={{fontSize:13.5,fontWeight:700,color:active?"#00c88c":"#ff8c4a"}}>
                       Performance Allowance -- {nextMo} {nextYr}
                     </span>
                   </div>
-                  <div style={{fontSize:12,color:"#8892b0",lineHeight:1.7}}>
+                  <div style={{fontSize:13,color:SUBTEXT,lineHeight:1.7}}>
                     Your <span style={{color:"#e8eaf0",fontWeight:600}}>{latest.month}</span> payslip shows a <span style={{color:"#c84aff",fontWeight:700}}>{fmt(latest.bonus||0)}</span> bonus
                     {" "}(<span style={{color:"#e8eaf0"}}>{tier.label} - {tier.range}</span>).
                     {active
@@ -6305,7 +6317,7 @@ const calcTimesheetTotals = days => {
                     }
                   </div>
                   <button onClick={()=>setC("perfAllowance",!ci.perfAllowance)}
-                    style={{marginTop:10,background:"#1e2535",border:"1px solid #2a3050",borderRadius:8,color:"#5a6480",fontSize:12,padding:"7px 14px",cursor:"pointer"}}>
+                    style={{marginTop:10,background:"#1e2535",border:"1px solid #2a3050",borderRadius:8,color:SUBTEXT,fontSize:13,padding:"7px 14px",cursor:"pointer"}}>
                     Override in Pay Calc: mark as {ci.perfAllowance?"inactive":"active"}
                   </button>
                 </div>
@@ -6317,8 +6329,8 @@ const calcTimesheetTotals = days => {
         {tab==="Tax Year"&&(
           <div>
             <div style={{...card,marginBottom:14,background:"linear-gradient(135deg,#0f1a10,#0d1117)",border:"1px solid #00c88c"}}>
-              <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>Tax Year Summaries</div>
-              <p style={{fontSize:11,color:"#3a4460",margin:0}}>Apr - Mar breakdown from your payslip history</p>
+              <div style={{fontSize:12.5,fontWeight:700,color:"#00c88c",letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>Tax Year Summaries</div>
+              <p style={{fontSize:12.5,color:SUBTEXT,margin:0}}>Apr - Mar breakdown from your payslip history</p>
             </div>
 
             {groupByFY(history).map((fy,i)=>{
@@ -6327,10 +6339,10 @@ const calcTimesheetTotals = days => {
                 <div key={fy.label} style={{...card,marginBottom:12,border:"1px solid "+(isCurrent?"#00c88c":"#1e2535")}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                     <div>
-                      <div style={{fontSize:13,fontWeight:700,color:isCurrent?"#00c88c":"#8892b0"}}>{fy.label}</div>
-                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{fy.months} month{fy.months!==1?"s":""} recorded{isCurrent?" - current year":""}</div>
+                      <div style={{fontSize:13.5,fontWeight:700,color:isCurrent?"#00c88c":SUBTEXT}}>{fy.label}</div>
+                      <div style={{fontSize:12,color:SUBTEXT,marginTop:2}}>{fy.months} month{fy.months!==1?"s":""} recorded{isCurrent?" - current year":""}</div>
                     </div>
-                    {isCurrent&&<span style={{background:"#0a2a15",border:"1px solid #00c88c",borderRadius:12,fontSize:9,fontWeight:700,color:"#00c88c",padding:"3px 8px",letterSpacing:1}}>CURRENT</span>}
+                    {isCurrent&&<span style={{background:"#0a2a15",border:"1px solid #00c88c",borderRadius:12,fontSize:11.5,fontWeight:700,color:"#00c88c",padding:"3px 8px",letterSpacing:1}}>CURRENT</span>}
                   </div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:10}}>
                     {[
@@ -6340,7 +6352,7 @@ const calcTimesheetTotals = days => {
                       {label:"Total Bonus",value:fmt(fy.bonus),accent:"#c84aff"},
                     ].map(k=>(
                       <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"9px",textAlign:"center"}}>
-                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:3}}>{k.label}</div>
+                        <div style={{fontSize:11.5,color:SUBTEXT,textTransform:"uppercase",letterSpacing:1,marginBottom:3}}>{k.label}</div>
                         <div style={{fontSize:14,fontWeight:700,color:k.accent}}>{k.value}</div>
                       </div>
                     ))}
@@ -6355,8 +6367,8 @@ const calcTimesheetTotals = days => {
                   ].map(([l,v,c],i,arr)=>(
                     <StatRow key={l} label={l} value={v} color={c} last={i===arr.length-1}/>
                   ))}
-                  <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0 0",fontSize:12,fontWeight:700}}>
-                    <span style={{color:"#8892b0"}}>Total Deductions</span>
+                  <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0 0",fontSize:13,fontWeight:700}}>
+                    <span style={{color:SUBTEXT}}>Total Deductions</span>
                     <span style={{color:"#ff4a6a"}}>{fmt(fy.tax+fy.ni+fy.nest+fy.sl)}</span>
                   </div>
                 </div>
@@ -6372,7 +6384,7 @@ const calcTimesheetTotals = days => {
           const remaining = Math.round((entitlement - taken) * 100) / 100;
           const pct = Math.min(100, Math.round((taken / entitlement) * 100));
           const yearLogs = logsForYear(leaveLogs, year);
-          const inp2 = {background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px",width:"100%",boxSizing:"border-box",fontFamily:"inherit"};
+          const inp2 = {background:"#141824",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13.5,padding:"10px 12px",width:"100%",boxSizing:"border-box",fontFamily:"inherit"};
 
           return (
             <div style={{padding:"14px 14px 0"}}>
@@ -6380,25 +6392,25 @@ const calcTimesheetTotals = days => {
               {/* Settings toggle */}
               {leaveEditSettings && leaveDraftSettings ? (
                 <div style={{...card,marginBottom:14,border:"1px solid #4a9eff44"}}>
-                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Leave Settings</div>
+                  <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Leave Settings</div>
                   {[
                     ["Base Entitlement (days)", "baseEntitlement", "number"],
                     ["Service Days (0-6)", "serviceDays", "number"],
                     ["Start Year at JLI", "startYear", "number"],
                   ].map(([label, key, type]) => (
                     <div key={key} style={{marginBottom:10}}>
-                      <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>{label}</label>
+                      <label style={{fontSize:12.5,color:SUBTEXT,display:"block",marginBottom:5}}>{label}</label>
                       <input type={type} value={leaveDraftSettings[key]}
                         onChange={e=>setLeaveDraftSettings(s=>({...s,[key]:parseInt(e.target.value)||0}))}
                         style={inp2}/>
                     </div>
                   ))}
-                  <div style={{fontSize:11,color:"#3a4460",marginBottom:12,lineHeight:1.6}}>
+                  <div style={{fontSize:12.5,color:SUBTEXT,marginBottom:12,lineHeight:1.6}}>
                     Service days are added on June 1st each year. Current effective entitlement after June 1st: <span style={{color:"#4a9eff",fontWeight:700}}>{Math.round((leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)) * STD_DAY_HRS * 100)/100}h ({leaveDraftSettings.baseEntitlement + Math.min(leaveDraftSettings.serviceDays,6)} days x {STD_DAY_HRS}h)</span>
                   </div>
                   <div style={{display:"flex",gap:8}}>
-                    <button onClick={()=>{haptic();setLeaveEditSettings(false);}} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:"#5a6480",fontSize:13,fontWeight:600,padding:"11px",cursor:"pointer"}}>Cancel</button>
-                    <button onClick={saveLeaveSettings} style={{flex:2,background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"}}>Save Settings</button>
+                    <button onClick={()=>{haptic();setLeaveEditSettings(false);}} style={{flex:1,background:"#1e2535",border:"none",borderRadius:8,color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"11px",cursor:"pointer"}}>Cancel</button>
+                    <button onClick={saveLeaveSettings} style={{flex:2,background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13.5,fontWeight:700,padding:"11px",cursor:"pointer"}}>Save Settings</button>
                   </div>
                 </div>
               ) : (
@@ -6411,7 +6423,7 @@ const calcTimesheetTotals = days => {
                       {label:"Remaining",    value:remaining+"h",   sub:"~ "+Math.round(remaining/STD_DAY_HRS*10)/10+"d", accent:remaining>STD_DAY_HRS?"#00c88c":remaining>0?"#ffb84a":"#ff4a6a"},
                     ].map(k=>(
                       <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
-                        <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>{k.label}</div>
+                        <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:5}}>{k.label}</div>
                         <div style={{fontSize:16,fontWeight:800,color:k.accent}}>{k.value}</div>
                       </div>
                     ))}
@@ -6419,19 +6431,19 @@ const calcTimesheetTotals = days => {
 
                   {/* Progress bar */}
                   <div style={{...card,marginBottom:14}}>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#5a6480",marginBottom:8}}>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:SUBTEXT,marginBottom:8}}>
                       <span>{year} Leave Year</span>
                       <span style={{color:"#4a9eff",fontWeight:700}}>{pct}% used</span>
                     </div>
                     <div style={{background:"#1e2535",borderRadius:99,height:10,overflow:"hidden",marginBottom:8}}>
                       <div style={{width:pct+"%",height:"100%",background:"linear-gradient(90deg,#ff8c4a88,#ff8c4a)",borderRadius:99,transition:"width 0.4s"}}/>
                     </div>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#3a4460"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:SUBTEXT}}>
                       <span>{taken}h taken</span>
                       <span>{remaining}h remaining of {entitlement}h</span>
                     </div>
                     <button onClick={()=>{haptic();setLeaveDraftSettings({...leaveSettings});setLeaveEditSettings(true);}}
-                      style={{marginTop:12,background:"none",border:"1px solid #1e2535",borderRadius:8,color:"#3a4460",fontSize:11,padding:"7px 14px",cursor:"pointer",width:"100%"}}>
+                      style={{marginTop:12,background:"none",border:"1px solid #1e2535",borderRadius:8,color:SUBTEXT,fontSize:12.5,padding:"7px 14px",cursor:"pointer",width:"100%"}}>
                       ⚙️ Edit entitlement settings
                     </button>
                   </div>
@@ -6500,34 +6512,34 @@ const calcTimesheetTotals = days => {
                   }
                   setImportMsg(`✓ Estimated ${toAdd.length} month${toAdd.length!==1?"s":""} of leave`);
                   setTimeout(()=>setImportMsg(""),5000);
-                }} style={{width:"100%",marginBottom:8,background:"#1a1a0a",border:"1px solid #ffb84a",borderRadius:8,color:"#ffb84a",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer"}}>
+                }} style={{width:"100%",marginBottom:8,background:"#1a1a0a",border:"1px solid #ffb84a",borderRadius:8,color:"#ffb84a",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>
                   📊 Estimate Leave from Payslip History
                 </button>
               )}
 
               {/* Log leave form */}
               <div style={{...card,marginBottom:14}}>
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Log Leave</div>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:12}}>Log Leave</div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 80px",gap:8,marginBottom:8}}>
                   <div>
-                    <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Date</label>
+                    <label style={{fontSize:12.5,color:SUBTEXT,display:"block",marginBottom:5}}>Date</label>
                     <input type="date" value={leaveForm.date} onChange={e=>setLeaveForm(f=>({...f,date:e.target.value}))} style={inp2}/>
                   </div>
                   <div>
-                    <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Hours</label>
+                    <label style={{fontSize:12.5,color:SUBTEXT,display:"block",marginBottom:5}}>Hours</label>
                     <input type="number" min="0.25" max="240" step="0.25" value={leaveForm.hours}
                       onChange={e=>setLeaveForm(f=>({...f,hours:e.target.value}))} style={inp2}/>
                   </div>
                 </div>
                 <div style={{marginBottom:10}}>
-                  <label style={{fontSize:11,color:"#5a6480",display:"block",marginBottom:5}}>Label (optional)</label>
+                  <label style={{fontSize:12.5,color:SUBTEXT,display:"block",marginBottom:5}}>Label (optional)</label>
                   <input type="text" placeholder="e.g. Christmas week, bank holiday..." value={leaveForm.label}
                     onChange={e=>setLeaveForm(f=>({...f,label:e.target.value}))}
                     onKeyDown={e=>e.key==="Enter"&&saveLeaveLog()}
                     style={inp2}/>
                 </div>
                 <button onClick={saveLeaveLog} disabled={!leaveForm.date||!leaveForm.hours}
-                  style={{width:"100%",background:leaveForm.date&&leaveForm.hours?"#00c88c":"#1e2535",border:"none",borderRadius:8,color:leaveForm.date&&leaveForm.hours?"#000":"#3a4460",fontSize:13,fontWeight:700,padding:"12px",cursor:leaveForm.date&&leaveForm.hours?"pointer":"default",transition:"background 0.2s"}}>
+                  style={{width:"100%",background:leaveForm.date&&leaveForm.hours?"#00c88c":"#1e2535",border:"none",borderRadius:8,color:leaveForm.date&&leaveForm.hours?"#000":SUBTEXT,fontSize:13.5,fontWeight:700,padding:"12px",cursor:leaveForm.date&&leaveForm.hours?"pointer":"default",transition:"background 0.2s"}}>
                   + Log Leave
                 </button>
               </div>
@@ -6535,19 +6547,19 @@ const calcTimesheetTotals = days => {
               {/* Leave log for this year */}
               {yearLogs.length > 0 && (
                 <div style={{...card,padding:0,overflow:"hidden",marginBottom:14}}>
-                  <div style={{padding:"10px 12px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase",display:"grid",gridTemplateColumns:"80px 48px 1fr 28px"}}>
+                  <div style={{padding:"10px 12px",background:"#0d1117",fontSize:11.5,fontWeight:700,color:SUBTEXT,letterSpacing:0.5,textTransform:"uppercase",display:"grid",gridTemplateColumns:"80px 48px 1fr 28px"}}>
                     <span>Date</span><span style={{textAlign:"center"}}>Days</span><span>Label</span><span></span>
                   </div>
                   {yearLogs.map((l,i)=>(
-                    <div key={l.id} style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
-                      <span style={{color:"#8892b0"}}>{new Date(l.date).toLocaleDateString("en-GB",{day:"2-digit",month:"short"})}</span>
+                    <div key={l.id} style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:13,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
+                      <span style={{color:SUBTEXT}}>{new Date(l.date).toLocaleDateString("en-GB",{day:"2-digit",month:"short"})}</span>
                       <span style={{textAlign:"center",color:"#ff8c4a",fontWeight:700}}>{l.hours}h</span>
-                      <span style={{color:"#5a6480",fontSize:11}}>{l.label||"--"}</span>
-                      <button onClick={()=>deleteLeaveLog(l.id)} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
+                      <span style={{color:SUBTEXT,fontSize:12.5}}>{l.label||"--"}</span>
+                      <button onClick={()=>deleteLeaveLog(l.id)} style={{background:"none",border:"none",color:SUBTEXT,fontSize:14,cursor:"pointer",padding:0,textAlign:"center"}}>🗑</button>
                     </div>
                   ))}
-                  <div style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:12,fontWeight:700,background:"#0d1117",borderTop:"2px solid #2a3050"}}>
-                    <span style={{color:"#5a6480",fontSize:10,textTransform:"uppercase",letterSpacing:0.5}}>Total</span>
+                  <div style={{display:"grid",gridTemplateColumns:"80px 48px 1fr 28px",padding:"10px 12px",fontSize:13,fontWeight:700,background:"#0d1117",borderTop:"2px solid #2a3050"}}>
+                    <span style={{color:SUBTEXT,fontSize:12,textTransform:"uppercase",letterSpacing:0.5}}>Total</span>
                     <span style={{textAlign:"center",color:"#ff8c4a"}}>{taken}h</span>
                     <span></span><span></span>
                   </div>
@@ -6557,8 +6569,8 @@ const calcTimesheetTotals = days => {
               {yearLogs.length === 0 && (
                 <div style={{textAlign:"center",padding:"32px 20px"}}>
                   <div style={{fontSize:36,marginBottom:8}}>🏖️</div>
-                  <div style={{fontSize:14,color:"#8892b0",fontWeight:600,marginBottom:6}}>No leave logged for {year} yet</div>
-                  <div style={{fontSize:12,color:"#3a4460"}}>Log leave above or it'll auto-import from your monthly timesheets</div>
+                  <div style={{fontSize:14,color:SUBTEXT,fontWeight:600,marginBottom:6}}>No leave logged for {year} yet</div>
+                  <div style={{fontSize:13,color:SUBTEXT}}>Log leave above or it'll auto-import from your monthly timesheets</div>
                 </div>
               )}
 
@@ -6581,9 +6593,9 @@ const calcTimesheetTotals = days => {
                     {label:"Holiday",value:holCount+"h",accent:"#00c88c"},
                   ].map(k=>(
                     <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
-                      <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
+                      <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
                       <div style={{fontSize:20,fontWeight:700,color:k.accent}}>{k.value}</div>
-                      <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>this period</div>
+                      <div style={{fontSize:12,color:SUBTEXT,marginTop:2}}>this period</div>
                     </div>
                   ))}
                 </div>
@@ -6595,33 +6607,33 @@ const calcTimesheetTotals = days => {
               <div style={{...card,marginBottom:14,borderLeft:"3px solid "+(weeklyCheck.status==="match"?"#00c88c":weeklyCheck.status==="no_weekly"?"#5a6480":"#ff6b8a")}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:weeklyCheck.status==="mismatch"?10:0}}>
                   <div>
-                    <div style={{fontSize:13,fontWeight:700,color:weeklyCheck.status==="match"?"#00c88c":weeklyCheck.status==="no_weekly"?"#8892b0":"#ff6b8a"}}>
+                    <div style={{fontSize:13.5,fontWeight:700,color:weeklyCheck.status==="match"?"#00c88c":weeklyCheck.status==="no_weekly"?SUBTEXT:"#ff6b8a"}}>
                       {weeklyCheck.status==="match" ? "✓ Monthly matches weekly" : weeklyCheck.status==="no_weekly" ? "No weekly data to compare" : "⚠ Monthly vs Weekly mismatch"}
                     </div>
-                    <div style={{fontSize:11,color:"#5a6480",marginTop:2}}>{weeklyCheck.month}{weeklyCheck.status==="match"?" · totals reconcile":""}</div>
+                    <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{weeklyCheck.month}{weeklyCheck.status==="match"?" · totals reconcile":""}</div>
                   </div>
-                  <button onClick={()=>setWeeklyCheck(null)} style={{background:"none",border:"none",color:"#3a4460",fontSize:16,cursor:"pointer"}}>✕</button>
+                  <button onClick={()=>setWeeklyCheck(null)} style={{background:"none",border:"none",color:SUBTEXT,fontSize:16,cursor:"pointer"}}>✕</button>
                 </div>
                 {weeklyCheck.status==="mismatch" && (
                   <>
-                    <div style={{fontSize:11,color:"#8892b0",marginBottom:8}}>
+                    <div style={{fontSize:12.5,color:SUBTEXT,marginBottom:8}}>
                       Monthly total: {weeklyCheck.monthlyTotal}h · Weekly total: {weeklyCheck.weeklyTotal}h
                       {Math.abs(weeklyCheck.monthlyTotal-weeklyCheck.weeklyTotal)>0.02 && <span style={{color:"#ff6b8a"}}> (off by {Math.round(Math.abs(weeklyCheck.monthlyTotal-weeklyCheck.weeklyTotal)*100)/100}h)</span>}
                     </div>
                     <div style={{background:"#0d1117",borderRadius:8,overflow:"hidden"}}>
-                      <div style={{display:"grid",gridTemplateColumns:"60px 40px 1fr 1fr",padding:"8px 10px",background:"#1a0a0a",fontSize:9,fontWeight:700,color:"#8a5a5a",letterSpacing:1,textTransform:"uppercase"}}>
+                      <div style={{display:"grid",gridTemplateColumns:"60px 40px 1fr 1fr",padding:"8px 10px",background:"#1a0a0a",fontSize:11.5,fontWeight:700,color:SUBTEXT,letterSpacing:1,textTransform:"uppercase"}}>
                         <span>Date</span><span>Day</span><span style={{textAlign:"right"}}>Monthly</span><span style={{textAlign:"right"}}>Weekly</span>
                       </div>
                       {weeklyCheck.mismatches.map((m,i)=>(
-                        <div key={i} style={{display:"grid",gridTemplateColumns:"60px 40px 1fr 1fr",padding:"8px 10px",fontSize:11,borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
-                          <span style={{color:"#8892b0",fontWeight:600}}>{m.date}</span>
-                          <span style={{color:"#5a6480"}}>{m.day}</span>
+                        <div key={i} style={{display:"grid",gridTemplateColumns:"60px 40px 1fr 1fr",padding:"8px 10px",fontSize:12.5,borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
+                          <span style={{color:SUBTEXT,fontWeight:600}}>{m.date}</span>
+                          <span style={{color:SUBTEXT}}>{m.day}</span>
                           <span style={{textAlign:"right",color:m.type==="missing_monthly"?"#ff6b8a":"#e8eaf0",fontWeight:600}}>{m.monthly}</span>
                           <span style={{textAlign:"right",color:m.type==="missing_weekly"?"#ff6b8a":"#e8eaf0",fontWeight:600}}>{m.weekly}</span>
                         </div>
                       ))}
                     </div>
-                    <p style={{fontSize:10,color:"#5a6480",marginTop:8,lineHeight:1.5}}>These days differ between JLI's monthly summary and the weekly emails. Worth querying with JLI if the monthly total is wrong.</p>
+                    <p style={{fontSize:12,color:SUBTEXT,marginTop:8,lineHeight:1.5}}>These days differ between JLI's monthly summary and the weekly emails. Worth querying with JLI if the monthly total is wrong.</p>
                   </>
                 )}
               </div>
@@ -6630,7 +6642,7 @@ const calcTimesheetTotals = days => {
             {/* Daily breakdown */}
             {accumulated.days&&accumulated.days.length>0?(
               <div style={{...card,padding:0,overflow:"hidden",marginBottom:14}}>
-                <div style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:1,textTransform:"uppercase"}}>
+                <div style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 68px 68px",padding:"10px",background:"#0d1117",fontSize:11.5,fontWeight:700,color:SUBTEXT,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>
                   <span>Date</span><span>Day</span><span style={{textAlign:"right"}}>Hours</span><span style={{textAlign:"right"}}>Wkdy OT</span><span style={{textAlign:"right"}}>Wknd OT</span>
                 </div>
                 <div style={{maxHeight:"60vh",overflowY:"auto",overscrollBehavior:"contain"}} onTouchStart={e=>e.stopPropagation()}>
@@ -6640,27 +6652,27 @@ const calcTimesheetTotals = days => {
                     const isHol=d.isHoliday||false;
                     const isPartHol=d.isPartialHol||false;
                     if(isPartHol) return(
-                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px",fontSize:12,background:"#0d121a",borderBottom:"1px solid #1a2030",alignItems:"center",borderLeft:"3px solid #4a9eff"}}>
-                        <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 68px 68px",padding:"10px",fontSize:13,background:"#0d121a",borderBottom:"1px solid #1a2030",alignItems:"center",borderLeft:"3px solid #4a9eff"}}>
+                        <span style={{color:SUBTEXT,fontWeight:600}}>{d.date}</span>
                         <span style={{color:"#4a9eff",fontWeight:700}}>{d.day}</span>
-                        <span style={{textAlign:"right",fontSize:11}}><span style={{color:"#e8eaf0",fontWeight:600}}>{d.hours}</span><span style={{color:"#00c88c",fontWeight:600}}> +{d.holiday} hol</span></span>
+                        <span style={{textAlign:"right",fontSize:12.5}}><span style={{color:"#e8eaf0",fontWeight:600}}>{d.hours}</span><span style={{color:"#00c88c",fontWeight:600}}> +{d.holiday} hol</span></span>
                         <span style={{textAlign:"right",color:"#4affd4",fontWeight:600}}>{d.otHrs>0?"+"+d.otHrs+"h":"--"}</span>
-                        <span style={{textAlign:"right",color:"#3a4460"}}>--</span>
+                        <span style={{textAlign:"right",color:SUBTEXT}}>--</span>
                       </div>
                     );
                     if(isHol) return(
-                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px",fontSize:12,background:"#0d1a10",borderBottom:"1px solid #1a2e1a",alignItems:"center",borderLeft:"3px solid #00c88c"}}>
-                        <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 68px 68px",padding:"10px",fontSize:13,background:"#0d1a10",borderBottom:"1px solid #1a2e1a",alignItems:"center",borderLeft:"3px solid #00c88c"}}>
+                        <span style={{color:SUBTEXT,fontWeight:600}}>{d.date}</span>
                         <span style={{color:"#00c88c",fontWeight:700}}>{d.day}</span>
-                        <span style={{textAlign:"right",color:"#00c88c",fontWeight:700,fontSize:11}}>{d.holiday}</span>
-                        <span style={{textAlign:"right",color:"#3a6040",fontSize:10}}>leave</span>
-                        <span style={{textAlign:"right",color:"#3a6040"}}>--</span>
+                        <span style={{textAlign:"right",color:"#00c88c",fontWeight:700,fontSize:12.5}}>{d.holiday}</span>
+                        <span style={{textAlign:"right",color:SUBTEXT,fontSize:12}}>leave</span>
+                        <span style={{textAlign:"right",color:SUBTEXT}}>--</span>
                       </div>
                     );
                     return(
-                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 60px 60px",padding:"10px 10px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
-                        <span style={{color:"#8892b0",fontWeight:600}}>{d.date}</span>
-                        <span style={{color:isWeekend?"#ffb84a":"#5a6480",fontWeight:isWeekend?700:400}}>{d.day}</span>
+                      <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 68px 68px",padding:"10px 10px",fontSize:13,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center"}}>
+                        <span style={{color:SUBTEXT,fontWeight:600}}>{d.date}</span>
+                        <span style={{color:isWeekend?"#ffb84a":SUBTEXT,fontWeight:isWeekend?700:400}}>{d.day}</span>
                         <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{d.hours}</span>
                         <span style={{textAlign:"right",color:"#4affd4",fontWeight:600}}>{d.otHrs>0?"+"+d.otHrs+"h":"--"}</span>
                         <span style={{textAlign:"right",color:"#ffb84a",fontWeight:600}}>{d.wkOtHrs>0?d.wkOtHrs+"h":"--"}</span>
@@ -6672,8 +6684,8 @@ const calcTimesheetTotals = days => {
             ):(
               <div style={{...card,textAlign:"center",padding:"32px 16px",marginBottom:14}}>
                 <div style={{fontSize:32,marginBottom:10}}>📋</div>
-                <div style={{fontSize:13,color:"#5a6480"}}>No timesheets uploaded yet this month</div>
-                <div style={{fontSize:11,color:"#3a4460",marginTop:6}}>Go to Upload tab to add your weekly timesheet</div>
+                <div style={{fontSize:13.5,color:SUBTEXT}}>No timesheets uploaded yet this month</div>
+                <div style={{fontSize:12.5,color:SUBTEXT,marginTop:6}}>Go to Upload tab to add your weekly timesheet</div>
               </div>
             )}
 
@@ -6681,7 +6693,7 @@ const calcTimesheetTotals = days => {
             {monthlyTs.length > 0 && (()=>{
               return (
                 <div style={{...card,padding:0,overflow:"hidden",marginBottom:14}}>
-                  <div style={{padding:"10px 12px",background:"#0d1117",fontSize:9,fontWeight:700,color:"#3a4460",letterSpacing:0.5,textTransform:"uppercase",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{padding:"10px 12px",background:"#0d1117",fontSize:11.5,fontWeight:700,color:SUBTEXT,letterSpacing:0.5,textTransform:"uppercase",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <span>Monthly Timesheet History</span>
                     <span style={{color:"#7c6fff"}}>{monthlyTs.length} months</span>
                   </div>
@@ -6698,13 +6710,13 @@ const calcTimesheetTotals = days => {
                     return (
                       <div key={m.emailId||i}>
                         <div onClick={()=>{haptic();setExpandedMonth(expanded?null:m.month);}}
-                          style={{display:"grid",gridTemplateColumns:"80px 1fr 60px 28px",padding:"10px 12px",fontSize:12,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center",cursor:"pointer"}}>
-                          <span style={{color:"#8892b0",fontWeight:600,fontSize:11}}>{m.month||m.period.slice(0,5)}</span>
-                          <span style={{color:"#5a6480",fontSize:10}}>{m.totalHrs} - {h2(hrs.otHrs)}h OT - {h2(hrs.weekendOtHrs)}h wknd</span>
-                          <span style={{textAlign:"right",fontSize:11,fontWeight:700,color:dismissed?"#5a6480":hasIssue?"#ff6b8a":isOk?"#00c88c":"#3a4460"}}>
+                          style={{display:"grid",gridTemplateColumns:"80px 1fr 60px 28px",padding:"10px 12px",fontSize:13,background:i%2===0?"#141824":"#111520",borderBottom:"1px solid #1a1f2e",alignItems:"center",cursor:"pointer"}}>
+                          <span style={{color:SUBTEXT,fontWeight:600,fontSize:12.5}}>{m.month||m.period.slice(0,5)}</span>
+                          <span style={{color:SUBTEXT,fontSize:12}}>{m.totalHrs} - {h2(hrs.otHrs)}h OT - {h2(hrs.weekendOtHrs)}h wknd</span>
+                          <span style={{textAlign:"right",fontSize:12.5,fontWeight:700,color:dismissed?SUBTEXT:hasIssue?"#ff6b8a":isOk?"#00c88c":SUBTEXT}}>
                             {hasIssue?(dismissed?"hidden":"⚠️ "+disc.items.length+" issue"+(disc.items.length>1?"s":"")):isOk?"✅ OK":"--"}
                           </span>
-                          <span style={{textAlign:"right",color:"#3a4460",fontSize:12}}>{expanded?"A":"V"}</span>
+                          <span style={{textAlign:"right",color:SUBTEXT,fontSize:13}}>{expanded?"A":"V"}</span>
                         </div>
                         {expanded && (
                           <div style={{background:"#0d1117",borderBottom:"1px solid #1e2535",padding:"12px 14px"}}>
@@ -6715,46 +6727,46 @@ const calcTimesheetTotals = days => {
                                 ["Wknd Hrs", h2(hrs.weekendOtHrs)+"h", "#ffb84a"],
                                 ["Hol Hrs",  h2(hrs.holidayHrs)+"h",  "#00c88c"],
                                 ["Total",    m.totalHrs,    "#7c6fff"],
-                                ["Period",   m.period ? m.period.replace("2026-","").replace(/-/g,"/") : "--", "#5a6480"],
+                                ["Period",   m.period ? m.period.replace("2026-","").replace(/-/g,"/") : "--", SUBTEXT],
                               ].map(([l,v,c])=>(
                                 <div key={l} style={{background:"#111827",borderRadius:6,padding:"7px",textAlign:"center"}}>
-                                  <div style={{fontSize:9,color:"#3a4460",textTransform:"uppercase",letterSpacing:0.5,marginBottom:3}}>{l}</div>
-                                  <div style={{fontSize:12,fontWeight:700,color:c}}>{v}</div>
+                                  <div style={{fontSize:11.5,color:SUBTEXT,textTransform:"uppercase",letterSpacing:0.5,marginBottom:3}}>{l}</div>
+                                  <div style={{fontSize:13,fontWeight:700,color:c}}>{v}</div>
                                 </div>
                               ))}
                             </div>
                             {disc && disc.status === "discrepancy" && (
                               <div style={{background:"#1a0a0a",borderRadius:8,padding:"10px 12px",border:"1px solid #3a1a1a"}}>
-                                <div style={{fontSize:11,fontWeight:700,color:"#ff6b8a",marginBottom:8}}>⚠️ Pay discrepancies found</div>
+                                <div style={{fontSize:12.5,fontWeight:700,color:"#ff6b8a",marginBottom:8}}>⚠️ Pay discrepancies found</div>
                                 {disc.items.map((item,j)=>(
-                                  <div key={j} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #2a1a1a",fontSize:11}}>
-                                    <span style={{color:"#8892b0"}}>{item.label}</span>
+                                  <div key={j} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #2a1a1a",fontSize:12.5}}>
+                                    <span style={{color:SUBTEXT}}>{item.label}</span>
                                     <span>
-                                      <span style={{color:"#5a6480"}}>exp </span>
+                                      <span style={{color:SUBTEXT}}>exp </span>
                                       <span style={{color:"#e8eaf0",fontWeight:600}}>{fmt(item.expected)}</span>
-                                      <span style={{color:"#3a4460"}}> - got </span>
+                                      <span style={{color:SUBTEXT}}> - got </span>
                                       <span style={{color:item.diff>0?"#ff6b8a":"#4affd4",fontWeight:700}}>{fmt(item.actual)}</span>
-                                      <span style={{color:item.diff>0?"#ff4a6a":"#00c88c",fontSize:10,marginLeft:4}}>{item.diff>0?"v":"^"}{fmt(Math.abs(item.diff))}</span>
+                                      <span style={{color:item.diff>0?"#ff4a6a":"#00c88c",fontSize:12,marginLeft:4}}>{item.diff>0?"v":"^"}{fmt(Math.abs(item.diff))}</span>
                                     </span>
                                   </div>
                                 ))}
-                                <div style={{fontSize:10,color:"#5a3030",marginTop:8,lineHeight:1.6}}>
+                                <div style={{fontSize:12,color:SUBTEXT,marginTop:8,lineHeight:1.6}}>
                                   These are estimates based on your stored rates. Rounding differences under £1 are ignored. If a gap is large, raise it with payroll.
                                 </div>
                                 {dismissed ? (
-                                  <button onClick={()=>{haptic();restoreDisc(m.month);}} style={{marginTop:10,width:"100%",background:"#141824",border:"1px solid #2a3050",borderRadius:6,color:"#8892b0",fontSize:11,fontWeight:600,padding:"9px",cursor:"pointer"}}>↩ Restore alert</button>
+                                  <button onClick={()=>{haptic();restoreDisc(m.month);}} style={{marginTop:10,width:"100%",background:"#141824",border:"1px solid #2a3050",borderRadius:6,color:SUBTEXT,fontSize:12.5,fontWeight:600,padding:"9px",cursor:"pointer"}}>↩ Restore alert</button>
                                 ) : (
-                                  <button onClick={()=>{haptic();dismissDisc(m.month);}} style={{marginTop:10,width:"100%",background:"#141824",border:"1px solid #3a1a1a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:600,padding:"9px",cursor:"pointer"}}>Dismiss alert</button>
+                                  <button onClick={()=>{haptic();dismissDisc(m.month);}} style={{marginTop:10,width:"100%",background:"#141824",border:"1px solid #3a1a1a",borderRadius:6,color:"#ff6b8a",fontSize:12.5,fontWeight:600,padding:"9px",cursor:"pointer"}}>Dismiss alert</button>
                                 )}
                               </div>
                             )}
                             {disc && disc.status === "ok" && (
-                              <div style={{background:"#0a1a10",borderRadius:8,padding:"10px 12px",border:"1px solid #1a3a1a",fontSize:11,color:"#00c88c"}}>
+                              <div style={{background:"#0a1a10",borderRadius:8,padding:"10px 12px",border:"1px solid #1a3a1a",fontSize:12.5,color:"#00c88c"}}>
                                 ✅ Pay matches timesheet within tolerance -- no issues found
                               </div>
                             )}
                             {!disc && (
-                              <div style={{fontSize:11,color:"#3a4460",textAlign:"center",padding:"6px 0"}}>
+                              <div style={{fontSize:12.5,color:SUBTEXT,textAlign:"center",padding:"6px 0"}}>
                                 Payslip for {m.month||"this period"} not yet uploaded -- discrepancy check will run automatically once it arrives
                               </div>
                             )}
@@ -6799,10 +6811,10 @@ const calcTimesheetTotals = days => {
                       );
                     })}
                   </div>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"#3a4460",marginTop:4}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11.5,color:SUBTEXT,marginTop:4}}>
                     {otData.map((d,i)=><span key={i} style={{flex:1,textAlign:"center"}}>{d.month}</span>)}
                   </div>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#5a6480",marginTop:10,paddingTop:8,borderTop:"1px solid #1a1f2e"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:SUBTEXT,marginTop:10,paddingTop:8,borderTop:"1px solid #1a1f2e"}}>
                     <span>Avg: <span style={{color:"#4affd4",fontWeight:700}}>{fmt(avgOt)}</span></span>
                     <span>Peak: <span style={{color:"#00c88c",fontWeight:700}}>{fmt(maxOt)}</span></span>
                     <span>Total: <span style={{color:"#e8eaf0",fontWeight:700}}>{fmt(otData.reduce((s,d)=>s+d.ot,0))}</span></span>
@@ -6832,30 +6844,30 @@ const calcTimesheetTotals = days => {
                       {label:"Avg OT/Month",value:fmt(fyOTPay/fyRows.length),accent:"#ffb84a"},
                     ].map(k=>(
                       <div key={k.label} style={{background:"#0d1117",borderRadius:8,padding:"10px",textAlign:"center"}}>
-                        <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{k.label}</div>
+                        <div style={{fontSize:11.5,color:SUBTEXT,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{k.label}</div>
                         <div style={{fontSize:16,fontWeight:700,color:k.accent}}>{k.value}</div>
-                        {k.sub&&<div style={{fontSize:9,color:"#3a4460",marginTop:2}}>{k.sub}</div>}
+                        {k.sub&&<div style={{fontSize:11.5,color:SUBTEXT,marginTop:2}}>{k.sub}</div>}
                       </div>
                     ))}
                   </div>
                   <SectionLabel>Month by Month</SectionLabel>
                   {fyRows.map((r,i,arr)=>(
-                    <StatRow key={r.month} label={r.month} value={r.ot>0?fmt(r.ot):"--"} color={r.ot>0?"#4affd4":"#3a4460"} last={i===arr.length-1}/>
+                    <StatRow key={r.month} label={r.month} value={r.ot>0?fmt(r.ot):"--"} color={r.ot>0?"#4affd4":SUBTEXT} last={i===arr.length-1}/>
                   ))}
                 </div>
               );
             })()}
 
-            <button onClick={()=>{if(window.confirm("Reset timesheet data for new month? This clears the current accumulator."))resetTimesheet();}} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"12px",cursor:"pointer"}}>
+            <button onClick={()=>{if(window.confirm("Reset timesheet data for new month? This clears the current accumulator."))resetTimesheet();}} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:8,color:"#ff6b8a",fontSize:13,fontWeight:600,padding:"12px",cursor:"pointer"}}>
               Reset for New Month
             </button>
           </div>
         )}
 
         {tab==="Move"&&(()=>{
-          const lbl={fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"};
+          const lbl={fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"};
           const inp={width:"100%",boxSizing:"border-box",background:"#1e2535",border:"1px solid #2a3050",borderRadius:7,color:"#e8eaf0",fontSize:14,padding:"9px 10px"};
-          const note={fontSize:10.5,color:"#3a4460",lineHeight:1.5};
+          const note={fontSize:12.5,color:SUBTEXT,lineHeight:1.5};
           const fmt0=n=>"£"+Math.round(Number(n)||0).toLocaleString("en-GB");
           // Saves on blur, like the bill amounts; the key resets it when the plan syncs.
           const field=(value,onSave,opts={})=>(
@@ -6868,12 +6880,12 @@ const calcTimesheetTotals = days => {
           const numOrNull=v=>v===""||v==null||!isFinite(Number(v))?null:Number(v);
 
           if(moveMissing) return (
-            <div style={{...card,borderRadius:12,fontSize:12.5,color:"#ffb84a",lineHeight:1.6}}>
+            <div style={{...card,borderRadius:12,fontSize:13.5,color:"#ffb84a",lineHeight:1.6}}>
               Move plan needs one database change first. Run this in Supabase → SQL editor, then pull down to refresh:
-              <pre style={{marginTop:10,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,padding:10,fontSize:11,color:"#c8cee0",whiteSpace:"pre-wrap"}}>{MOVE_SQL}</pre>
+              <pre style={{marginTop:10,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,padding:10,fontSize:12.5,color:SUBTEXT,whiteSpace:"pre-wrap"}}>{MOVE_SQL}</pre>
             </div>
           );
-          if(!movePlan) return <div style={{...card,borderRadius:12,fontSize:12.5,color:"#5a6480",textAlign:"center",padding:"20px 12px"}}>Loading move plan…</div>;
+          if(!movePlan) return <div style={{...card,borderRadius:12,fontSize:13.5,color:SUBTEXT,textAlign:"center",padding:"20px 12px"}}>Loading move plan…</div>;
 
           const totalPct=MOVE_BUCKETS.reduce((a,b)=>a+mpTargets[b.k],0);
           const billsTotal=MOVE_BUCKETS.reduce((a,b)=>a+mpActual[b.k],0);
@@ -6883,7 +6895,7 @@ const calcTimesheetTotals = days => {
           if(Object.values(mpPersonalAll).filter(x=>x&&Array.isArray(x.bills)).length<2)waiting.push((isOwner?"Hollie":"Glyn")+"'s personal bills");
           const basisBtn=(k,label)=>{const on=mpBasis===k;return(
             <button onClick={()=>{haptic();savePlan(p=>({...p,basis:k}));}} style={{flex:1,background:on?"#4a9eff":"#0d1117",
-              color:on?"#fff":"#5a6480",border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"8px 6px",fontSize:11.5,fontWeight:700,cursor:"pointer"}}>{label}</button>
+              color:on?"#fff":SUBTEXT,border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:8,padding:"8px 6px",fontSize:13,fontWeight:700,cursor:"pointer"}}>{label}</button>
           );};
 
           // ── MoveCalc: sale, purchase and mortgage deals ──
@@ -6982,41 +6994,41 @@ const calcTimesheetTotals = days => {
           const mvCard=(k,title,right,body)=>(
             <div style={{background:"#141824",borderRadius:12,overflow:"hidden",border:"1px solid #1e2535"}}>
               <div onClick={()=>toggle(k)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 13px",background:"#10151f",cursor:"pointer",borderBottom:shut(k)?"none":"1px solid #1e2535"}}>
-                <span style={{fontSize:12,fontWeight:700,color:"#c8cee0"}}>{title}</span>
+                <span style={{fontSize:13,fontWeight:700,color:SUBTEXT}}>{title}</span>
                 <span style={{display:"flex",alignItems:"center",gap:8}}>
-                  {right!=null&&<span style={{fontSize:12.5,fontWeight:700,color:"#7a8499"}}>{right}</span>}
-                  <span style={{fontSize:11,color:"#5a6480",width:9,textAlign:"center"}}>{shut(k)?"▸":"▾"}</span>
+                  {right!=null&&<span style={{fontSize:13.5,fontWeight:700,color:SUBTEXT}}>{right}</span>}
+                  <span style={{fontSize:12.5,color:SUBTEXT,width:9,textAlign:"center"}}>{shut(k)?"▸":"▾"}</span>
                 </span>
               </div>
               {!shut(k)&&<div style={{padding:"12px 13px",display:"flex",flexDirection:"column",gap:10}}>{body}</div>}
             </div>
           );
           const inField=(label,key,ph,suf)=>(
-            <div style={{minWidth:0}}>
+            <div style={{minWidth:0,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
               <div style={{...lbl,marginBottom:4}}>{label}{suf?" "+suf:""}</div>
               {field(mc[key],v=>setMc(key,v),{ph})}
             </div>
           );
           const kv=(k,v,tone,total)=>(
-            <div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:total?"8px 0 0":"3px 0",
+            <div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:13,padding:total?"8px 0 0":"3px 0",
               borderTop:total?"1px solid #1e2535":"none",marginTop:total?4:0}}>
-              <span style={{color:total?"#c8cee0":"#8892b0",fontWeight:total?700:500}}>{k}</span>
+              <span style={{color:SUBTEXT,fontWeight:total?700:500}}>{k}</span>
               <span style={{fontWeight:700,color:tone==="neg"?"#ff4a6a":tone==="pos"?"#00c88c":tone==="amber"?"#ffb84a":"#e8eaf0"}}>{v}</span>
             </div>
           );
-          const warn=t=><div style={{background:"#1d160833",border:"1px solid #4a3a1a",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#ffb84a",lineHeight:1.5}}>{t}</div>;
+          const warn=t=><div style={{background:"#1d160833",border:"1px solid #4a3a1a",borderRadius:8,padding:"8px 10px",fontSize:12.5,color:"#ffb84a",lineHeight:1.5}}>{t}</div>;
           const grid2={display:"grid",gridTemplateColumns:"1fr 1fr",gap:8};
           const fieldBox=(label,value,onSave,opts)=>(
-            <div style={{minWidth:0}}><div style={{...lbl,marginBottom:4}}>{label}</div>{field(value,onSave,opts)}</div>
+            <div style={{minWidth:0,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}><div style={{...lbl,marginBottom:4}}>{label}</div>{field(value,onSave,opts)}</div>
           );
           // A worked-out value shown where an input would be (dashed, so it doesn't look editable).
           const roBox=(label,v)=>(
-            <div style={{minWidth:0}}>
+            <div style={{minWidth:0,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
               <div style={{...lbl,marginBottom:4}}>{label}</div>
-              <div style={{...inp,color:"#8892b0",background:"#141a28",border:"1px dashed #2a3050"}}>{v}</div>
+              <div style={{...inp,color:SUBTEXT,background:"#141a28",border:"1px dashed #2a3050"}}>{v}</div>
             </div>
           );
-          const good=t=><div style={{fontSize:11.5,color:"#00c88c",lineHeight:1.5}}>{t}</div>;
+          const good=t=><div style={{fontSize:13,color:"#00c88c",lineHeight:1.5}}>{t}</div>;
           const pcCols="1fr 1fr .8fr 1fr 1fr";
 
           return (
@@ -7026,22 +7038,22 @@ const calcTimesheetTotals = days => {
             <div style={{...card,borderRadius:12,padding:"12px 12px 13px",display:"flex",flexDirection:"column",gap:11}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
                 <span style={{fontSize:14,fontWeight:800,color:"#e8eaf0"}}>🏡 Move plan</span>
-                {mpGlyn&&<span style={{fontSize:10.5,color:"#5a6480"}}>{mpGlyn.months} payslips · {mpGlyn.from} – {mpGlyn.to}</span>}
+                {mpGlyn&&<span style={{fontSize:12.5,color:SUBTEXT}}>{mpGlyn.months} payslips · {mpGlyn.from} – {mpGlyn.to}</span>}
               </div>
               <div>
                 <div style={lbl}>Household take-home</div>
-                <div style={{fontSize:24,fontWeight:800,color:"#e8eaf0",marginTop:3}}>{mpGlyn?fmt(mpIncome):"—"}<span style={{fontSize:11,color:"#5a6480",fontWeight:600}}> a month</span></div>
+                <div style={{fontSize:24,fontWeight:800,color:"#e8eaf0",marginTop:3}}>{mpGlyn?fmt(mpIncome):"—"}<span style={{fontSize:12.5,color:SUBTEXT,fontWeight:600}}> a month</span></div>
               </div>
               <div style={{display:"flex",gap:8}}>
                 <div style={{flex:1,background:"#0d1117",borderRadius:8,padding:"9px 10px"}}>
                   <div style={lbl}>Glyn · avg</div>
                   <div style={{fontSize:15,fontWeight:700,color:"#4a9eff",marginTop:3}}>{mpGlyn?fmt(mpBasis==="withOt"?mpGlyn.withOt:mpGlyn.noOt):"—"}</div>
-                  <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>{mpGlyn?(mpBasis==="withOt"?"no OT "+fmt(mpGlyn.noOt):"with OT "+fmt(mpGlyn.withOt)):"waiting"}</div>
+                  <div style={{fontSize:12,color:SUBTEXT,marginTop:2}}>{mpGlyn?(mpBasis==="withOt"?"no OT "+fmt(mpGlyn.noOt):"with OT "+fmt(mpGlyn.withOt)):"waiting"}</div>
                 </div>
                 <div style={{flex:1,background:"#0d1117",borderRadius:8,padding:"9px 10px"}}>
                   <div style={lbl}>Hollie · est</div>
                   <div style={{fontSize:15,fontWeight:700,color:"#c84aff",marginTop:3}}>{fmt(mpHollieNet)}</div>
-                  <div style={{fontSize:10,color:"#3a4460",marginTop:2}}>base pay, no OT</div>
+                  <div style={{fontSize:12,color:SUBTEXT,marginTop:2}}>base pay, no OT</div>
                 </div>
               </div>
               <div style={{display:"flex",gap:6}}>
@@ -7049,7 +7061,7 @@ const calcTimesheetTotals = days => {
                 {basisBtn("withOt","With overtime")}
               </div>
               {waiting.length>0&&(
-                <div style={{background:"#1d160833",border:"1px solid #4a3a1a",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#ffb84a",lineHeight:1.5}}>
+                <div style={{background:"#1d160833",border:"1px solid #4a3a1a",borderRadius:8,padding:"8px 10px",fontSize:12.5,color:"#ffb84a",lineHeight:1.5}}>
                   Waiting on {waiting.join(" and ")} — {waiting.length>1?"they appear":"it appears"} once {isOwner?"Hollie opens":"Glyn opens"} Vaulted.
                 </div>
               )}
@@ -7058,8 +7070,8 @@ const calcTimesheetTotals = days => {
             {/* ── target split vs bills now ── */}
             <div style={{background:"#141824",borderRadius:12,overflow:"hidden",border:"1px solid #1e2535"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 13px",background:"#10151f",borderBottom:"1px solid #1e2535"}}>
-                <span style={{fontSize:12,fontWeight:700,color:"#c8cee0"}}>Target split</span>
-                <span style={{fontSize:11,fontWeight:700,color:totalPct===100?"#3a4460":"#ffb84a"}}>{totalPct}%{totalPct!==100?" · should add to 100%":""}</span>
+                <span style={{fontSize:13,fontWeight:700,color:SUBTEXT}}>Target split</span>
+                <span style={{fontSize:12.5,fontWeight:700,color:totalPct===100?SUBTEXT:"#ffb84a"}}>{totalPct}%{totalPct!==100?" · should add to 100%":""}</span>
               </div>
               {MOVE_BUCKETS.map((b,i)=>{
                 const tgt=mpIncome*mpTargets[b.k]/100, act=mpActual[b.k];
@@ -7069,33 +7081,33 @@ const calcTimesheetTotals = days => {
                   <div key={b.k} style={{padding:"11px 13px",borderTop:i?"1px solid #171d2b":"none"}}>
                     <div style={{display:"flex",alignItems:"center",gap:8}}>
                       <span onClick={()=>{haptic();setMovePick(null);setMoveOpenB(o=>o===b.k?null:b.k);}}
-                        style={{flex:1,minWidth:0,fontSize:13.5,color:"#c8cee0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",cursor:"pointer"}}>
-                        <span style={{fontSize:11,color:b.c,display:"inline-block",width:12}}>{moveOpenB===b.k?"▾":"▸"}</span>{b.e} {b.l}</span>
+                        style={{flex:1,minWidth:0,fontSize:14,color:SUBTEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",cursor:"pointer"}}>
+                        <span style={{fontSize:12.5,color:b.c,display:"inline-block",width:12}}>{moveOpenB===b.k?"▾":"▸"}</span>{b.e} {b.l}</span>
                       {field(mpTargets[b.k],v=>savePlan(p=>({...p,targets:{...mpTargets,...(p.targets||{}),[b.k]:Math.max(0,Math.min(100,Math.round(Number(v)||0)))}})),
-                        {style:{width:50,padding:"6px 7px",fontSize:13,textAlign:"right",borderColor:b.c+"55"}})}
-                      <span style={{fontSize:11,color:"#5a6480"}}>%</span>
-                      <span style={{width:78,textAlign:"right",fontSize:13.5,fontWeight:700,color:"#e8eaf0"}}>{fmt(tgt)}</span>
+                        {style:{width:50,padding:"6px 7px",fontSize:13.5,textAlign:"right",borderColor:b.c+"55"}})}
+                      <span style={{fontSize:12.5,color:SUBTEXT}}>%</span>
+                      <span style={{width:78,textAlign:"right",fontSize:14,fontWeight:700,color:"#e8eaf0"}}>{fmt(tgt)}</span>
                     </div>
                     <div style={{height:5,borderRadius:3,background:"#1e2535",marginTop:8,overflow:"hidden"}}>
                       <div style={{height:"100%",width:w+"%",background:over?"#ff4a6a":b.c}}/>
                     </div>
-                    <div onClick={()=>{haptic();setMovePick(null);setMoveOpenB(o=>o===b.k?null:b.k);}} style={{fontSize:10.5,color:"#3a4460",marginTop:4,cursor:"pointer"}}>
+                    <div onClick={()=>{haptic();setMovePick(null);setMoveOpenB(o=>o===b.k?null:b.k);}} style={{fontSize:12.5,color:SUBTEXT,marginTop:4,cursor:"pointer"}}>
                       Bills now {fmt(act)} · {over?<span style={{color:"#ff4a6a",fontWeight:700}}>over by {fmt(act-tgt)}</span>:<span>{fmt(tgt-act)} spare</span>}
                     </div>
                     {moveOpenB===b.k&&(()=>{
                       const list=mpRows.filter(r=>r.bucket===b.k).sort((x,y)=>y.amt-x.amt);
                       return (
                         <div style={{marginTop:9,background:"#0d1117",border:"1px solid "+b.c+"3d",borderRadius:9,overflow:"hidden"}}>
-                          {list.length===0&&<div style={{fontSize:11,color:"#3a4460",padding:"10px 11px",fontStyle:"italic"}}>No bills in here yet.</div>}
+                          {list.length===0&&<div style={{fontSize:12.5,color:SUBTEXT,padding:"10px 11px",fontStyle:"italic"}}>No bills in here yet.</div>}
                           {list.map((r,ri)=>(
                             <div key={r.key} style={{borderTop:ri?"1px solid #171d2b":"none"}}>
                               <div onClick={()=>{haptic();setMovePick(k=>k===r.key?null:r.key);}}
                                 style={{display:"flex",alignItems:"center",gap:8,padding:"9px 11px",cursor:"pointer"}}>
                                 <div style={{flex:1,minWidth:0}}>
-                                  <div style={{fontSize:12.5,color:"#c8cee0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
-                                  <div style={{fontSize:10,color:"#3a4460",marginTop:1}}>{r.who}{r.own?" · moved here":""}</div>
+                                  <div style={{fontSize:13.5,color:SUBTEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
+                                  <div style={{fontSize:12,color:SUBTEXT,marginTop:1}}>{r.who}{r.own?" · moved here":""}</div>
                                 </div>
-                                <span style={{fontSize:12.5,fontWeight:700,color:"#e8eaf0"}}>{fmt(r.amt)}</span>
+                                <span style={{fontSize:13.5,fontWeight:700,color:"#e8eaf0"}}>{fmt(r.amt)}</span>
                               </div>
                               {movePick===r.key&&(
                                 <div style={{padding:"0 11px 10px"}}>
@@ -7108,7 +7120,7 @@ const calcTimesheetTotals = days => {
                                   </div>
                                   {r.own&&<button onClick={()=>{haptic();setMovePick(null);
                                       savePlan(p=>{const nb={...(p.billBucket||{})};delete nb[r.key];return {...p,billBucket:nb};});}}
-                                    style={{marginTop:6,background:"transparent",border:"none",color:"#5a6480",fontSize:11,padding:"2px 0",cursor:"pointer"}}>Follow its category instead</button>}
+                                    style={{marginTop:6,background:"transparent",border:"none",color:SUBTEXT,fontSize:12.5,padding:"2px 0",cursor:"pointer"}}>Follow its category instead</button>}
                                 </div>
                               )}
                             </div>
@@ -7120,22 +7132,22 @@ const calcTimesheetTotals = days => {
                 );
               })}
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 13px",borderTop:"1px solid #1e2535",background:"#10151f"}}>
-                <span style={{fontSize:12,color:"#8892b0",fontWeight:600}}>Left after all bills</span>
+                <span style={{fontSize:13,color:SUBTEXT,fontWeight:600}}>Left after all bills</span>
                 <span style={{fontSize:14,fontWeight:800,color:left>=0?"#00c88c":"#ff4a6a"}}>{fmtS(left)}</span>
               </div>
             </div>
 
-            <button onClick={()=>{haptic();setMoveCatsOpen(true);}} style={{background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:"#8892b0",fontSize:11.5,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>🗂 Which bills go where</button>
+            <button onClick={()=>{haptic();setMoveCatsOpen(true);}} style={{background:"transparent",border:"1px solid #1e2535",borderRadius:10,color:SUBTEXT,fontSize:13,fontWeight:600,padding:"11px 6px",cursor:"pointer"}}>🗂 Which bills go where</button>
 
             {/* ── the move: selected deal's monthly vs the housing target ── */}
             <div style={{...card,borderRadius:12,padding:"12px 12px 13px",display:"flex",flexDirection:"column",gap:8}}>
               <div style={lbl}>Monthly mortgage · deal {letter(sel)}</div>
-              <div style={{fontSize:24,fontWeight:800,color:sd.monthly?"#e8eaf0":"#3a4460"}}>{sd.monthly?fmt(sd.monthly):"—"}</div>
+              <div style={{fontSize:24,fontWeight:800,color:sd.monthly?"#e8eaf0":SUBTEXT}}>{sd.monthly?fmt(sd.monthly):"—"}</div>
               {sd.monthly>0?(
                 <>
-                  <div style={{fontSize:11,color:"#5a6480"}}>{fmt0(sd.loan)} over {sd.term} yrs @ {sd.rate}%</div>
-                  {cn("pay")>0&&<div style={{fontSize:11,color:"#5a6480"}}>{fmt(Math.abs(sd.monthly-cn("pay")))} {sd.monthly>=cn("pay")?"more":"less"} a month than the {fmt(cn("pay"))} you pay now</div>}
-                  <div style={{background:"#0d1117",borderRadius:8,padding:"9px 11px",fontSize:11.5,color:"#8892b0",lineHeight:1.5}}>
+                  <div style={{fontSize:12.5,color:SUBTEXT}}>{fmt0(sd.loan)} over {sd.term} yrs @ {sd.rate}%</div>
+                  {cn("pay")>0&&<div style={{fontSize:12.5,color:SUBTEXT}}>{fmt(Math.abs(sd.monthly-cn("pay")))} {sd.monthly>=cn("pay")?"more":"less"} a month than the {fmt(cn("pay"))} you pay now</div>}
+                  <div style={{background:"#0d1117",borderRadius:8,padding:"9px 11px",fontSize:13,color:SUBTEXT,lineHeight:1.5}}>
                     <b style={{color:payCol}}>{payShare.toFixed(0)}% of take-home.</b>{" "}
                     {sd.monthly<=housingT
                       ?<>Fits — {fmt(housingT-sd.monthly)} under your {mpTargets.housing}% target ({fmt(housingT)}).</>
@@ -7152,20 +7164,20 @@ const calcTimesheetTotals = days => {
               {checkRows.length?(<>
                 <div>
                   <div style={{display:"grid",gridTemplateColumns:pcCols,gap:6,padding:"0 6px 6px"}}>
-                    {["Price","Deposit","LTV","Monthly","Left"].map((h,i)=><div key={h} style={{...lbl,fontSize:8.5,textAlign:i?"right":"left"}}>{h}</div>)}
+                    {["Price","Deposit","LTV","Monthly","Left"].map((h,i)=><div key={h} style={{...lbl,fontSize:11.5,textAlign:i?"right":"left"}}>{h}</div>)}
                   </div>
                   {checkRows.map(r=>{
                     const on=Math.round(r.p)===Math.round(price), ltv=r.p?r.loan/r.p:0;
-                    const leftCol=!mpGlyn?"#5a6480":r.left>=keepFor?"#00c88c":r.left>=0?"#ffb84a":"#ff4a6a";
-                    const ltvCol=ltv>0.95?"#ff4a6a":ltv>0.9?"#ffb84a":"#c8cee0";
+                    const leftCol=!mpGlyn?SUBTEXT:r.left>=keepFor?"#00c88c":r.left>=0?"#ffb84a":"#ff4a6a";
+                    const ltvCol=ltv>0.95?"#ff4a6a":ltv>0.9?"#ffb84a":SUBTEXT;
                     const use=()=>{if(on)return;haptic();setMc("newPrice",r.p);};
                     return (
                       <div key={r.p} role="button" tabIndex={0} aria-pressed={on} aria-label={"Use "+fmt0(r.p)}
                         onClick={use} onKeyDown={e=>{if(e.key==="Enter")use();}}
                         style={{display:"grid",gridTemplateColumns:pcCols,gap:6,alignItems:"center",padding:"9px 6px",borderTop:"1px solid #1e2535",
-                          background:on?"#15203a":"transparent",cursor:on?"default":"pointer",fontSize:12.5,fontWeight:on?800:600}}>
+                          background:on?"#15203a":"transparent",cursor:on?"default":"pointer",fontSize:13.5,fontWeight:on?800:600}}>
                         <span style={{color:on?"#8ec5ff":"#e8eaf0"}}>{fmtK(r.p)}</span>
-                        <span style={{textAlign:"right",color:r.deposit<0?"#ff4a6a":"#c8cee0"}}>{fmtK(r.deposit)}</span>
+                        <span style={{textAlign:"right",color:r.deposit<0?"#ff4a6a":SUBTEXT}}>{fmtK(r.deposit)}</span>
                         <span style={{textAlign:"right",color:ltvCol}}>{(ltv*100).toFixed(1)}%</span>
                         <span style={{textAlign:"right",color:"#e8eaf0"}}>{fmt0(r.monthly)}</span>
                         <span style={{textAlign:"right",color:leftCol}}>{mpGlyn?(r.left<0?"−":"")+fmt0(Math.abs(r.left)):"—"}</span>
@@ -7174,7 +7186,7 @@ const calcTimesheetTotals = days => {
                   })}
                 </div>
                 <div style={note}>
-                  Tap a price to use it. <b style={{color:"#5a6480"}}>Left</b> is what's left each month for saving and spending: take-home{mpBasis==="withOt"?" with overtime":""} ({fmt0(mpIncome)}) minus regular bills ({fmt0(regularOut)} — not credit cards, savings or your current mortgage), extra running costs and the new mortgage. Green leaves enough for your Savings + Fun targets ({fmt0(keepFor)}).
+                  Tap a price to use it. <b style={{color:SUBTEXT}}>Left</b> is what's left each month for saving and spending: take-home{mpBasis==="withOt"?" with overtime":""} ({fmt0(mpIncome)}) minus regular bills ({fmt0(regularOut)} — not credit cards, savings or your current mortgage), extra running costs and the new mortgage. Green leaves enough for your Savings + Fun targets ({fmt0(keepFor)}).
                 </div>
                 {inField("Extra running costs in the new home £/month","extraRun","150")}
               </>):(
@@ -7211,9 +7223,9 @@ const calcTimesheetTotals = days => {
                   return (<>
                     {warn(<>Moving {early>0?<b>{early} month{early===1?"":"s"} before</b>:<b>in the month</b>} your fixed rate ends ({dayName(fixEnd)}). Expect an early repayment charge unless you port the deal to the new house{early===0?" or complete after "+dayName(fixEnd):""}.</>)}
                     <button onClick={()=>{haptic();setCur("port",!cur.port);}} aria-pressed={!!cur.port}
-                      style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:"#0d1117",border:"1px solid "+(cur.port?"#4a9eff":"#2a3050"),borderRadius:8,padding:"10px 11px",color:"#c8cee0",fontSize:12,fontWeight:600,cursor:"pointer",textAlign:"left"}}>
+                      style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:"#0d1117",border:"1px solid "+(cur.port?"#4a9eff":"#2a3050"),borderRadius:8,padding:"10px 11px",color:SUBTEXT,fontSize:13,fontWeight:600,cursor:"pointer",textAlign:"left"}}>
                       <span>Porting the deal to the new house</span>
-                      <span style={{fontSize:11,fontWeight:700,color:cur.port?"#8ec5ff":"#5a6480"}}>{cur.port?"ON":"OFF"}</span>
+                      <span style={{fontSize:12.5,fontWeight:700,color:cur.port?"#8ec5ff":SUBTEXT}}>{cur.port?"ON":"OFF"}</span>
                     </button>
                     {cur.port
                       ?<div style={note}>No charge while porting — your lender has to agree, and any extra borrowing goes on one of its current rates.</div>
@@ -7225,7 +7237,7 @@ const calcTimesheetTotals = days => {
                 if(fixMonthsLeft<0) return warn("Your fixed rate ended on "+dayName(fixEnd)+", so you may be on the lender's standard rate. Update the rate and date when you pick a new deal.");
                 return (<>
                   {moveKey?good("✓ Your fixed rate ends on "+dayName(fixEnd)+", before you move in "+monthName(moveKey)+" — no early repayment charge.")
-                    :<div style={{fontSize:11.5,color:"#8892b0"}}>Fixed rate ends {dayName(fixEnd)}{fixMonthsLeft>0?" (in "+fixMonthsLeft+" month"+(fixMonthsLeft===1?"":"s")+")":""}.</div>}
+                    :<div style={{fontSize:13,color:SUBTEXT}}>Fixed rate ends {dayName(fixEnd)}{fixMonthsLeft>0?" (in "+fixMonthsLeft+" month"+(fixMonthsLeft===1?"":"s")+")":""}.</div>}
                   {fixMonthsLeft<=6&&warn("Your fixed rate ends in "+(fixMonthsLeft<1?"less than a month":fixMonthsLeft+" month"+(fixMonthsLeft===1?"":"s"))+". After that you'll pay the lender's standard rate until you move or pick a new deal — check what it is.")}
                 </>);
               })()}
@@ -7236,7 +7248,7 @@ const calcTimesheetTotals = days => {
               <div style={grid2}>{inField("Sale price £","salePrice","220000")}{curOn?roBox("Mortgage left £",Math.round(bal).toLocaleString("en-GB")):inField("Mortgage left £","mortBal","120000")}</div>
               {curOn&&<div style={note}>Mortgage left is worked out in Current mortgage{moveKey?" for "+monthName(moveKey):""}.</div>}
               {cn("hpi")>0&&Math.round(cn("hpi"))!==Math.round(sale)&&(
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,fontSize:11.5,color:"#8892b0"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,fontSize:13,color:SUBTEXT}}>
                   <span>Lender's estimate <b style={{color:"#e8eaf0"}}>{fmt0(cn("hpi"))}</b>{/^\d{4}-\d{2}$/.test(cur.hpiAt||"")?" ("+monthName(cur.hpiAt)+")":""}</span>
                   <button onClick={()=>{if(window.confirm("Set the sale price to "+fmt0(cn("hpi"))+"?")){haptic();setMc("salePrice",Math.round(cn("hpi")));}}} style={lnkStyle}>Use it</button>
                 </div>
@@ -7280,9 +7292,9 @@ const calcTimesheetTotals = days => {
                 return (
                   <div key={i} style={{background:"#0d1117",border:"1px solid "+(on?"#4a9eff":"#1e2535"),borderRadius:10,padding:"10px 10px 9px",display:"flex",flexDirection:"column",gap:8}}>
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <span style={{flex:1,fontSize:13,fontWeight:700,color:on?"#8ec5ff":"#c8cee0"}}>Deal {letter(i)}</span>
-                      {on&&<span style={{fontSize:9,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#15203a",color:"#8ec5ff"}}>IN USE</span>}
-                      {i===cheap&&<span style={{fontSize:9,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#0a2018",color:"#00c88c"}}>CHEAPEST</span>}
+                      <span style={{flex:1,fontSize:13.5,fontWeight:700,color:on?"#8ec5ff":SUBTEXT}}>Deal {letter(i)}</span>
+                      {on&&<span style={{fontSize:11.5,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#15203a",color:"#8ec5ff"}}>IN USE</span>}
+                      {i===cheap&&<span style={{fontSize:11.5,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#0a2018",color:"#00c88c"}}>CHEAPEST</span>}
                     </div>
                     <div style={grid2}>
                       <div><div style={{...lbl,marginBottom:4}}>Rate %</div>{field(dl.rate,v=>setDeal(i,"rate",v),{ph:"4.5"})}</div>
@@ -7301,7 +7313,7 @@ const calcTimesheetTotals = days => {
                     ):<div style={note}>Enter a rate and term.</div>}
                     <div style={{display:"flex",gap:6}}>
                       <button onClick={()=>{haptic();savePlan(p=>({...p,dealSel:i}));}} disabled={on}
-                        style={{flex:1,background:on?"#15203a":"#1a3a5a",border:"1px solid "+(on?"#1e2535":"#2a5a8a"),borderRadius:7,color:on?"#5a6480":"#8ec5ff",fontSize:12,fontWeight:700,padding:"9px",cursor:on?"default":"pointer"}}>{on?"In use":"Use this deal"}</button>
+                        style={{flex:1,background:on?"#15203a":"#1a3a5a",border:"1px solid "+(on?"#1e2535":"#2a5a8a"),borderRadius:7,color:on?SUBTEXT:"#8ec5ff",fontSize:13,fontWeight:700,padding:"9px",cursor:on?"default":"pointer"}}>{on?"In use":"Use this deal"}</button>
                       <button onClick={()=>{
                           if(deals.length===1){window.alert("Keep at least one deal.");return;}
                           if(!window.confirm("Remove deal "+letter(i)+"?"))return;
@@ -7310,13 +7322,13 @@ const calcTimesheetTotals = days => {
                             const s0=Number.isInteger(p.dealSel)?p.dealSel:0;
                             return {...p,deals:list,dealSel:s0>i?s0-1:Math.min(s0,list.length-1)};});
                         }}
-                        style={{background:"#1e2535",border:"none",borderRadius:7,color:"#5a6480",fontSize:12,padding:"9px 14px",cursor:"pointer"}}>Remove</button>
+                        style={{background:"#1e2535",border:"none",borderRadius:7,color:SUBTEXT,fontSize:13,padding:"9px 14px",cursor:"pointer"}}>Remove</button>
                     </div>
                   </div>
                 );
               })}
               <button onClick={()=>{haptic();savePlan(p=>({...p,deals:[...(Array.isArray(p.deals)&&p.deals.length?p.deals:[MOVE_DEAL_DEFAULT]),{...MOVE_DEAL_DEFAULT}]}));}}
-                style={{width:"100%",background:"transparent",border:"1px dashed #2a3a55",borderRadius:9,color:"#8ec5ff",fontSize:12.5,fontWeight:600,padding:"12px",cursor:"pointer"}}>+ Add deal</button>
+                style={{width:"100%",background:"transparent",border:"1px dashed #2a3a55",borderRadius:9,color:"#8ec5ff",fontSize:13.5,fontWeight:600,padding:"12px",cursor:"pointer"}}>+ Add deal</button>
             </>)}
 
             {/* ── saving towards moving day ── */}
@@ -7327,21 +7339,21 @@ const calcTimesheetTotals = days => {
               </div>
               {goal>0?(
                 <div style={{background:"#0d1117",borderRadius:8,padding:"10px 11px"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11.5,color:"#8892b0"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:SUBTEXT}}>
                     <span>{fmt0(cash)} of {fmt0(goal)}</span><span style={{color:"#00c88c",fontWeight:700}}>{Math.round(depPct)}%</span>
                   </div>
                   <div style={{height:6,borderRadius:3,background:"#1e2535",marginTop:7,overflow:"hidden"}}>
                     <div style={{height:"100%",width:depPct+"%",background:"#00c88c"}}/>
                   </div>
-                  {need===0&&<div style={{fontSize:11.5,color:"#00c88c",marginTop:8,fontWeight:700}}>Target reached 🎉</div>}
+                  {need===0&&<div style={{fontSize:13,color:"#00c88c",marginTop:8,fontWeight:700}}>Target reached 🎉</div>}
                   {need>0&&monthsLeft!=null&&(monthsLeft>0?(
-                    <div style={{fontSize:11.5,color:"#8892b0",marginTop:8,lineHeight:1.5}}>
+                    <div style={{fontSize:13,color:SUBTEXT,marginTop:8,lineHeight:1.5}}>
                       {monthsLeft} month{monthsLeft===1?"":"s"} to go — save <b style={{color:"#e8eaf0"}}>{fmt(perMonth)}</b> a month.{" "}
                       {perMonth<=savT
                         ?<span style={{color:"#00c88c"}}>Fits your {mpTargets.savings}% savings target ({fmt(savT)}).</span>
                         :<span style={{color:"#ffb84a"}}>{fmt(perMonth-savT)} a month more than your savings target.</span>}
                     </div>
-                  ):<div style={{fontSize:11.5,color:"#ffb84a",marginTop:8}}>Moving date reached — {fmt0(need)} still to go.</div>)}
+                  ):<div style={{fontSize:13,color:"#ffb84a",marginTop:8}}>Moving date reached — {fmt0(need)} still to go.</div>)}
                   {need>0&&monthsLeft==null&&<div style={{...note,marginTop:8}}>Add a moving date to see what to save each month.</div>}
                 </div>
               ):(
@@ -7349,15 +7361,15 @@ const calcTimesheetTotals = days => {
               )}
               {house&&(
                 <div data-house="1" style={{background:"#0d1117",borderRadius:8,padding:"10px 11px"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11.5,color:"#8892b0"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:SUBTEXT}}>
                     <span>🏦 Saved in house pots</span><span style={{color:"#e8eaf0",fontWeight:700}}>{fmt(pounds(house.total))}</span>
                   </div>
                   {goal>0&&(()=>{const pct=Math.min(100,pounds(house.total)/goal*100);return(<>
                     <div style={{height:6,borderRadius:3,background:"#1e2535",marginTop:7,overflow:"hidden"}}><div style={{height:"100%",width:pct+"%",background:"#4a9eff"}}/></div>
-                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:5}}>{Math.round(pct)}% of your {fmt0(goal)} target</div>
+                    <div style={{fontSize:12.5,color:SUBTEXT,marginTop:5}}>{Math.round(pct)}% of your {fmt0(goal)} target</div>
                   </>);})()}
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginTop:6}}>
-                    <span style={{fontSize:10,color:"#3a4460"}}>{house.n} Monzo pot{house.n===1?"":"s"}{house.at?" · checked "+agoText(house.at):""}</span>
+                    <span style={{fontSize:12,color:SUBTEXT}}>{house.n} Monzo pot{house.n===1?"":"s"}{house.at?" · checked "+agoText(house.at):""}</span>
                     {Math.round(pounds(house.total))!==cash&&<button onClick={()=>{if(window.confirm("Set Cash available to "+fmt0(pounds(house.total))+"?")){haptic();setMc("savings",Math.round(pounds(house.total)));}}} style={lnkStyle}>Use as cash available</button>}
                   </div>
                 </div>
@@ -7379,11 +7391,11 @@ const calcTimesheetTotals = days => {
                     {shown.filter(p=>p.account_id===a.account_id).sort((x,y)=>(Number(y.balance)||0)-(Number(x.balance)||0)).map(p=>{
                       const on=ids.includes(p.pot_id);
                       return (
-                        <div key={p.pot_id} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,padding:"3px 0"}}>
+                        <div key={p.pot_id} style={{display:"flex",alignItems:"center",gap:8,fontSize:13,padding:"3px 0"}}>
                           {bankPrefs&&<button onClick={()=>flip(p.pot_id)} aria-label={(on?"Stop counting ":"Count ")+p.name+" as house savings"} aria-pressed={on}
-                            style={{flexShrink:0,width:30,height:26,borderRadius:6,border:"1px solid "+(on?"#4a9eff":"#2a3050"),background:on?"#15203a":"transparent",fontSize:13,cursor:"pointer",opacity:on?1:0.45,padding:0}}>🏡</button>}
-                          <span style={{flex:1,color:on?"#c8cee0":"#8892b0",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
-                          <span style={{fontWeight:700,color:"#e8eaf0",flexShrink:0}}>{fmt(pounds(p.balance))}{p.goal_amount?<span style={{color:"#5a6480",fontWeight:500}}> of {fmt0(pounds(p.goal_amount))}</span>:null}</span>
+                            style={{flexShrink:0,width:30,height:26,borderRadius:6,border:"1px solid "+(on?"#4a9eff":"#2a3050"),background:on?"#15203a":"transparent",fontSize:13.5,cursor:"pointer",opacity:on?1:0.45,padding:0}}>🏡</button>}
+                          <span style={{flex:1,color:SUBTEXT,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                          <span style={{fontWeight:700,color:"#e8eaf0",flexShrink:0}}>{fmt(pounds(p.balance))}{p.goal_amount?<span style={{color:SUBTEXT,fontWeight:500}}> of {fmt0(pounds(p.goal_amount))}</span>:null}</span>
                         </div>
                       );
                     })}
@@ -7415,15 +7427,15 @@ const calcTimesheetTotals = days => {
             <button onClick={e=>{e.stopPropagation();onClick();}} style={{
               flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,
               background:on?"#13301f":"#0d1117",border:"1px solid "+(on?"#2f7d4f":"#2a3050"),borderRadius:8,
-              color:on?"#4ad07a":"#8892b0",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"
+              color:on?"#4ad07a":SUBTEXT,fontSize:13.5,fontWeight:700,padding:"11px",cursor:"pointer"
             }}>{emoji} {label} {on?"✓":""}</button>
           );
           return (
           <div>
             <div style={{...card,marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-around",textAlign:"center",padding:"14px 8px"}}>
-              <div><div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Total</div><div style={{fontSize:18,fontWeight:800,color:"#e8eaf0",marginTop:2}}>{fmt(totalCost)}</div></div>
-              <div><div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🎂 Sorted</div><div style={{fontSize:18,fontWeight:800,color:"#c8cee0",marginTop:2}}>{bDone}/{gifts.length}</div></div>
-              <div><div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🎄 Sorted</div><div style={{fontSize:18,fontWeight:800,color:"#c8cee0",marginTop:2}}>{cDone}/{gifts.length}</div></div>
+              <div><div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Total</div><div style={{fontSize:18,fontWeight:800,color:"#e8eaf0",marginTop:2}}>{fmt(totalCost)}</div></div>
+              <div><div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🎂 Sorted</div><div style={{fontSize:18,fontWeight:800,color:SUBTEXT,marginTop:2}}>{bDone}/{gifts.length}</div></div>
+              <div><div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🎄 Sorted</div><div style={{fontSize:18,fontWeight:800,color:SUBTEXT,marginTop:2}}>{cDone}/{gifts.length}</div></div>
             </div>
 
             <div style={{display:"flex",gap:8,marginBottom:12}}>
@@ -7432,12 +7444,12 @@ const calcTimesheetTotals = days => {
                 ＋ Add person
               </button>
               <button onClick={()=>{haptic();setGiftSort(giftSort==="bday"?"name":"bday");}}
-                style={{background:"#161b28",border:"1px solid #2a3050",borderRadius:10,color:"#8892b0",fontSize:12,fontWeight:700,padding:"0 14px",cursor:"pointer"}}>
+                style={{background:"#161b28",border:"1px solid #2a3050",borderRadius:10,color:SUBTEXT,fontSize:13,fontWeight:700,padding:"0 14px",cursor:"pointer"}}>
                 {giftSort==="bday"?"🎂 Birthday":"A–Z"}
               </button>
             </div>
 
-            {gifts.length===0&&<div style={{...card,fontSize:13,color:"#5a6480",textAlign:"center",padding:"20px 12px"}}>No one added yet. Tap “Add person” to start your gift list.</div>}
+            {gifts.length===0&&<div style={{...card,fontSize:13.5,color:SUBTEXT,textAlign:"center",padding:"20px 12px"}}>No one added yet. Tap “Add person” to start your gift list.</div>}
 
             {sorted.map(g=>{
               const bd=nextBirthday(g.dob);
@@ -7450,9 +7462,9 @@ const calcTimesheetTotals = days => {
                   <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:10}}>
                     <div style={{minWidth:0,flex:1}}>
                       <div style={{fontSize:16,fontWeight:700,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.name}</div>
-                      {dobStr&&<div style={{fontSize:12,color:"#5a6480",marginTop:2}}>{dobStr}{bd?` · turning ${bd.turning}`:""}</div>}
+                      {dobStr&&<div style={{fontSize:13,color:SUBTEXT,marginTop:2}}>{dobStr}{bd?` · turning ${bd.turning}`:""}</div>}
                     </div>
-                    {badge&&<div style={{fontSize:11,fontWeight:700,color:bd&&bd.days<=14?"#ffb84a":"#5a6480",whiteSpace:"nowrap",paddingTop:2}}>{badge}</div>}
+                    {badge&&<div style={{fontSize:12.5,fontWeight:700,color:bd&&bd.days<=14?"#ffb84a":SUBTEXT,whiteSpace:"nowrap",paddingTop:2}}>{badge}</div>}
                   </div>
                   <div style={{display:"flex",gap:8,marginBottom:(g.notes||Number(g.cost))?10:0}}>
                     {chip(bDoneG,"🎂","Birthday",()=>toggleGift(g.id,"birthday_year"))}
@@ -7460,8 +7472,8 @@ const calcTimesheetTotals = days => {
                   </div>
                   {(g.notes||Number(g.cost)>0)&&(
                     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-                      <div style={{fontSize:13,color:"#8892b0",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{g.notes||""}</div>
-                      {Number(g.cost)>0&&<div style={{fontSize:14,fontWeight:700,color:"#c8cee0",whiteSpace:"nowrap"}}>{fmt(g.cost)}</div>}
+                      <div style={{fontSize:13.5,color:SUBTEXT,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{g.notes||""}</div>
+                      {Number(g.cost)>0&&<div style={{fontSize:14,fontWeight:700,color:SUBTEXT,whiteSpace:"nowrap"}}>{fmt(g.cost)}</div>}
                     </div>
                   )}
                 </div>
@@ -7484,11 +7496,11 @@ const calcTimesheetTotals = days => {
                 <>
                   <div style={{fontSize:30,marginBottom:6}}>🤝</div>
                   <div style={{fontSize:18,fontWeight:800,color:"#4ad07a"}}>All settled up</div>
-                  <div style={{fontSize:12,color:"#5a6480",marginTop:4}}>Nobody owes anybody</div>
+                  <div style={{fontSize:13,color:SUBTEXT,marginTop:4}}>Nobody owes anybody</div>
                 </>
               ):(
                 <>
-                  <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
+                  <div style={{fontSize:12.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
                     {r>0?`${themName} owes you`:`You owe ${themName}`}
                   </div>
                   <div style={{fontSize:38,fontWeight:800,color:r>0?"#4ad07a":"#ff6b8a",lineHeight:1}}>{fmt(r)}</div>
@@ -7502,7 +7514,7 @@ const calcTimesheetTotals = days => {
             </button>
 
             <div style={hdr}>History</div>
-            {settlements.length===0&&<div style={{...card,fontSize:13,color:"#5a6480",textAlign:"center",padding:"20px 12px"}}>No entries yet. Tap “Add entry” to log a cost someone covered, or a repayment.</div>}
+            {settlements.length===0&&<div style={{...card,fontSize:13.5,color:SUBTEXT,textAlign:"center",padding:"20px 12px"}}>No entries yet. Tap “Add entry” to log a cost someone covered, or a repayment.</div>}
             {settlements.map(s=>{
               const signed=settleSignedOf(s);
               const effectOnMe=me==="glyn"?signed:-signed;   // + increases what I'm owed
@@ -7514,10 +7526,10 @@ const calcTimesheetTotals = days => {
                 <div key={s.id} style={{...card,marginBottom:8,display:"flex",alignItems:"center",gap:10}}>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:14,fontWeight:600,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{desc}</div>
-                    <div style={{fontSize:11,color:"#5a6480",marginTop:2}}>{s.kind==="repayment"?"Repayment":"Cost covered"}{dstr?` · ${dstr}`:""}</div>
+                    <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{s.kind==="repayment"?"Repayment":"Cost covered"}{dstr?` · ${dstr}`:""}</div>
                   </div>
                   <div style={{fontSize:15,fontWeight:800,color:effectOnMe>=0?"#4ad07a":"#ff6b8a",whiteSpace:"nowrap"}}>{effectOnMe>=0?"+":"−"}{fmt(s.amount)}</div>
-                  <button onClick={()=>{haptic();delSettlement(s.id);}} style={{background:"transparent",border:"none",color:"#5a6480",fontSize:18,cursor:"pointer",padding:"0 2px",lineHeight:1}}>✕</button>
+                  <button onClick={()=>{haptic();delSettlement(s.id);}} style={{background:"transparent",border:"none",color:SUBTEXT,fontSize:18,cursor:"pointer",padding:"0 2px",lineHeight:1}}>✕</button>
                 </div>
               );
             })}
@@ -7531,8 +7543,8 @@ const calcTimesheetTotals = days => {
             {/* ── 1. APP & STATUS ── */}
             <div style={{...card,marginBottom:12,padding:0}}>
               <div onClick={()=>{haptic();setShowDiagApp(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>📱 App & Status</div>
-                <span style={{color:"#3a4460",fontSize:14}}>{showDiagApp?"⌃":"⌄"}</span>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>📱 App & Status</div>
+                <span style={{color:SUBTEXT,fontSize:14}}>{showDiagApp?"⌃":"⌄"}</span>
               </div>
               {showDiagApp&&(<div style={{padding:"0 14px 14px"}}>
                 {(()=>{
@@ -7543,14 +7555,14 @@ const calcTimesheetTotals = days => {
                   const fmtD=(d)=>d.toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
                   return(
                     <>
-                      <div style={row}><span style={{color:"#5a6480"}}>Version</span><span style={{display:"flex",alignItems:"center",gap:8}}><span style={{color:"#c8cee0",fontWeight:700}}>v{APP_VERSION}</span>
-                        <button onClick={()=>{haptic();setNews(WHATS_NEW);}} style={{background:"#1e2535",border:"1px solid #2a3050",borderRadius:6,color:"#a0c0ff",fontSize:11,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>What's new</button></span></div>
-                      {isOwner&&<div style={row}><span style={{color:"#5a6480"}}>Show hidden tabs <span style={{color:"#3a4460"}}>(Pay Info, Tax Year, Leave)</span></span>
+                      <div style={row}><span style={{color:SUBTEXT}}>Version</span><span style={{display:"flex",alignItems:"center",gap:8}}><span style={{color:SUBTEXT,fontWeight:700}}>v{APP_VERSION}</span>
+                        <button onClick={()=>{haptic();setNews(WHATS_NEW);}} style={{background:"#1e2535",border:"1px solid #2a3050",borderRadius:6,color:"#a0c0ff",fontSize:12.5,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>What's new</button></span></div>
+                      {isOwner&&<div style={row}><span style={{color:SUBTEXT}}>Show hidden tabs <span style={{color:SUBTEXT}}>(Pay Info, Tax Year, Leave)</span></span>
                         <button onClick={()=>{haptic();const v=!showHiddenTabs;setShowHiddenTabs(v);try{localStorage.setItem("vaulted_show_hidden_tabs",v?"1":"0");}catch(e){}}}
-                          style={{background:showHiddenTabs?"#1a3a2a":"#1e2535",border:"1px solid "+(showHiddenTabs?"#00c88c":"#2a3050"),borderRadius:6,color:showHiddenTabs?"#00c88c":"#5a6480",fontSize:11,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>{showHiddenTabs?"On":"Off"}</button></div>}
-                      <div style={row}><span style={{color:"#5a6480"}}>Signed in</span><span style={{color:"#c8cee0",wordBreak:"break-all"}}>{user?user.email:"no"}</span></div>
-                      <div style={row}><span style={{color:"#5a6480"}}>Pay period</span><span style={{color:"#c8cee0"}}>{fmtD(ps)} – {fmtD(pe)}</span></div>
-                      <div style={{...row,borderBottom:"1px solid #1a1f2e"}}><span style={{color:"#5a6480"}}>Standard hours</span><span style={{color:"#c8cee0",fontWeight:700}}>{getCurrentMonthHours()}h</span></div>
+                          style={{background:showHiddenTabs?"#1a3a2a":"#1e2535",border:"1px solid "+(showHiddenTabs?"#00c88c":"#2a3050"),borderRadius:6,color:showHiddenTabs?"#00c88c":SUBTEXT,fontSize:12.5,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>{showHiddenTabs?"On":"Off"}</button></div>}
+                      <div style={row}><span style={{color:SUBTEXT}}>Signed in</span><span style={{color:SUBTEXT,wordBreak:"break-all"}}>{user?user.email:"no"}</span></div>
+                      <div style={row}><span style={{color:SUBTEXT}}>Pay period</span><span style={{color:SUBTEXT}}>{fmtD(ps)} – {fmtD(pe)}</span></div>
+                      <div style={{...row,borderBottom:"1px solid #1a1f2e"}}><span style={{color:SUBTEXT}}>Standard hours</span><span style={{color:SUBTEXT,fontWeight:700}}>{getCurrentMonthHours()}h</span></div>
                     </>
                   );
                 })()}
@@ -7564,26 +7576,26 @@ const calcTimesheetTotals = days => {
                   ["Accumulator days",(accumulated.days||[]).length],
                 ].map((pair,i,a)=>(
                   <div key={pair[0]} style={i===a.length-1?{...row,borderBottom:"none"}:row}>
-                    <span style={{color:"#5a6480"}}>{pair[0]}</span>
-                    <span style={{color:"#c8cee0",fontWeight:700}}>{pair[1]}</span>
+                    <span style={{color:SUBTEXT}}>{pair[0]}</span>
+                    <span style={{color:SUBTEXT,fontWeight:700}}>{pair[1]}</span>
                   </div>
                 ))}
-                <div style={{fontSize:11,color:"#3a4460",marginTop:8,paddingTop:8,borderTop:"1px solid #1a1f2e"}}>
+                <div style={{fontSize:12.5,color:SUBTEXT,marginTop:8,paddingTop:8,borderTop:"1px solid #1a1f2e"}}>
                   Accumulator OT {accumulated.otHrs||0}h · weekend {accumulated.weekendOtHrs||0}h
                 </div>
                 <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid #1a1f2e"}}>
-                  <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>PWA / Sync</div>
+                  <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>PWA / Sync</div>
                   <DiagProbe prompt={pwaPrompt} user={user}/>
                   <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #1a1f2e"}}>
                     {dbError?(
                       <div style={{background:"#1a0a0a",border:"1px solid #3a1a1a",borderRadius:8,padding:"10px 12px"}}>
-                        <div style={{fontSize:11,fontWeight:700,color:"#ff6b8a",marginBottom:4}}>⚠ Last sync error</div>
-                        <div style={{fontSize:11,color:"#e8eaf0",wordBreak:"break-all"}}>{dbError.where}: {dbError.message}</div>
-                        <div style={{fontSize:10,color:"#5a6480",marginTop:4}}>{new Date(dbError.at).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</div>
-                        <button onClick={()=>{haptic();lastDbError=null;dbErrorListeners.forEach(fn=>fn(null));}} style={{marginTop:8,width:"100%",background:"#141824",border:"1px solid #2a3050",borderRadius:6,color:"#8892b0",fontSize:11,fontWeight:600,padding:"7px",cursor:"pointer"}}>Clear</button>
+                        <div style={{fontSize:12.5,fontWeight:700,color:"#ff6b8a",marginBottom:4}}>⚠ Last sync error</div>
+                        <div style={{fontSize:12.5,color:"#e8eaf0",wordBreak:"break-all"}}>{dbError.where}: {dbError.message}</div>
+                        <div style={{fontSize:12,color:SUBTEXT,marginTop:4}}>{new Date(dbError.at).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</div>
+                        <button onClick={()=>{haptic();lastDbError=null;dbErrorListeners.forEach(fn=>fn(null));}} style={{marginTop:8,width:"100%",background:"#141824",border:"1px solid #2a3050",borderRadius:6,color:SUBTEXT,fontSize:12.5,fontWeight:600,padding:"7px",cursor:"pointer"}}>Clear</button>
                       </div>
                     ):(
-                      <div style={{fontSize:11,color:"#3a4460"}}>No sync errors logged.</div>
+                      <div style={{fontSize:12.5,color:SUBTEXT}}>No sync errors logged.</div>
                     )}
                   </div>
                 </div>
@@ -7593,49 +7605,49 @@ const calcTimesheetTotals = days => {
             {/* ── 2. PAYSLIPS ── */}
             <div style={{...card,marginBottom:multiResults.length>0?0:12,padding:0}}>
               <div onClick={()=>{haptic();setShowPayslipUpload(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>📄 Payslips</div>
-                <span style={{color:"#3a4460",fontSize:14}}>{showPayslipUpload?"⌃":"⌄"}</span>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>📄 Payslips</div>
+                <span style={{color:SUBTEXT,fontSize:14}}>{showPayslipUpload?"⌃":"⌄"}</span>
               </div>
               {showPayslipUpload&&(<div style={{padding:"0 14px 14px",textAlign:"center"}}>
-                <p style={{fontSize:12,color:"#5a6480",marginBottom:16}}>Select one or more payslip PDFs. They will be read and added to your history automatically.</p>
+                <p style={{fontSize:13,color:SUBTEXT,marginBottom:16}}>Select one or more payslip PDFs. They will be read and added to your history automatically.</p>
                 {pickerStalled&&!uploading&&(
                   <div style={{background:"#0e1726",border:"1px solid #2a5a8a",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
-                    <div style={{fontSize:12,fontWeight:700,color:"#8ec5ff",marginBottom:4}}>Picker didn't hand the file back</div>
-                    <div style={{fontSize:11,color:"#7a93b8",lineHeight:1.5}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#8ec5ff",marginBottom:4}}>Picker didn't hand the file back</div>
+                    <div style={{fontSize:12.5,color:SUBTEXT,lineHeight:1.5}}>
                       Android opened the picker but never returned the file, and it wasn't sitting on the input either.
                       Open the PDF in your Files app and use <b>Share → Vaulted</b> instead — that route bypasses the picker entirely and works reliably.
                     </div>
-                    <button onClick={()=>{haptic();localStorage.removeItem(SK.pickerTap);setPickerStalled(false);}} style={{marginTop:8,background:"#4a9eff22",border:"1px solid #2a5a8a",borderRadius:6,color:"#8ec5ff",fontSize:11,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>Dismiss</button>
+                    <button onClick={()=>{haptic();localStorage.removeItem(SK.pickerTap);setPickerStalled(false);}} style={{marginTop:8,background:"#4a9eff22",border:"1px solid #2a5a8a",borderRadius:6,color:"#8ec5ff",fontSize:12.5,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>Dismiss</button>
                   </div>
                 )}
                 {pickerDeath&&(
                   <div style={{background:"#2a1500",border:"1px solid #ffb84a",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
-                    <div style={{fontSize:12,fontWeight:700,color:"#ffb84a",marginBottom:4}}>⚠ Android reloaded the app while the file picker was open</div>
-                    <div style={{fontSize:11,color:"#c8a060",lineHeight:1.5}}>The selected file was lost with the old page. This is the silent-upload cause. Try again — if it repeats, we'll add a share-target route that bypasses the picker.</div>
-                    <button onClick={()=>{haptic();localStorage.removeItem(SK.pickerTap);setPickerDeath(false);}} style={{marginTop:8,background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>Dismiss</button>
+                    <div style={{fontSize:13,fontWeight:700,color:"#ffb84a",marginBottom:4}}>⚠ Android reloaded the app while the file picker was open</div>
+                    <div style={{fontSize:12.5,color:"#c8a060",lineHeight:1.5}}>The selected file was lost with the old page. This is the silent-upload cause. Try again — if it repeats, we'll add a share-target route that bypasses the picker.</div>
+                    <button onClick={()=>{haptic();localStorage.removeItem(SK.pickerTap);setPickerDeath(false);}} style={{marginTop:8,background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:12.5,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>Dismiss</button>
                   </div>
                 )}
                 <label onClick={()=>{localStorage.setItem(SK.pickerTap,String(Date.now()));}} style={{display:"block",background:"#0d1117",border:"2px dashed #2a3050",borderRadius:10,padding:"24px 16px",cursor:uploading?"not-allowed":"pointer"}}>
                   <input ref={payslipInput} type="file" accept="application/pdf" multiple onChange={handleUpload} onInput={handleUpload} disabled={uploading} style={{display:"none"}}/>
                   {uploading
-                    ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13}}>{uploadProgress||"Processing..."}</div></div>
-                    :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13,fontWeight:600}}>Tap to select PDFs</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>You can select multiple files at once</div></div>
+                    ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#4a9eff",fontSize:13.5}}>{uploadProgress||"Processing..."}</div></div>
+                    :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>☁️</div><div style={{color:"#4a9eff",fontSize:13.5,fontWeight:600}}>Tap to select PDFs</div><div style={{color:SUBTEXT,fontSize:12.5,marginTop:4}}>You can select multiple files at once</div></div>
                   }
                 </label>
-                <div style={{fontSize:9,color:"#2a3050",marginTop:6,textAlign:"center"}}>
+                <div style={{fontSize:11.5,color:SUBTEXT,marginTop:6,textAlign:"center"}}>
                   Tap: {(()=>{const t=parseInt(localStorage.getItem(SK.pickerTap))||0;return t?new Date(t).toLocaleTimeString("en-GB"):"—";})()} · Event: {lastPickerEvent?lastPickerEvent.toLocaleTimeString("en-GB"):(()=>{const t=parseInt(localStorage.getItem(SK.pickerEvent))||0;return t?new Date(t).toLocaleTimeString("en-GB")+" (prev)":"—";})()} · Loads: {localStorage.getItem(SK.loadCount)||0}
                 </div>
               </div>)}
             </div>
             {multiResults.length>0&&(
               <div style={{...card,marginBottom:12,textAlign:"left"}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
+                <div style={{fontSize:12.5,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>
                   ✓ {multiResults.filter(r=>r.ok).length} of {multiResults.length} added
                 </div>
                 {multiResults.map((r,i)=>(
-                  <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:12}}>
+                  <div key={i} style={{padding:"8px 10px",borderRadius:6,marginBottom:6,background:r.ok?"#0a1a10":"#2a0f15",border:"1px solid "+(r.ok?"#1a4030":"#5a1a2a"),fontSize:13}}>
                     {r.ok
-                      ?<div style={{display:"flex",justifyContent:"space-between",gap:8}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}{r.extra?" · extra payrun":""}</span><span style={{color:"#8892b0",textAlign:"right"}}>{r.same?"Already saved":r.extra?`${fmtPlus(r.extra.gross)} gross · ${fmtPlus(r.extra.net)} net added`:`Gross ${fmt(r.parsed.gross)} · Net ${fmt(r.parsed.net)}`}</span></div>
+                      ?<div style={{display:"flex",justifyContent:"space-between",gap:8}}><span style={{color:"#00c88c",fontWeight:600}}>{r.parsed.month}{r.extra?" · extra payrun":""}</span><span style={{color:SUBTEXT,textAlign:"right"}}>{r.same?"Already saved":r.extra?`${fmtPlus(r.extra.gross)} gross · ${fmtPlus(r.extra.net)} net added`:`Gross ${fmt(r.parsed.gross)} · Net ${fmt(r.parsed.net)}`}</span></div>
                       :<div style={{color:"#ff6b8a"}}>⚠ {r.name} — {r.err}</div>
                     }
                   </div>
@@ -7646,12 +7658,12 @@ const calcTimesheetTotals = days => {
             {/* ── 3. TIMESHEETS ── */}
             <div style={{...card,marginBottom:12,padding:0}}>
               <div onClick={()=>{haptic();setShowDiagTimesheets(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>⏱ Timesheets</div>
-                <span style={{color:"#3a4460",fontSize:14}}>{showDiagTimesheets?"⌃":"⌄"}</span>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>⏱ Timesheets</div>
+                <span style={{color:SUBTEXT,fontSize:14}}>{showDiagTimesheets?"⌃":"⌄"}</span>
               </div>
               {showDiagTimesheets&&(<div style={{padding:"0 14px 14px"}}>
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>Auto Import</div>
-                <div style={{fontSize:12,color:"#8892b0",marginBottom:10,lineHeight:1.6}}>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>Auto Import</div>
+                <div style={{fontSize:13,color:SUBTEXT,marginBottom:10,lineHeight:1.6}}>
                   Paste your <span style={{color:"#4affd4",fontWeight:600}}>TIMESHEET_SECRET</span> from Vercel to enable automatic import from Gmail.
                 </div>
                 <input
@@ -7659,26 +7671,26 @@ const calcTimesheetTotals = days => {
                   placeholder="Paste secret here..."
                   value={tsSecret}
                   onChange={e=>{setTsSecret(e.target.value);save(SK.tsSecret,e.target.value);}}
-                  style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px",fontFamily:"inherit",marginBottom:8}}
+                  style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,color:"#e8eaf0",fontSize:13.5,padding:"10px 12px",fontFamily:"inherit",marginBottom:8}}
                 />
                 {tsSecret?(
-                  <div style={{fontSize:11,color:"#00c88c",marginBottom:4}}>✅ Secret saved — checking every minute</div>
+                  <div style={{fontSize:12.5,color:"#00c88c",marginBottom:4}}>✅ Secret saved — checking every minute</div>
                 ):(
-                  <div style={{fontSize:11,color:"#3a4460",marginBottom:4}}>No secret set — auto-import disabled</div>
+                  <div style={{fontSize:12.5,color:SUBTEXT,marginBottom:4}}>No secret set — auto-import disabled</div>
                 )}
-                {tsLastEmail&&<div style={{fontSize:10,color:"#3a4460",marginBottom:12}}>Last email ID: {tsLastEmail.slice(0,12)}...</div>}
+                {tsLastEmail&&<div style={{fontSize:12,color:SUBTEXT,marginBottom:12}}>Last email ID: {tsLastEmail.slice(0,12)}...</div>}
                 {!tsLastEmail&&<div style={{marginBottom:12}}/>}
 
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>Manual Upload <span style={{color:"#3a4460",fontWeight:400,fontSize:8,textTransform:"none"}}>· backup option</span></div>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>Manual Upload <span style={{color:SUBTEXT,fontWeight:400,fontSize:11,textTransform:"none"}}>· backup option</span></div>
                 <label style={{display:"block",background:"#0d1117",border:"2px dashed "+(showTsReminder?"#ffb84a":"#2a3050"),borderRadius:10,padding:"20px 16px",cursor:tsUploading?"not-allowed":"pointer",marginBottom:tsPending?12:0}}>
                   <input type="file" accept="image/*,application/pdf" multiple onChange={handleTimesheetUpload} style={{display:"none"}} disabled={tsUploading}/>
                   {tsUploading
-                    ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#ffb84a",fontSize:13}}>{tsProgress||"Processing..."}</div></div>
-                    :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:"#3a4460",fontSize:11,marginTop:4}}>Select multiple images if timesheet is long</div></div>
+                    ?<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>⏳</div><div style={{color:"#ffb84a",fontSize:13.5}}>{tsProgress||"Processing..."}</div></div>
+                    :<div style={{textAlign:"center"}}><div style={{fontSize:20,marginBottom:6}}>📸</div><div style={{color:"#ffb84a",fontSize:13.5,fontWeight:600}}>Tap to upload timesheet screenshot</div><div style={{color:SUBTEXT,fontSize:12.5,marginTop:4}}>Select multiple images if timesheet is long</div></div>
                   }
                 </label>
                 {tsResults.filter(r=>!r.ok).map((r,i)=>(
-                  <div key={i} style={{fontSize:11,color:"#ff6b8a",marginTop:6}}>⚠ {r.file}: {r.err}</div>
+                  <div key={i} style={{fontSize:12.5,color:"#ff6b8a",marginTop:6}}>⚠ {r.file}: {r.err}</div>
                 ))}
                 {tsPending&&(()=>{
                   const STD=8.25;
@@ -7695,28 +7707,28 @@ const calcTimesheetTotals = days => {
                   const projWknd=Math.round(merged.reduce((s,d)=>s+(d.wkOtHrs||0),0)*100)/100;
                   return(
                     <div style={{background:"#0d1a10",border:"1px solid #1a4030",borderRadius:10,padding:14,marginBottom:12}}>
-                      <div style={{fontSize:11,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted — {tsPending.days.length} days</div>
+                      <div style={{fontSize:12.5,fontWeight:700,color:"#00c88c",letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>✓ Extracted — {tsPending.days.length} days</div>
                       <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
                         {tsPending.days.map((d,i)=>(
-                          <div key={i} style={{display:"grid",gridTemplateColumns:"60px 50px 1fr",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:11}}>
-                            <span style={{color:"#5a8070"}}>{d.date}</span>
-                            <span style={{color:"#8892b0"}}>{d.day}</span>
+                          <div key={i} style={{display:"grid",gridTemplateColumns:"60px 50px 1fr",padding:"5px 0",borderBottom:"1px solid #1a2a20",fontSize:12.5}}>
+                            <span style={{color:SUBTEXT}}>{d.date}</span>
+                            <span style={{color:SUBTEXT}}>{d.day}</span>
                             <span style={{color:"#e8eaf0",textAlign:"right",fontWeight:600}}>{d.hours}</span>
                           </div>
                         ))}
                       </div>
-                      <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Month total after applying</div>
+                      <div style={{fontSize:11.5,color:SUBTEXT,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Month total after applying</div>
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
                         {[["Weekday OT",projOT,"#4affd4"],["Weekend OT",projWknd,"#ffb84a"]].map(([l,v,c])=>(
                           <div key={l} style={{background:"#0a1a10",borderRadius:6,padding:"8px",textAlign:"center"}}>
-                            <div style={{fontSize:9,color:"#5a6480",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
+                            <div style={{fontSize:11.5,color:SUBTEXT,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{l}</div>
                             <div style={{fontSize:14,fontWeight:700,color:c}}>{v}h</div>
                           </div>
                         ))}
                       </div>
                       <div style={{display:"flex",gap:8}}>
-                        <button onClick={confirmTimesheet} style={{flex:1,background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer"}}>Apply to Pay Calc</button>
-                        <button onClick={()=>setTsPending(null)} style={{background:"#1e2535",border:"none",borderRadius:8,color:"#8892b0",fontSize:13,padding:"10px 14px",cursor:"pointer"}}>Discard</button>
+                        <button onClick={confirmTimesheet} style={{flex:1,background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontSize:13.5,fontWeight:700,padding:"10px",cursor:"pointer"}}>Apply to Pay Calc</button>
+                        <button onClick={()=>setTsPending(null)} style={{background:"#1e2535",border:"none",borderRadius:8,color:SUBTEXT,fontSize:13.5,padding:"10px 14px",cursor:"pointer"}}>Discard</button>
                       </div>
                     </div>
                   );
@@ -7725,8 +7737,8 @@ const calcTimesheetTotals = days => {
                 {tsSecret&&(
                   <div style={{marginTop:12,background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,overflow:"hidden"}}>
                     <div onClick={()=>{haptic();setShowQueueDiag(v=>!v);}} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Queue Diagnostics</div>
-                      <span style={{color:"#3a4460",fontSize:11}}>{showQueueDiag?"⌃":"⌄"}</span>
+                      <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Queue Diagnostics</div>
+                      <span style={{color:SUBTEXT,fontSize:12.5}}>{showQueueDiag?"⌃":"⌄"}</span>
                     </div>
                     {showQueueDiag&&(<div style={{padding:"0 10px 10px"}}>
                       <div style={{display:"flex",gap:6}}>
@@ -7739,7 +7751,7 @@ const calcTimesheetTotals = days => {
                             setTsMsg(`Queue: ${cnt} item${cnt!==1?"s":""} waiting`);
                             setTimeout(()=>setTsMsg(""),4000);
                           }catch(e){setTsMsg("⚠️ Check failed");}
-                        }} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:6,color:"#4a9eff",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Check Queue</button>
+                        }} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:6,color:"#4a9eff",fontSize:12.5,fontWeight:700,padding:"8px",cursor:"pointer"}}>Check Queue</button>
                         <button onClick={async()=>{
                           haptic("medium");
                           if(!window.confirm("Clear ALL queued timesheets? This deletes them from the server queue."))return;
@@ -7752,7 +7764,7 @@ const calcTimesheetTotals = days => {
                           }
                           setTsMsg(`✓ Cleared ${cleared} item${cleared!==1?"s":""}`);
                           setTimeout(()=>setTsMsg(""),4000);
-                        }} style={{flex:1,background:"#2a1a1a",border:"1px solid #ff6b8a",borderRadius:6,color:"#ff6b8a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Clear Queue</button>
+                        }} style={{flex:1,background:"#2a1a1a",border:"1px solid #ff6b8a",borderRadius:6,color:"#ff6b8a",fontSize:12.5,fontWeight:700,padding:"8px",cursor:"pointer"}}>Clear Queue</button>
                       </div>
                       <button onClick={()=>{
                         haptic("medium");
@@ -7760,7 +7772,7 @@ const calcTimesheetTotals = days => {
                         setTsLastEmail("");
                         setTsMsg("✓ Last email cleared — will re-poll");
                         setTimeout(()=>setTsMsg(""),4000);
-                      }} style={{marginTop:6,width:"100%",background:"#1a1500",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>Reset Last Email ID</button>
+                      }} style={{marginTop:6,width:"100%",background:"#1a1500",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:12.5,fontWeight:700,padding:"8px",cursor:"pointer"}}>Reset Last Email ID</button>
                       <button onClick={()=>{
                         haptic("medium");
                         const STD=8.25;
@@ -7786,12 +7798,12 @@ const calcTimesheetTotals = days => {
                         setC("holidayHrs",pt.holidayHrs);
                         setTsMsg(`✓ ${rescanned.length} days rescanned`);
                         setTimeout(()=>setTsMsg(""),4000);
-                      }} style={{marginTop:6,width:"100%",background:"#0d1a1a",border:"1px solid #4affd4",borderRadius:6,color:"#4affd4",fontSize:11,fontWeight:700,padding:"8px",cursor:"pointer"}}>🔄 Rescan stored days</button>
+                      }} style={{marginTop:6,width:"100%",background:"#0d1a1a",border:"1px solid #4affd4",borderRadius:6,color:"#4affd4",fontSize:12.5,fontWeight:700,padding:"8px",cursor:"pointer"}}>🔄 Rescan stored days</button>
                     </div>)}
                   </div>
                 )}
                 {tsMsg&&(
-                  <div style={{marginTop:10,padding:"10px 12px",borderRadius:8,background:tsMsg.startsWith("✓")?"#0a1a10":"#2a0f15",border:"1px solid "+(tsMsg.startsWith("✓")?"#1a4030":"#5a1a2a"),color:tsMsg.startsWith("✓")?"#00c88c":"#ff6b8a",fontSize:12,textAlign:"center"}}>
+                  <div style={{marginTop:10,padding:"10px 12px",borderRadius:8,background:tsMsg.startsWith("✓")?"#0a1a10":"#2a0f15",border:"1px solid "+(tsMsg.startsWith("✓")?"#1a4030":"#5a1a2a"),color:tsMsg.startsWith("✓")?"#00c88c":"#ff6b8a",fontSize:13,textAlign:"center"}}>
                     {tsMsg}
                   </div>
                 )}
@@ -7801,41 +7813,41 @@ const calcTimesheetTotals = days => {
             {/* ── 4. ACCOUNT ── */}
             <div style={{...card,marginBottom:12,padding:0}}>
               <div onClick={()=>{haptic();setShowDiagAccount(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>👤 Account</div>
-                <span style={{color:"#3a4460",fontSize:14}}>{showDiagAccount?"⌃":"⌄"}</span>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>👤 Account</div>
+                <span style={{color:SUBTEXT,fontSize:14}}>{showDiagAccount?"⌃":"⌄"}</span>
               </div>
               {showDiagAccount&&(<div style={{padding:"0 14px 14px"}}>
                 <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535",marginBottom:10}}>
-                  <div style={{fontSize:11,color:"#5a6480",marginBottom:4}}>Signed in as</div>
-                  <div style={{fontSize:13,color:"#e8eaf0",fontWeight:600,wordBreak:"break-all"}}>{user?.email||"--"}</div>
+                  <div style={{fontSize:12.5,color:SUBTEXT,marginBottom:4}}>Signed in as</div>
+                  <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:600,wordBreak:"break-all"}}>{user?.email||"--"}</div>
                 </div>
                 {notifPerm==="granted"?(
                   <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#0a1a10",borderRadius:8,border:"1px solid #1a4030",marginBottom:10}}>
                     <span style={{fontSize:18}}>🔔</span>
                     <div>
-                      <div style={{fontSize:13,fontWeight:600,color:"#00c88c"}}>Notifications enabled</div>
-                      <div style={{fontSize:11,color:"#3a6040",marginTop:2}}>Payday reminder + timesheet Mondays</div>
+                      <div style={{fontSize:13.5,fontWeight:600,color:"#00c88c"}}>Notifications enabled</div>
+                      <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>Payday reminder + timesheet Mondays</div>
                     </div>
                   </div>
                 ):notifPerm==="denied"?(
                   <div style={{padding:"10px 12px",background:"#1a1a0a",borderRadius:8,border:"1px solid #3a3a10",marginBottom:10}}>
-                    <div style={{fontSize:13,fontWeight:600,color:"#ffb84a",marginBottom:4}}>Notifications blocked</div>
-                    <div style={{fontSize:11,color:"#5a5030",lineHeight:1.6}}>Allow in browser site settings then tap below.</div>
-                    <button onClick={requestAndSaveNotifPerm} style={{marginTop:10,background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:8,color:"#ffb84a",fontSize:12,fontWeight:700,padding:"8px 14px",cursor:"pointer"}}>Check again</button>
+                    <div style={{fontSize:13.5,fontWeight:600,color:"#ffb84a",marginBottom:4}}>Notifications blocked</div>
+                    <div style={{fontSize:12.5,color:SUBTEXT,lineHeight:1.6}}>Allow in browser site settings then tap below.</div>
+                    <button onClick={requestAndSaveNotifPerm} style={{marginTop:10,background:"#ffb84a22",border:"1px solid #ffb84a",borderRadius:8,color:"#ffb84a",fontSize:13,fontWeight:700,padding:"8px 14px",cursor:"pointer"}}>Check again</button>
                   </div>
                 ):(
                   <div style={{padding:"10px 12px",background:"#111520",borderRadius:8,border:"1px solid #1e2535",marginBottom:10}}>
-                    <div style={{fontSize:13,color:"#8892b0",marginBottom:10}}>Enable browser notifications for payday reminders and weekly timesheet alerts.</div>
-                    <button onClick={requestAndSaveNotifPerm} style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"}}>🔔 Enable Notifications</button>
+                    <div style={{fontSize:13.5,color:SUBTEXT,marginBottom:10}}>Enable browser notifications for payday reminders and weekly timesheet alerts.</div>
+                    <button onClick={requestAndSaveNotifPerm} style={{width:"100%",background:"#4a9eff",border:"none",borderRadius:8,color:"#000",fontSize:13.5,fontWeight:700,padding:"11px",cursor:"pointer"}}>🔔 Enable Notifications</button>
                   </div>
                 )}
                 <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                  <button onClick={()=>{haptic("medium");refreshAll();}} style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#4a9eff",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>🔄 Refresh data</button>
-                  <button onClick={()=>{haptic();exportData();}} style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#00c88c",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>📥 Export backup</button>
+                  <button onClick={()=>{haptic("medium");refreshAll();}} style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#4a9eff",fontSize:13,fontWeight:600,padding:"10px",cursor:"pointer"}}>🔄 Refresh data</button>
+                  <button onClick={()=>{haptic();exportData();}} style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#00c88c",fontSize:13,fontWeight:600,padding:"10px",cursor:"pointer"}}>📥 Export backup</button>
                   <button onClick={async()=>{
                     if(!window.confirm("Sign out? You will need to log in again to access your data."))return;
                     haptic("heavy");await handleSignOut();
-                  }} style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#ff6b8a",fontSize:12,fontWeight:600,padding:"10px",cursor:"pointer"}}>🚪 Sign out</button>
+                  }} style={{flex:"1 1 100px",background:"#1e2535",border:"none",borderRadius:8,color:"#ff6b8a",fontSize:13,fontWeight:600,padding:"10px",cursor:"pointer"}}>🚪 Sign out</button>
                 </div>
               </div>)}
             </div>
@@ -7843,11 +7855,11 @@ const calcTimesheetTotals = days => {
             {/* ── 5. BACKUP & RESTORE ── */}
             <div style={{...card,marginBottom:12,padding:0}}>
               <div onClick={()=>{haptic();setShowDiagBackup(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>☁️ Backup & Restore</div>
-                <span style={{color:"#3a4460",fontSize:14}}>{showDiagBackup?"⌃":"⌄"}</span>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>☁️ Backup & Restore</div>
+                <span style={{color:SUBTEXT,fontSize:14}}>{showDiagBackup?"⌃":"⌄"}</span>
               </div>
               {showDiagBackup&&(<div style={{padding:"0 14px 14px"}}>
-                <p style={{fontSize:12,color:"#5a6480",marginBottom:10,lineHeight:1.6}}>Data is auto-backed up daily to the cloud. You can also export a JSON file for offline storage.</p>
+                <p style={{fontSize:13,color:SUBTEXT,marginBottom:10,lineHeight:1.6}}>Data is auto-backed up daily to the cloud. You can also export a JSON file for offline storage.</p>
                 <div style={{background:"#0d1117",border:"1px solid #1e2535",borderRadius:8,marginBottom:10,overflow:"hidden"}}>
                   <div onClick={async()=>{
                     haptic();
@@ -7858,8 +7870,8 @@ const calcTimesheetTotals = days => {
                     }
                     setShowBackups(v=>!v);
                   }} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <div style={{fontSize:11,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>☁️ Cloud Backups</div>
-                    <span style={{color:"#3a4460",fontSize:11}}>{showBackups?"⌃":"⌄"}</span>
+                    <div style={{fontSize:12.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>☁️ Cloud Backups</div>
+                    <span style={{color:SUBTEXT,fontSize:12.5}}>{showBackups?"⌃":"⌄"}</span>
                   </div>
                   {showBackups&&(
                     <div style={{padding:"0 10px 10px"}}>
@@ -7875,14 +7887,14 @@ const calcTimesheetTotals = days => {
                         }catch(e){setImportMsg("⚠ Backup failed");}
                         setBackupLoading(false);
                         setTimeout(()=>setImportMsg(""),3000);
-                      }} style={{width:"100%",background:"#0a1a10",border:"1px solid #00c88c",borderRadius:6,color:"#00c88c",fontSize:12,fontWeight:700,padding:"10px",cursor:"pointer",marginBottom:8}}>+ Backup Now</button>
-                      {backupLoading&&<div style={{fontSize:11,color:"#5a6480",textAlign:"center",padding:8}}>Loading...</div>}
-                      {!backupLoading&&backupList.length===0&&<div style={{fontSize:11,color:"#3a4460",textAlign:"center",padding:8}}>No cloud backups yet</div>}
+                      }} style={{width:"100%",background:"#0a1a10",border:"1px solid #00c88c",borderRadius:6,color:"#00c88c",fontSize:13,fontWeight:700,padding:"10px",cursor:"pointer",marginBottom:8}}>+ Backup Now</button>
+                      {backupLoading&&<div style={{fontSize:12.5,color:SUBTEXT,textAlign:"center",padding:8}}>Loading...</div>}
+                      {!backupLoading&&backupList.length===0&&<div style={{fontSize:12.5,color:SUBTEXT,textAlign:"center",padding:8}}>No cloud backups yet</div>}
                       {!backupLoading&&backupList.map(b=>(
-                        <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"#141824",borderRadius:6,marginBottom:4,fontSize:11}}>
+                        <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"#141824",borderRadius:6,marginBottom:4,fontSize:12.5}}>
                           <div>
                             <div style={{color:"#e8eaf0",fontWeight:600}}>{new Date(b.created_at).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}</div>
-                            <div style={{color:"#3a4460",fontSize:10}}>{(b.size_bytes/1024).toFixed(1)}KB - {b.trigger}</div>
+                            <div style={{color:SUBTEXT,fontSize:12}}>{(b.size_bytes/1024).toFixed(1)}KB - {b.trigger}</div>
                           </div>
                           <div style={{display:"flex",gap:4}}>
                             <button onClick={async()=>{
@@ -7894,7 +7906,7 @@ const calcTimesheetTotals = days => {
                                 setImportMsg("✓ Backup restored");
                               }catch(e){setImportMsg("⚠ Restore failed");}
                               setTimeout(()=>setImportMsg(""),3000);
-                            }} style={{background:"#1a2535",border:"1px solid #4a9eff",borderRadius:4,color:"#4a9eff",fontSize:10,fontWeight:700,padding:"5px 8px",cursor:"pointer"}}>Restore</button>
+                            }} style={{background:"#1a2535",border:"1px solid #4a9eff",borderRadius:4,color:"#4a9eff",fontSize:12,fontWeight:700,padding:"5px 8px",cursor:"pointer"}}>Restore</button>
                             <button onClick={async()=>{
                               if(!window.confirm("Delete this backup?"))return;
                               haptic("medium");
@@ -7902,23 +7914,23 @@ const calcTimesheetTotals = days => {
                                 await db.deleteBackup(b.id);
                                 setBackupList((await db.getBackups(user.id)) || []);
                               }catch(e){}
-                            }} style={{background:"none",border:"none",color:"#3a4460",fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
+                            }} style={{background:"none",border:"none",color:SUBTEXT,fontSize:14,cursor:"pointer",padding:"2px 4px"}}>✕</button>
                           </div>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
-                <p style={{fontSize:11,color:"#5a6480",marginBottom:10,lineHeight:1.5}}>Or export a local JSON file (useful before major changes):</p>
+                <p style={{fontSize:12.5,color:SUBTEXT,marginBottom:10,lineHeight:1.5}}>Or export a local JSON file (useful before major changes):</p>
                 <div style={{display:"flex",gap:8,marginBottom:12}}>
-                  <button onClick={exportData} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer"}}>⬇ Export Backup</button>
-                  <label style={{flex:1,background:"#1a2535",border:"1px solid #00c88c",borderRadius:8,color:"#00c88c",fontSize:13,fontWeight:700,padding:"12px",cursor:"pointer",textAlign:"center"}}>
+                  <button onClick={exportData} style={{flex:1,background:"#1a2535",border:"1px solid #4a9eff",borderRadius:8,color:"#4a9eff",fontSize:13.5,fontWeight:700,padding:"12px",cursor:"pointer"}}>⬇ Export Backup</button>
+                  <label style={{flex:1,background:"#1a2535",border:"1px solid #00c88c",borderRadius:8,color:"#00c88c",fontSize:13.5,fontWeight:700,padding:"12px",cursor:"pointer",textAlign:"center"}}>
                     ⬆ Import Backup
                     <input type="file" accept=".json" onChange={importData} style={{display:"none"}}/>
                   </label>
                 </div>
                 {importMsg&&(
-                  <div style={{padding:"10px 12px",borderRadius:8,background:importMsg.startsWith("✓")?"#0a1a10":"#2a0f15",border:"1px solid "+(importMsg.startsWith("✓")?"#1a4030":"#5a1a2a"),color:importMsg.startsWith("✓")?"#00c88c":"#ff6b8a",fontSize:12,textAlign:"center"}}>
+                  <div style={{padding:"10px 12px",borderRadius:8,background:importMsg.startsWith("✓")?"#0a1a10":"#2a0f15",border:"1px solid "+(importMsg.startsWith("✓")?"#1a4030":"#5a1a2a"),color:importMsg.startsWith("✓")?"#00c88c":"#ff6b8a",fontSize:13,textAlign:"center"}}>
                     {importMsg}
                   </div>
                 )}
@@ -7928,8 +7940,8 @@ const calcTimesheetTotals = days => {
             {/* ── 6. BANK & TWO-STEP ── */}
             <div style={{...card,marginBottom:12,padding:0}}>
               <div onClick={()=>{haptic();setShowDiagBank(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{fontSize:9,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🏦 Bank & two-step</div>
-                <span style={{color:"#3a4460",fontSize:14}}>{showDiagBank?"⌃":"⌄"}</span>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🏦 Bank & two-step</div>
+                <span style={{color:SUBTEXT,fontSize:14}}>{showDiagBank?"⌃":"⌄"}</span>
               </div>
               {showDiagBank&&(<div style={{padding:"0 14px 14px"}}>
                 <BankSettings isOwner={isOwner} mfa={mfa} onMfaChanged={checkMfa} bank={bank}
@@ -7947,12 +7959,12 @@ const calcTimesheetTotals = days => {
       </div>
 
       <div style={{textAlign:"center",padding:"16px 0 24px",borderTop:"1px solid #1a1f2e",marginTop:8}}>
-        <span style={{fontSize:10,color:"#2a3050",letterSpacing:2,fontWeight:600}}>{`VAULTED v${APP_VERSION}`}</span>
+        <span style={{fontSize:12,color:SUBTEXT,letterSpacing:2,fontWeight:600}}>{`VAULTED v${APP_VERSION}`}</span>
       </div>
 
       {/* Pull-to-refresh indicator */}
       {(pullY>0||refreshing)&&(
-        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:105,display:"flex",justifyContent:"center",alignItems:"flex-end",height:refreshing?40:Math.max(0,Math.min(pullY,80)),background:"#0d0f14",color:"#5a6480",fontSize:12,fontWeight:600,paddingBottom:6,pointerEvents:"none",transition:refreshing?"height 0.2s":"none"}}>
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:105,display:"flex",justifyContent:"center",alignItems:"flex-end",height:refreshing?40:Math.max(0,Math.min(pullY,80)),background:"#0d0f14",color:SUBTEXT,fontSize:13,fontWeight:600,paddingBottom:6,pointerEvents:"none",transition:refreshing?"height 0.2s":"none"}}>
           {refreshing?"Refreshing…":pullY>70?"Release to refresh":"Pull to refresh"}
         </div>
       )}
@@ -7964,8 +7976,8 @@ const calcTimesheetTotals = days => {
       {/* Undo toast */}
       {toast&&(
         <div style={{position:"fixed",left:12,right:12,bottom:"calc(80px + env(safe-area-inset-bottom))",zIndex:220,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:"#1a1f2e",border:"1px solid #2a3050",borderRadius:10,padding:"12px 14px",boxShadow:"0 4px 20px #000a"}}>
-          <span style={{fontSize:13,color:"#e8eaf0"}}>{toast.msg}</span>
-          <button onClick={()=>{haptic();if(toast.undo)toast.undo();if(toastTimer.current)clearTimeout(toastTimer.current);setToast(null);}} style={{background:"none",border:"none",color:"#4a9eff",fontSize:13,fontWeight:700,cursor:"pointer",padding:"4px 8px"}}>Undo</button>
+          <span style={{fontSize:13.5,color:"#e8eaf0"}}>{toast.msg}</span>
+          <button onClick={()=>{haptic();if(toast.undo)toast.undo();if(toastTimer.current)clearTimeout(toastTimer.current);setToast(null);}} style={{background:"none",border:"none",color:"#4a9eff",fontSize:13.5,fontWeight:700,cursor:"pointer",padding:"4px 8px"}}>Undo</button>
         </div>
       )}
 
@@ -7974,13 +7986,13 @@ const calcTimesheetTotals = days => {
         {primaryTabs.map(t=>(
           <button key={t} onClick={()=>{haptic();setShowMore(false);setTab(t);window.scrollTo(0,0);}} style={{
             flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
-            color:tab===t?"#4a9eff":"#5a6480",fontSize:11,fontWeight:700,
+            color:tab===t?"#4a9eff":SUBTEXT,fontSize:12.5,fontWeight:700,
             borderTop:"2px solid "+(tab===t?"#4a9eff":"transparent")
           }}>{t}</button>
         ))}
         <button onClick={()=>{haptic();setShowMore(s=>!s);}} style={{
           flex:1,background:"none",border:"none",cursor:"pointer",padding:"11px 2px 13px",
-          color:(showMore||secondaryTabs.includes(tab))?"#a0c0ff":"#5a6480",fontSize:11,fontWeight:700,
+          color:(showMore||secondaryTabs.includes(tab))?"#a0c0ff":SUBTEXT,fontSize:12.5,fontWeight:700,
           borderTop:"2px solid "+((showMore||secondaryTabs.includes(tab))?"#a0c0ff":"transparent")
         }}>More ⋯</button>
       </div>
@@ -7993,9 +8005,9 @@ const calcTimesheetTotals = days => {
             <div style={{fontSize:16,color:"#e8eaf0",fontWeight:800,padding:"2px 0 12px"}}>What's new</div>
             {news.map(n=>(
               <div key={n.v} style={{marginBottom:14}}>
-                <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Version {n.v} · {n.date}</div>
+                <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Version {n.v} · {n.date}</div>
                 <ul style={{margin:"7px 0 0",paddingLeft:18}}>
-                  {n.items.map((it,i)=>(<li key={i} style={{fontSize:13.5,lineHeight:1.45,color:"#c8cee0",marginBottom:7}}><b style={{color:"#e8eaf0"}}>{it.b}</b>{it.t}</li>))}
+                  {n.items.map((it,i)=>(<li key={i} style={{fontSize:14,lineHeight:1.45,color:SUBTEXT,marginBottom:7}}><b style={{color:"#e8eaf0"}}>{it.b}</b>{it.t}</li>))}
                 </ul>
               </div>
             ))}
@@ -8008,24 +8020,24 @@ const calcTimesheetTotals = days => {
       {slipAsk&&(()=>{
         const {saved,incoming}=slipAsk;
         const otherDay=String(incoming.date||"")!==String(saved.date||"");   // a different pay date: most likely an extra payrun
-        const btn=primary=>({width:"100%",border:primary?"none":"1px solid #2a3050",borderRadius:10,background:primary?"#4a9eff":"#1e2535",color:primary?"#000":"#c8cee0",fontSize:14,fontWeight:700,padding:"12px 14px",cursor:"pointer",marginTop:8});
+        const btn=primary=>({width:"100%",border:primary?"none":"1px solid #2a3050",borderRadius:10,background:primary?"#4a9eff":"#1e2535",color:primary?"#000":SUBTEXT,fontSize:14,fontWeight:700,padding:"12px 14px",cursor:"pointer",marginTop:8});
         const slipRow=(label,p)=>(
           <div style={{background:"#0d1117",borderRadius:8,padding:"9px 11px",marginBottom:6}}>
-            <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>{label}</div>
-            <div style={{fontSize:13,color:"#c8cee0"}}>Paid {p.date||"?"} · Gross {fmtS(p.gross)} · Net {fmtS(p.net)}</div>
-            {p.note&&<div style={{fontSize:11,color:"#8892b0",marginTop:3,whiteSpace:"pre-line"}}>{p.note}</div>}
+            <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>{label}</div>
+            <div style={{fontSize:13.5,color:SUBTEXT}}>Paid {p.date||"?"} · Gross {fmtS(p.gross)} · Net {fmtS(p.net)}</div>
+            {p.note&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:3,whiteSpace:"pre-line"}}>{p.note}</div>}
           </div>
         );
         return(
           <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:230,background:"rgba(0,0,0,0.6)"}}>
             <div style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"16px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"85vh",overflowY:"auto"}}>
               <div style={{fontSize:16,color:"#e8eaf0",fontWeight:800,marginBottom:4}}>{saved.month} already has a payslip</div>
-              <div style={{fontSize:12.5,color:"#8892b0",lineHeight:1.5,marginBottom:10}}>Add this one if it's an extra payrun on top, like a correction paid separately. Replace if it's a corrected copy of the same payslip.</div>
+              <div style={{fontSize:13.5,color:SUBTEXT,lineHeight:1.5,marginBottom:10}}>Add this one if it's an extra payrun on top, like a correction paid separately. Replace if it's a corrected copy of the same payslip.</div>
               {slipRow("Saved",saved)}
               {slipRow("This one",incoming)}
               <button onClick={()=>{haptic();answerSlip("add");}} style={btn(otherDay)}>Add to {saved.month}</button>
               <button onClick={()=>{haptic();answerSlip("replace");}} style={btn(!otherDay)}>Replace it</button>
-              <button onClick={()=>{haptic();answerSlip("cancel");}} style={{...btn(false),background:"transparent",border:"none",color:"#8892b0"}}>Don't save this one</button>
+              <button onClick={()=>{haptic();answerSlip("cancel");}} style={{...btn(false),background:"transparent",border:"none",color:SUBTEXT}}>Don't save this one</button>
             </div>
           </div>
         );
@@ -8036,11 +8048,11 @@ const calcTimesheetTotals = days => {
         <div onClick={()=>setShowMore(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
           <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))"}}>
             <SheetGrab onClose={()=>setShowMore(false)}/>
-            <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 6px"}}>More</div>
+            <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 6px"}}>More</div>
             {secondaryTabs.map(t=>(
               <button key={t} onClick={()=>{haptic();setTab(t);setShowMore(false);window.scrollTo(0,0);}} style={{
                 display:"block",width:"100%",textAlign:"left",background:tab===t?"#1a2535":"transparent",
-                border:"none",borderRadius:8,color:tab===t?"#a0c0ff":"#c8cee0",fontSize:15,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginBottom:2
+                border:"none",borderRadius:8,color:tab===t?"#a0c0ff":SUBTEXT,fontSize:15,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginBottom:2
               }}>{t}</button>
             ))}
           </div>
@@ -8064,11 +8076,11 @@ const calcTimesheetTotals = days => {
           <div onClick={close} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"78vh",overflowY:"auto"}}>
               <SheetGrab onClose={close}/>
-              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 4px"}}>Which bills go where</div>
-              <div style={{fontSize:11,color:"#5a6480",padding:"0 4px 12px",lineHeight:1.5}}>Pick a bucket for each category. Anything not set counts as Bills &amp; living.</div>
+              <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:700,padding:"0 4px 4px"}}>Which bills go where</div>
+              <div style={{fontSize:12.5,color:SUBTEXT,padding:"0 4px 12px",lineHeight:1.5}}>Pick a bucket for each category. Anything not set counts as Bills &amp; living.</div>
               {groups.map(g=>g.rows.length>0&&(
                 <div key={g.t}>
-                  <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"4px 4px 6px"}}>{g.t}</div>
+                  <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"4px 4px 6px"}}>{g.t}</div>
                   {g.rows.map(r=>{
                     const cur=mpBucketOf(r.key);
                     const cb=MOVE_BUCKETS.find(b=>b.k===cur);
@@ -8077,7 +8089,7 @@ const calcTimesheetTotals = days => {
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
                           <span style={{flex:"0 0 auto",width:9,height:9,borderRadius:5,background:r.col}}/>
                           <span style={{flex:1,minWidth:0,fontSize:14,fontWeight:600,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</span>
-                          <span style={{flex:"0 0 auto",fontSize:10.5,color:"#3a4460"}}>{r.n} bill{r.n===1?"":"s"}</span>
+                          <span style={{flex:"0 0 auto",fontSize:12.5,color:SUBTEXT}}>{r.n} bill{r.n===1?"":"s"}</span>
                         </div>
                         <div style={{display:"flex",gap:5,marginTop:8}}>
                           {MOVE_BUCKETS.map(b=>{const on=cur===b.k;return(
@@ -8085,13 +8097,13 @@ const calcTimesheetTotals = days => {
                               style={{flex:1,background:on?b.c+"22":"#141824",border:"1px solid "+(on?b.c:"#2a3050"),borderRadius:6,fontSize:15,padding:"6px 0",cursor:"pointer"}}>{b.e}</button>
                           );})}
                         </div>
-                        <div style={{fontSize:10.5,color:cb.c,marginTop:5,fontWeight:600}}>{cb.l}</div>
+                        <div style={{fontSize:12.5,color:cb.c,marginTop:5,fontWeight:600}}>{cb.l}</div>
                       </div>
                     );
                   })}
                 </div>
               ))}
-              <button onClick={close} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
+              <button onClick={close} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
             </div>
           </div>
         );
@@ -8107,8 +8119,8 @@ const calcTimesheetTotals = days => {
           <div onClick={()=>{setCatsOpen(false);setAddingCat(null);setNewCat("");}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"78vh",overflowY:"auto"}}>
               <SheetGrab onClose={()=>{setCatsOpen(false);setAddingCat(null);setNewCat("");}}/>
-              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 10px"}}>Categories · {isG?"my bills":"shared bills"}</div>
-              {list.length===0&&<div style={{fontSize:12,color:"#5a6480",padding:"6px 4px 12px"}}>No categories yet. Bills sit under "Uncategorised" until you add one.</div>}
+              <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:700,padding:"0 4px 10px"}}>Categories · {isG?"my bills":"shared bills"}</div>
+              {list.length===0&&<div style={{fontSize:13,color:SUBTEXT,padding:"6px 4px 12px"}}>No categories yet. Bills sit under "Uncategorised" until you add one.</div>}
               {list.map((c,ci)=>{
                 const col=catColor(c,ci);
                 return (
@@ -8118,8 +8130,8 @@ const calcTimesheetTotals = days => {
                     <input defaultValue={c.name}
                       onBlur={e=>{const v=e.target.value.trim();if(v&&v!==c.name)renCat(c.id,v,isG);}}
                       style={{flex:1,minWidth:0,background:"transparent",border:"none",color:"#e8eaf0",fontSize:14,fontWeight:600,padding:"4px 0"}}/>
-                    <span style={{flex:"0 0 auto",fontSize:10.5,color:"#3a4460"}}>{countIn(c.id)} bill{countIn(c.id)===1?"":"s"}</span>
-                    <button onClick={()=>{haptic("medium");delCat(c.id,isG);}} style={{flex:"0 0 auto",background:"transparent",border:"none",color:"#5a6480",fontSize:15,fontWeight:700,padding:"2px 4px",cursor:"pointer"}}>✕</button>
+                    <span style={{flex:"0 0 auto",fontSize:12.5,color:SUBTEXT}}>{countIn(c.id)} bill{countIn(c.id)===1?"":"s"}</span>
+                    <button onClick={()=>{haptic("medium");delCat(c.id,isG);}} style={{flex:"0 0 auto",background:"transparent",border:"none",color:SUBTEXT,fontSize:15,fontWeight:700,padding:"2px 4px",cursor:"pointer"}}>✕</button>
                   </div>
                   <div style={{display:"flex",gap:6,marginTop:8}}>
                     {CAT_COLORS.map(cc=>(
@@ -8136,13 +8148,13 @@ const calcTimesheetTotals = days => {
                   <input autoFocus placeholder="Category name" value={newCat} onChange={e=>setNewCat(e.target.value)}
                     onKeyDown={e=>e.key==="Enter"&&addCategory(isG)}
                     style={{flex:1,background:"#0d1117",border:"1px solid #00c88c",borderRadius:8,color:"#e8eaf0",fontSize:14,padding:"11px 12px"}}/>
-                  <button onClick={()=>addCategory(isG)} style={{background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontWeight:700,fontSize:13,padding:"11px 15px",cursor:"pointer"}}>Add</button>
+                  <button onClick={()=>addCategory(isG)} style={{background:"#00c88c",border:"none",borderRadius:8,color:"#000",fontWeight:700,fontSize:13.5,padding:"11px 15px",cursor:"pointer"}}>Add</button>
                 </div>
               ):(
-                <button onClick={()=>{haptic();setAddingCat(isG?"glyn":"shared");}} style={{width:"100%",background:"transparent",border:"1px dashed #2a3a55",borderRadius:9,color:"#8ec5ff",fontSize:12.5,fontWeight:600,padding:"12px",cursor:"pointer",marginTop:8}}>+ New category</button>
+                <button onClick={()=>{haptic();setAddingCat(isG?"glyn":"shared");}} style={{width:"100%",background:"transparent",border:"1px dashed #2a3a55",borderRadius:9,color:"#8ec5ff",fontSize:13.5,fontWeight:600,padding:"12px",cursor:"pointer",marginTop:8}}>+ New category</button>
               )}
-              <div style={{fontSize:10.5,color:"#3a4460",padding:"12px 4px 0",lineHeight:1.5}}>Deleting a category keeps its bills — they move to Uncategorised. Drag a bill onto a category to move it, or tap the bill's name.</div>
-              <button onClick={()=>{setCatsOpen(false);setAddingCat(null);setNewCat("");}} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
+              <div style={{fontSize:12.5,color:SUBTEXT,padding:"12px 4px 0",lineHeight:1.5}}>Deleting a category keeps its bills — they move to Uncategorised. Drag a bill onto a category to move it, or tap the bill's name.</div>
+              <button onClick={()=>{setCatsOpen(false);setAddingCat(null);setNewCat("");}} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
             </div>
           </div>
         );
@@ -8157,7 +8169,7 @@ const calcTimesheetTotals = days => {
           <div onClick={()=>setMoveBill(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"72vh",overflowY:"auto"}}>
               <SheetGrab onClose={()=>{setMoveBill(null);setTagDraft("");}}/>
-              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 8px"}}>Edit bill</div>
+              <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:700,padding:"0 4px 8px"}}>Edit bill</div>
               <input key={moveBill.id} defaultValue={bill?bill.name:""} placeholder="Bill name"
                 onBlur={e=>{const v=e.target.value.trim();if(v&&bill&&v!==bill.name)renameBill(moveBill.id,v,isG);}}
                 style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:14}}/>
@@ -8165,14 +8177,14 @@ const calcTimesheetTotals = days => {
                 const varies=isVariable(bill);
                 return (
                   <>
-                    <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Amount</div>
+                    <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Amount</div>
                     <div style={{display:"flex",gap:6,marginBottom:8}}>
                       <button onClick={()=>{if(varies)setVariable(moveBill.id,false,isG);}}
-                        style={{flex:1,background:!varies?"#15203a":"#1e2535",border:"1px solid "+(!varies?"#4a9eff":"#2a3050"),borderRadius:7,color:!varies?"#4a9eff":"#8892b0",fontSize:11.5,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Same every month</button>
+                        style={{flex:1,background:!varies?"#15203a":"#1e2535",border:"1px solid "+(!varies?"#4a9eff":"#2a3050"),borderRadius:7,color:!varies?"#4a9eff":SUBTEXT,fontSize:13,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Same every month</button>
                       <button onClick={()=>{if(!varies)setVariable(moveBill.id,true,isG);}}
-                        style={{flex:1,background:varies?"#15203a":"#1e2535",border:"1px solid "+(varies?"#4a9eff":"#2a3050"),borderRadius:7,color:varies?"#4a9eff":"#8892b0",fontSize:11.5,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Changes each month</button>
+                        style={{flex:1,background:varies?"#15203a":"#1e2535",border:"1px solid "+(varies?"#4a9eff":"#2a3050"),borderRadius:7,color:varies?"#4a9eff":SUBTEXT,fontSize:13,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Changes each month</button>
                     </div>
-                    <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>
+                    <div style={{fontSize:12.5,color:SUBTEXT,padding:"0 4px 14px",lineHeight:1.5}}>
                       {varies
                         ? "Set separately for each month — currently "+fmt(amountOf(bill,selKey))+" in "+selLabel+". Months you haven't filled in stay at £0, so upcoming months aren't guessed from this one."
                         : "One figure for every month. Changing it applies from the month you're viewing onwards — earlier months keep what they were."}
@@ -8187,18 +8199,18 @@ const calcTimesheetTotals = days => {
                 const on=m.kind&&m.kind!=="none";
                 return (
                   <>
-                    <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Monzo payment</div>
+                    <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Monzo payment</div>
                     <div style={{display:"flex",alignItems:"center",gap:10,padding:"0 4px 6px"}}>
                       <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontSize:13,fontWeight:600,color:on?"#c8cee0":"#5a6480",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        <div style={{fontSize:13.5,fontWeight:600,color:SUBTEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                           {m.kind==="none"?"Not tracked":on?(m.name||"Linked"):"Not matched yet"}
                         </div>
-                        {on&&<div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>{m.auto?"Matched automatically":"You picked this"}{m.accountId?" · "+(BANK_LABEL[(bank.accounts.find(a=>a.account_id===m.accountId)||{}).type]||""):""}</div>}
-                        {tk&&<div style={{fontSize:11,color:tk.color,marginTop:3,fontWeight:600}}>{tk.text}</div>}
+                        {on&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{m.auto?"Matched automatically":"You picked this"}{m.accountId?" · "+(BANK_LABEL[(bank.accounts.find(a=>a.account_id===m.accountId)||{}).type]||""):""}</div>}
+                        {tk&&<div style={{fontSize:12.5,color:tk.color,marginTop:3,fontWeight:600}}>{tk.text}</div>}
                       </div>
                       <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref,name:bill.name,shared:!isG,pence:isVariable(bill)?null:Math.round(amountOf(bill,nowMk)*100)});}} style={miniBtn}>{on?"Change":"Link"}</button>
                     </div>
-                    <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>Ticks the bill off on the Budget tab once the payment goes out{isVariable(bill)?", and fills in a blank month's amount from it":""}.</div>
+                    <div style={{fontSize:12.5,color:SUBTEXT,padding:"0 4px 14px",lineHeight:1.5}}>Ticks the bill off on the Budget tab once the payment goes out{isVariable(bill)?", and fills in a blank month's amount from it":""}.</div>
                   </>
                 );
               })()}
@@ -8207,12 +8219,12 @@ const calcTimesheetTotals = days => {
                 const known=allTags(isG).filter(t=>!cur.includes(t));
                 return (
                   <>
-                    <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Tags</div>
+                    <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Tags</div>
                     <div style={{display:"flex",flexWrap:"wrap",gap:6,padding:"0 4px",marginBottom:cur.length?8:0}}>
                       {cur.map(t=>(
                         <button key={t} onClick={()=>{haptic();updTags(moveBill.id,cur.filter(x=>x!==t),isG);}}
-                          style={{background:"#1a2535",border:"1px solid #2a3a55",borderRadius:6,color:"#8ec5ff",fontSize:12,fontWeight:600,padding:"7px 10px",cursor:"pointer"}}>
-                          {t} <span style={{color:"#4a5a7a"}}>✕</span>
+                          style={{background:"#1a2535",border:"1px solid #2a3a55",borderRadius:6,color:"#8ec5ff",fontSize:13,fontWeight:600,padding:"7px 10px",cursor:"pointer"}}>
+                          {t} <span style={{color:SUBTEXT}}>✕</span>
                         </button>
                       ))}
                     </div>
@@ -8220,38 +8232,38 @@ const calcTimesheetTotals = days => {
                       <input value={tagDraft} onChange={e=>setTagDraft(e.target.value)}
                         onKeyDown={e=>{if(e.key==="Enter"){const v=tagDraft.trim();if(v&&!cur.includes(v))updTags(moveBill.id,[...cur,v],isG);setTagDraft("");}}}
                         placeholder="Add a tag"
-                        style={{flex:1,background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:13,padding:"10px 12px"}}/>
+                        style={{flex:1,background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:13.5,padding:"10px 12px"}}/>
                       <button onClick={()=>{const v=tagDraft.trim();if(v&&!cur.includes(v)){haptic();updTags(moveBill.id,[...cur,v],isG);}setTagDraft("");}}
-                        style={{background:"#1a2535",border:"1px solid #2a5a8a",borderRadius:8,color:"#8ec5ff",fontSize:13,fontWeight:700,padding:"10px 14px",cursor:"pointer"}}>Add</button>
+                        style={{background:"#1a2535",border:"1px solid #2a5a8a",borderRadius:8,color:"#8ec5ff",fontSize:13.5,fontWeight:700,padding:"10px 14px",cursor:"pointer"}}>Add</button>
                     </div>
                     {known.length>0&&(
                       <div style={{display:"flex",flexWrap:"wrap",gap:5,padding:"0 4px",marginBottom:14}}>
                         {known.slice(0,10).map(t=>(
                           <button key={t} onClick={()=>{haptic();updTags(moveBill.id,[...cur,t],isG);}}
-                            style={{background:"transparent",border:"1px dashed #2a3050",borderRadius:6,color:"#5a6480",fontSize:11,fontWeight:600,padding:"5px 9px",cursor:"pointer"}}>+ {t}</button>
+                            style={{background:"transparent",border:"1px dashed #2a3050",borderRadius:6,color:SUBTEXT,fontSize:12.5,fontWeight:600,padding:"5px 9px",cursor:"pointer"}}>+ {t}</button>
                         ))}
                       </div>
                     )}
                   </>
                 );
               })()}
-              <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>How often</div>
+              <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>How often</div>
               <div style={{display:"flex",gap:6,marginBottom:6}}>
-                <button style={{flex:1,background:"#1a3a2a",border:"1px solid #00c88c",borderRadius:7,color:"#00c88c",fontSize:11,fontWeight:700,padding:"9px 2px",cursor:"default"}}>Every month ✓</button>
+                <button style={{flex:1,background:"#1a3a2a",border:"1px solid #00c88c",borderRadius:7,color:"#00c88c",fontSize:12.5,fontWeight:700,padding:"9px 2px",cursor:"default"}}>Every month ✓</button>
                 <button onClick={()=>{convertToScheduled(moveBill.id,isG,"once");setMoveBill(null);}}
-                  style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:7,color:"#8892b0",fontSize:11,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>{selIsNow?"This month":selLabel} only</button>
+                  style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:7,color:SUBTEXT,fontSize:12.5,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>{selIsNow?"This month":selLabel} only</button>
                 <button onClick={()=>{convertToScheduled(moveBill.id,isG,"annual");setMoveBill(null);}}
-                  style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:7,color:"#8892b0",fontSize:11,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Yearly in {laSel?MONTHS[laSel.m-1]:""}</button>
+                  style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:7,color:SUBTEXT,fontSize:12.5,fontWeight:700,padding:"9px 2px",cursor:"pointer"}}>Yearly in {laSel?MONTHS[laSel.m-1]:""}</button>
               </div>
-              <div style={{fontSize:10,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>This is a fixed bill — it appears in every month, and edits apply everywhere. Switching moves it to {selIsNow?"this month":selLabel} only.</div>
+              <div style={{fontSize:12,color:SUBTEXT,padding:"0 4px 14px",lineHeight:1.5}}>This is a fixed bill — it appears in every month, and edits apply everywhere. Switching moves it to {selIsNow?"this month":selLabel} only.</div>
               {!isG&&bill&&(()=>{
                 const mode=bill.splitMode||null;
                 const them=isOwner?"Hollie":"Glyn";
-                const segS=(on)=>({flex:1,background:on?"#15203a":"#1e2535",border:"1px solid "+(on?"#4a9eff":"#2a3050"),borderRadius:7,color:on?"#4a9eff":"#8892b0",fontSize:11.5,fontWeight:700,padding:"9px 2px",cursor:"pointer"});
+                const segS=(on)=>({flex:1,background:on?"#15203a":"#1e2535",border:"1px solid "+(on?"#4a9eff":"#2a3050"),borderRadius:7,color:on?"#4a9eff":SUBTEXT,fontSize:13,fontWeight:700,padding:"9px 2px",cursor:"pointer"});
                 const sh=billShares(bill);
                 return (
                   <>
-                    <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Split</div>
+                    <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Split</div>
                     <div style={{display:"flex",gap:6,marginBottom:mode?8:6}}>
                       <button onClick={()=>hSplit(bill.id,null,null)} style={segS(!mode)}>50/50</button>
                       <button onClick={()=>hSplit(bill.id,"pct",null)} style={segS(mode==="pct")}>% split</button>
@@ -8263,27 +8275,27 @@ const calcTimesheetTotals = days => {
                         placeholder={mode==="pct"?(isOwner?"Your %":"Glyn's %")+" (e.g. 60)":them+" pays £"}
                         style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #4a9eff",borderRadius:8,color:"#e8eaf0",fontSize:14,fontWeight:600,padding:"11px 12px",marginBottom:8}}/>
                     )}
-                    <div style={{fontSize:10.5,color:"#3a4460",padding:"0 4px 14px",lineHeight:1.5}}>
+                    <div style={{fontSize:12.5,color:SUBTEXT,padding:"0 4px 14px",lineHeight:1.5}}>
                       You {fmt(isOwner?sh.glyn:sh.hollie)} · {them} {fmt(isOwner?sh.hollie:sh.glyn)}
                     </div>
                   </>
                 );
               })()}
-              <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Move to category</div>
+              <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>Move to category</div>
               {list.map(c=>(
                 <button key={c.id} onClick={()=>{haptic();assignCat(moveBill.id,c.id,isG);setMoveBill(null);}} style={{
                   display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",textAlign:"left",background:curCat===c.id?"#1a2535":"transparent",
-                  border:"none",borderRadius:8,color:curCat===c.id?"#a0c0ff":"#c8cee0",fontSize:15,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginBottom:2
+                  border:"none",borderRadius:8,color:curCat===c.id?"#a0c0ff":SUBTEXT,fontSize:15,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginBottom:2
                 }}><span>{c.name}</span>{curCat===c.id&&<span style={{color:"#4a9eff"}}>✓</span>}</button>
               ))}
-              {list.length===0&&<div style={{fontSize:12,color:"#5a6480",padding:"8px 14px"}}>No categories yet — add one first.</div>}
+              {list.length===0&&<div style={{fontSize:13,color:SUBTEXT,padding:"8px 14px"}}>No categories yet — add one first.</div>}
               <button onClick={()=>{haptic();assignCat(moveBill.id,null,isG);setMoveBill(null);}} style={{
                 display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",textAlign:"left",background:!curCat?"#1a2535":"transparent",
-                border:"none",borderRadius:8,color:"#8892b0",fontSize:14,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginTop:4
-              }}><span>Uncategorised</span>{!curCat&&<span style={{color:"#8892b0"}}>✓</span>}</button>
+                border:"none",borderRadius:8,color:SUBTEXT,fontSize:14,fontWeight:600,padding:"15px 14px",cursor:"pointer",marginTop:4
+              }}><span>Uncategorised</span>{!curCat&&<span style={{color:SUBTEXT}}>✓</span>}</button>
               <button onClick={()=>{haptic("medium");const id=moveBill.id;setMoveBill(null);isG?delGl(id):delSh(id);}} style={{
                 width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:10,color:"#ff6b8a",
-                fontSize:13,fontWeight:600,padding:"12px",cursor:"pointer",marginTop:14
+                fontSize:13.5,fontWeight:600,padding:"12px",cursor:"pointer",marginTop:14
               }}>Delete bill</button>
             </div>
           </div>
@@ -8297,33 +8309,33 @@ const calcTimesheetTotals = days => {
           <div onClick={()=>setLinkReview(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:220,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"80vh",overflowY:"auto"}}>
               <SheetGrab onClose={()=>setLinkReview(false)}/>
-              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 6px"}}>Match bills to Monzo payments</div>
-              <div style={{fontSize:11,color:"#5a6480",padding:"0 4px 10px",lineHeight:1.5}}>Vaulted matched the rest itself. Pick the payment for each of these, or choose Don't track for one that isn't paid from Monzo (or isn't a payment, like headroom).</div>
+              <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:700,padding:"0 4px 6px"}}>Match bills to Monzo payments</div>
+              <div style={{fontSize:12.5,color:SUBTEXT,padding:"0 4px 10px",lineHeight:1.5}}>Vaulted matched the rest itself. Pick the payment for each of these, or choose Don't track for one that isn't paid from Monzo (or isn't a payment, like headroom).</div>
               {unlinkedBills.map(x=>(
                 <div key={x.ref} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 4px",borderTop:"1px solid #1a1f2e"}}>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.b.name}</div>
-                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>{x.shared?"Shared":"Mine"} · {isVariable(x.b)?"varies":fmt(amountOf(x.b,nowMk))}</div>
+                    <div style={{fontSize:14,color:"#e8eaf0",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.b.name}</div>
+                    <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{x.shared?"Shared":"Mine"} · {isVariable(x.b)?"varies":fmt(amountOf(x.b,nowMk))}</div>
                   </div>
-                  <button onClick={()=>setLink(x.ref,{k:"none"})} style={{...miniBtn,background:"transparent",color:"#5a6480",border:"1px solid #1e2535"}}>Don't track</button>
+                  <button onClick={()=>setLink(x.ref,{k:"none"})} style={{...miniBtn,background:"transparent",color:SUBTEXT,border:"1px solid #1e2535"}}>Don't track</button>
                   <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref:x.ref,name:x.b.name,shared:x.shared,pence:isVariable(x.b)?null:Math.round(amountOf(x.b,nowMk)*100)});}} style={miniBtn}>Pick</button>
                 </div>
               ))}
-              {unlinkedBills.length===0&&<div style={{fontSize:12.5,color:"#00c88c",padding:"14px 4px",textAlign:"center",fontWeight:600}}>✓ Every bill is matched or set aside</div>}
+              {unlinkedBills.length===0&&<div style={{fontSize:13.5,color:"#00c88c",padding:"14px 4px",textAlign:"center",fontWeight:600}}>✓ Every bill is matched or set aside</div>}
               {potUnmatched.length>0&&(
                 <div data-pot-unmatched="1" style={{marginTop:6}}>
-                  <div style={{fontSize:10,color:"#5a6480",fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"10px 4px 6px",borderTop:"1px solid #1a1f2e"}}>Paid by card from a pot</div>
+                  <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"10px 4px 6px",borderTop:"1px solid #1a1f2e"}}>Paid by card from a pot</div>
                   {potUnmatched.map((s,i)=>(
                     <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 4px"}}>
-                      <span style={{flex:1,fontSize:13,color:"#e8eaf0",fontWeight:600}}>{fmt(pounds(s.amount))}</span>
-                      <span style={{fontSize:11,color:"#5a6480"}}>{s.pot} pot · ~{s.at.toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span>
+                      <span style={{flex:1,fontSize:13.5,color:"#e8eaf0",fontWeight:600}}>{fmt(pounds(s.amount))}</span>
+                      <span style={{fontSize:12.5,color:SUBTEXT}}>{s.pot} pot · ~{s.at.toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span>
                     </div>
                   ))}
-                  <div style={{fontSize:10.5,color:"#5a6480",padding:"2px 4px 0",lineHeight:1.5}}>Monzo doesn't say who these were paid to, so Vaulted matches them to the pot's bills by amount. If a price has changed, change that bill's amount to match.</div>
+                  <div style={{fontSize:12.5,color:SUBTEXT,padding:"2px 4px 0",lineHeight:1.5}}>Monzo doesn't say who these were paid to, so Vaulted matches them to the pot's bills by amount. If a price has changed, change that bill's amount to match.</div>
                 </div>
               )}
-              <div style={{fontSize:10.5,color:"#3a4460",padding:"10px 4px 0",lineHeight:1.5}}>To change a bill later, tap its name on the Budget tab.</div>
-              <button onClick={()=>setLinkReview(false)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
+              <div style={{fontSize:12.5,color:SUBTEXT,padding:"10px 4px 0",lineHeight:1.5}}>To change a bill later, tap its name on the Budget tab.</div>
+              <button onClick={()=>setLinkReview(false)} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Close</button>
             </div>
           </div>
         );
@@ -8359,7 +8371,7 @@ const calcTimesheetTotals = days => {
           <div onClick={close} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:230,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 12px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"85vh",overflowY:"auto"}}>
               <SheetGrab onClose={close}/>
-              <div style={{fontSize:13,color:"#e8eaf0",fontWeight:700,padding:"0 4px 8px"}}>Which payment is {linkPick.name}?</div>
+              <div style={{fontSize:13.5,color:"#e8eaf0",fontWeight:700,padding:"0 4px 8px"}}>Which payment is {linkPick.name}?</div>
               <input value={linkQuery} onChange={e=>setLinkQuery(e.target.value)} placeholder="Search payees and pots"
                 style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:14,padding:"10px 12px",marginBottom:6}}/>
               {list.map(x=>{
@@ -8367,28 +8379,28 @@ const calcTimesheetTotals = days => {
                 return (
                   <button key={x.g.key} onClick={()=>pick({k:x.g.key,n:x.label})} style={{...opt,background:on?"#15203a":"transparent"}}>
                     <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:13.5,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.label}</div>
-                      <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>{accLabel(x.g.accountId)} · {fmt(pounds(x.g.latest))}{x.g.months>=2?" · usually the "+nth(x.g.day):""} · last {day(x.g.last)}</div>
+                      <div style={{fontSize:14,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.label}</div>
+                      <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{accLabel(x.g.accountId)} · {fmt(pounds(x.g.latest))}{x.g.months>=2?" · usually the "+nth(x.g.day):""} · last {day(x.g.last)}</div>
                     </div>
                     {on&&<span style={{color:"#4a9eff",fontWeight:700}}>✓</span>}
                   </button>
                 );
               })}
-              {list.length===0&&<div style={{fontSize:12,color:"#5a6480",padding:"12px 6px"}}>Nothing paid by that name in the last few months.</div>}
+              {list.length===0&&<div style={{fontSize:13,color:SUBTEXT,padding:"12px 6px"}}>Nothing paid by that name in the last few months.</div>}
               {!linkPick.shared&&!q&&(
                 <button onClick={()=>pick({k:"od"})} style={{...opt,background:cur.kind==="od"?"#15203a":"transparent"}}>
                   <div style={{flex:1}}>
-                    <div style={{fontSize:13.5,fontWeight:600}}>How far overdrawn</div>
-                    <div style={{fontSize:10.5,color:"#5a6480",marginTop:2}}>For an overdraft: how far overdrawn your account is, until your wage clears it</div>
+                    <div style={{fontSize:14,fontWeight:600}}>How far overdrawn</div>
+                    <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>For an overdraft: how far overdrawn your account is, until your wage clears it</div>
                   </div>
                   {cur.kind==="od"&&<span style={{color:"#4a9eff",fontWeight:700}}>✓</span>}
                 </button>
               )}
               <div style={{display:"flex",gap:8,marginTop:12}}>
-                {links[linkPick.ref]&&<button onClick={()=>pick(null)} style={{flex:1,background:"#1a2535",border:"1px solid #2a5a8a",borderRadius:9,color:"#8ec5ff",fontSize:12.5,fontWeight:700,padding:"11px 6px",cursor:"pointer"}}>Match automatically</button>}
-                <button onClick={()=>pick({k:"none"})} style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:9,color:"#8892b0",fontSize:12.5,fontWeight:700,padding:"11px 6px",cursor:"pointer"}}>Don't track this bill</button>
+                {links[linkPick.ref]&&<button onClick={()=>pick(null)} style={{flex:1,background:"#1a2535",border:"1px solid #2a5a8a",borderRadius:9,color:"#8ec5ff",fontSize:13.5,fontWeight:700,padding:"11px 6px",cursor:"pointer"}}>Match automatically</button>}
+                <button onClick={()=>pick({k:"none"})} style={{flex:1,background:"#1e2535",border:"1px solid #2a3050",borderRadius:9,color:SUBTEXT,fontSize:13.5,fontWeight:700,padding:"11px 6px",cursor:"pointer"}}>Don't track this bill</button>
               </div>
-              <button onClick={close} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Cancel</button>
+              <button onClick={close} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"14px 8px 4px",cursor:"pointer"}}>Cancel</button>
             </div>
           </div>
         );
@@ -8407,13 +8419,13 @@ const calcTimesheetTotals = days => {
           const editing=!!f.id;
           const negAmt=(parseFloat(f.total)||0)<0;
           const valid=(f.name||"").trim().length>0 && (f.freq==="month" || (f.months.length>0 && (f.freq!=="once"||!!f.year)));
-          const seg=(active)=>({flex:1,background:active?"#1a3a5a":"transparent",border:active?"1px solid #2a5a8a":"1px solid #2a3050",borderRadius:8,color:active?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"});
+          const seg=(active)=>({flex:1,background:active?"#1a3a5a":"transparent",border:active?"1px solid #2a5a8a":"1px solid #2a3050",borderRadius:8,color:active?"#8ec5ff":SUBTEXT,fontSize:13.5,fontWeight:700,padding:"11px",cursor:"pointer"});
           return (
             <div onClick={()=>setSchedOpen(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
               <div onClick={e=>e.stopPropagation()} style={sheet}>
                 {grab}
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
-                  <button onClick={()=>setSchedForm(null)} style={{background:"transparent",border:"none",color:"#8ec5ff",fontSize:13,fontWeight:700,cursor:"pointer",padding:0}}>‹ Back</button>
+                  <button onClick={()=>setSchedForm(null)} style={{background:"transparent",border:"none",color:"#8ec5ff",fontSize:13.5,fontWeight:700,cursor:"pointer",padding:0}}>‹ Back</button>
                   <div style={{fontSize:14,color:"#e8eaf0",fontWeight:800,flex:1,textAlign:"center",marginRight:40}}>{editing?"Edit scheduled bill":"New scheduled bill"}</div>
                 </div>
 
@@ -8432,7 +8444,7 @@ const calcTimesheetTotals = days => {
                   <button onClick={()=>setF({scope:"income",splitMode:null,splitValue:"",freq:f.freq==="month"?"once":f.freq,months:f.months.length?f.months:[laSel?laSel.m:schedNowMonth],year:f.year||(laSel?laSel.yr:schedNowYear)})} style={seg(f.scope==="income")}>Income</button>
                 </div>
                 {f.scope==="income"&&(
-                  <div style={{fontSize:11,color:"#4ad07a",marginBottom:14,lineHeight:1.5}}>
+                  <div style={{fontSize:12.5,color:"#4ad07a",marginBottom:14,lineHeight:1.5}}>
                     Income adds to what's left over in the months it lands, instead of counting as a bill.
                   </div>
                 )}
@@ -8459,12 +8471,12 @@ const calcTimesheetTotals = days => {
                   <button onClick={()=>setF({freq:"once",months:f.months.slice(0,1)})} style={seg(f.freq==="once")}>One-off</button>
                 </div>
 
-                {f.freq==="month"&&<div style={{fontSize:11,color:"#5a6480",marginBottom:14}}>Due every month — it'll move into your standing bills list.</div>}
-                {f.freq!=="month"&&<div style={{fontSize:11,color:"#5a6480",marginBottom:8}}>{f.freq==="once"?"Pick the month it's due":"Pick the month(s) it's due each year"}</div>}
+                {f.freq==="month"&&<div style={{fontSize:12.5,color:SUBTEXT,marginBottom:14}}>Due every month — it'll move into your standing bills list.</div>}
+                {f.freq!=="month"&&<div style={{fontSize:12.5,color:SUBTEXT,marginBottom:8}}>{f.freq==="once"?"Pick the month it's due":"Pick the month(s) it's due each year"}</div>}
                 {f.freq!=="month"&&<div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:14}}>
                   {MONTHS.map((mn,i)=>{const m=i+1;const on=f.months.includes(m);return (
                     <button key={m} onClick={()=>{ if(f.freq==="once")setF({months:[m]}); else setF({months:on?f.months.filter(x=>x!==m):[...f.months,m]}); }}
-                      style={{width:"calc(25% - 6px)",background:on?"#1a3a5a":"#0d1117",border:"1px solid "+(on?"#2a5a8a":"#2a3050"),borderRadius:8,color:on?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"10px 0",cursor:"pointer"}}>{mn}</button>
+                      style={{width:"calc(25% - 6px)",background:on?"#1a3a5a":"#0d1117",border:"1px solid "+(on?"#2a5a8a":"#2a3050"),borderRadius:8,color:on?"#8ec5ff":SUBTEXT,fontSize:13.5,fontWeight:700,padding:"10px 0",cursor:"pointer"}}>{mn}</button>
                   );})}
                 </div>}
 
@@ -8475,11 +8487,11 @@ const calcTimesheetTotals = days => {
                 </>)}
 
                 <button onClick={saveSchedBill} disabled={!valid}
-                  style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":"#3a4360",fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginTop:f.freq==="once"?0:2,marginBottom:editing?8:6}}>
+                  style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":SUBTEXT,fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginTop:f.freq==="once"?0:2,marginBottom:editing?8:6}}>
                   {editing?"Save changes":"Add scheduled bill"}
                 </button>
-                {editing&&<button onClick={()=>delSchedBill(f.id)} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:10,color:"#ff6b8a",fontSize:13,fontWeight:600,padding:"12px",cursor:"pointer",marginBottom:6}}>Remove</button>}
-                <button onClick={()=>setSchedForm(null)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"8px",cursor:"pointer"}}>Cancel</button>
+                {editing&&<button onClick={()=>delSchedBill(f.id)} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:10,color:"#ff6b8a",fontSize:13.5,fontWeight:600,padding:"12px",cursor:"pointer",marginBottom:6}}>Remove</button>}
+                <button onClick={()=>setSchedForm(null)} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"8px",cursor:"pointer"}}>Cancel</button>
               </div>
             </div>
           );
@@ -8488,11 +8500,11 @@ const calcTimesheetTotals = days => {
           <div key={b.id} onClick={()=>{haptic();setSchedForm({id:b.id,name:b.name,total:b.total!=null?String(b.total):"",splitMode:b.split_mode||null,splitValue:b.split_value!=null?String(b.split_value):"",scope:b.scope,freq:b.freq,months:Array.isArray(b.months)?b.months:[],year:b.year||schedNowYear});}}
             style={{...card,marginBottom:8,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
             <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:14,fontWeight:600,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.name} <span style={{fontSize:10,color:"#5a6480",fontWeight:700}}>· {tag(b)}</span></div>
-              <div style={{fontSize:11,color:"#5a6480",marginTop:2}}>{schedWhenLabel(b)}</div>
+              <div style={{fontSize:14,fontWeight:600,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.name} <span style={{fontSize:12,color:SUBTEXT,fontWeight:700}}>· {tag(b)}</span></div>
+              <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{schedWhenLabel(b)}</div>
             </div>
-            <div style={{fontSize:14,fontWeight:700,color:"#c8cee0",whiteSpace:"nowrap"}}>{fmt(b.total)}</div>
-            <span style={{color:"#3a4460",fontSize:14}}>›</span>
+            <div style={{fontSize:14,fontWeight:700,color:SUBTEXT,whiteSpace:"nowrap"}}>{fmt(b.total)}</div>
+            <span style={{color:SUBTEXT,fontSize:14}}>›</span>
           </div>
         );
         const active=mine.filter(b=>schedActive(b));
@@ -8503,16 +8515,16 @@ const calcTimesheetTotals = days => {
             <div onClick={e=>e.stopPropagation()} style={sheet}>
               {grab}
               <div style={{fontSize:14,color:"#e8eaf0",fontWeight:800,marginBottom:4}}>Scheduled bills</div>
-              <div style={{fontSize:11,color:"#5a6480",marginBottom:12}}>Bills that appear in Budget only during the month(s) they're due.</div>
+              <div style={{fontSize:12.5,color:SUBTEXT,marginBottom:12}}>Bills that appear in Budget only during the month(s) they're due.</div>
               <button onClick={()=>setSchedForm({id:null,name:"",total:"",splitMode:null,splitValue:"",scope:budTab==="glyn"?"personal":"shared",freq:"annual",months:[],year:schedNowYear})}
                 style={{width:"100%",background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"13px",cursor:"pointer",marginBottom:14}}>
                 ＋ Add scheduled bill
               </button>
-              {mine.length===0&&<div style={{...card,fontSize:13,color:"#5a6480",textAlign:"center",padding:"18px 12px"}}>None yet. Add one above — e.g. car tax every June, or a one-off for this month.</div>}
+              {mine.length===0&&<div style={{...card,fontSize:13.5,color:SUBTEXT,textAlign:"center",padding:"18px 12px"}}>None yet. Add one above — e.g. car tax every June, or a one-off for this month.</div>}
               {active.length>0&&<><div style={{...hdr,color:"#8ec5ff",marginBottom:6}}>📅 Due this month</div>{active.map(row)}</>}
               {upcoming.length>0&&<><div style={{...hdr,marginTop:6,marginBottom:6}}>Upcoming</div>{upcoming.map(row)}</>}
               {past.length>0&&<><div style={{...hdr,marginTop:6,marginBottom:6}}>Past one-offs</div>{past.map(row)}</>}
-              <button onClick={()=>setSchedOpen(false)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"12px 8px 4px",cursor:"pointer"}}>Close</button>
+              <button onClick={()=>setSchedOpen(false)} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"12px 8px 4px",cursor:"pointer"}}>Close</button>
             </div>
           </div>
         );
@@ -8545,11 +8557,11 @@ const calcTimesheetTotals = days => {
                 style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:16}}/>
 
               <button onClick={saveGift} disabled={!valid}
-                style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":"#3a4360",fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginBottom:editing?8:6}}>
+                style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":SUBTEXT,fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginBottom:editing?8:6}}>
                 {editing?"Save changes":"Add person"}
               </button>
-              {editing&&<button onClick={()=>delGift(giftForm.id)} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:10,color:"#ff6b8a",fontSize:13,fontWeight:600,padding:"12px",cursor:"pointer",marginBottom:6}}>Remove person</button>}
-              <button onClick={()=>setGiftOpen(false)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"8px",cursor:"pointer"}}>Cancel</button>
+              {editing&&<button onClick={()=>delGift(giftForm.id)} style={{width:"100%",background:"#2a1a1a",border:"1px solid #5a2a2a",borderRadius:10,color:"#ff6b8a",fontSize:13.5,fontWeight:600,padding:"12px",cursor:"pointer",marginBottom:6}}>Remove person</button>}
+              <button onClick={()=>setGiftOpen(false)} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"8px",cursor:"pointer"}}>Cancel</button>
             </div>
           </div>
         );
@@ -8560,7 +8572,7 @@ const calcTimesheetTotals = days => {
         const isCharge=settleForm.kind==="charge";
         const set=(patch)=>setSettleForm(f=>({...f,...patch}));
         const valid=parseFloat(settleForm.amount)>0;
-        const seg=(active)=>({flex:1,background:active?"#1a3a5a":"transparent",border:active?"1px solid #2a5a8a":"1px solid #2a3050",borderRadius:8,color:active?"#8ec5ff":"#8892b0",fontSize:13,fontWeight:700,padding:"11px",cursor:"pointer"});
+        const seg=(active)=>({flex:1,background:active?"#1a3a5a":"transparent",border:active?"1px solid #2a5a8a":"1px solid #2a3050",borderRadius:8,color:active?"#8ec5ff":SUBTEXT,fontSize:13.5,fontWeight:700,padding:"11px",cursor:"pointer"});
         return (
           <div onClick={()=>setSettleOpen(false)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:210,background:"rgba(0,0,0,0.6)"}}>
             <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,right:0,bottom:0,background:"#141824",borderTop:"1px solid #2a3050",borderRadius:"16px 16px 0 0",padding:"8px 14px",paddingBottom:"calc(16px + env(safe-area-inset-bottom))",maxHeight:"88vh",overflowY:"auto"}}>
@@ -8585,7 +8597,7 @@ const calcTimesheetTotals = days => {
                 <button onClick={()=>{const v=parseFloat(settleForm.amount);if(!isNaN(v))set({amount:(Math.round(v*50)/100).toString()});}}
                   style={{background:"#1a2535",border:"1px solid #2a3050",borderRadius:8,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"0 18px",cursor:"pointer"}}>½</button>
               </div>
-              {isCharge&&<div style={{fontSize:11,color:"#5a6480",marginBottom:14}}>Enter the other person’s share. Tap ½ to halve a total.</div>}
+              {isCharge&&<div style={{fontSize:12.5,color:SUBTEXT,marginBottom:14}}>Enter the other person’s share. Tap ½ to halve a total.</div>}
 
               {isCharge&&(<>
                 <div style={{...hdr,marginBottom:6}}>What for? (optional)</div>
@@ -8598,10 +8610,10 @@ const calcTimesheetTotals = days => {
                 style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,padding:"12px 14px",marginBottom:16}}/>
 
               <button onClick={addSettlement} disabled={!valid}
-                style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":"#3a4360",fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginBottom:6}}>
+                style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":SUBTEXT,fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginBottom:6}}>
                 Save
               </button>
-              <button onClick={()=>setSettleOpen(false)} style={{width:"100%",background:"transparent",border:"none",color:"#8892b0",fontSize:13,fontWeight:600,padding:"8px",cursor:"pointer"}}>Cancel</button>
+              <button onClick={()=>setSettleOpen(false)} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"8px",cursor:"pointer"}}>Cancel</button>
             </div>
           </div>
         );
