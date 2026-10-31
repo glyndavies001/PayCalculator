@@ -818,11 +818,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.19.2";
+const APP_VERSION = "1.19.3";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.19.3", date: "31 Oct 2026", items: [
+    { b: "Truer bill dates", t: " — a Direct Debit due at a weekend or on a bank holiday shows the next working day, and ones taken on a working day of the month (like the 3rd) are worked out from when they've gone out before. Card payments, transfers and pot top-ups keep their day. The Dashboard's payments still to go use the same dates." },
+  ] },
   { v: "1.19.2", date: "31 Oct 2026", items: [
     { b: "Budget opens on your month", t: " — the month strip starts on the month you're paying in for, with earlier months a swipe back." },
     { b: "A simpler bill list", t: " — each bill shows its name and the date it usually goes out, from Monzo. Tap a bill to see its total and split." },
@@ -1362,6 +1365,66 @@ function usualDay(dates) {
   if (dom > 31) dom -= 31;
   return dom;
 }
+// England & Wales bank holidays in a year, as "YYYY-MM-DD": Direct Debits aren't taken on them or
+// at weekends. Worked out from the usual rules, so a one-off extra holiday isn't known about.
+const bankHolCache = new Map();
+function bankHolidays(y) {
+  if (bankHolCache.has(y)) return bankHolCache.get(y);
+  const out = new Set(), add = (m, d) => out.add(localISO(new Date(y, m, d)));
+  const dow = (m, d) => new Date(y, m, d).getDay();
+  // Good Friday and Easter Monday, from Easter Sunday (the anonymous Gregorian algorithm).
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7, mm = Math.floor((a + 11 * h + 22 * l) / 451);
+  const em = Math.floor((h + l - 7 * mm + 114) / 31) - 1, ed = ((h + l - 7 * mm + 114) % 31) + 1;
+  add(em, ed - 2); add(em, ed + 1);
+  const ny = dow(0, 1); add(0, ny === 6 ? 3 : ny === 0 ? 2 : 1);   // New Year's Day, or the Monday after
+  const firstMon = m => 1 + ((8 - dow(m, 1)) % 7);
+  const lastMon = m => { const n = new Date(y, m + 1, 0).getDate(); return n - ((dow(m, n) + 6) % 7); };
+  add(4, firstMon(4)); add(4, lastMon(4)); add(7, lastMon(7));    // early May, spring, summer
+  const xm = dow(11, 25);                                           // Christmas and Boxing Day, moved off the weekend
+  if (xm === 5) { add(11, 25); add(11, 28); }
+  else if (xm === 6) { add(11, 27); add(11, 28); }
+  else if (xm === 0) { add(11, 26); add(11, 27); }
+  else { add(11, 25); add(11, 26); }
+  bankHolCache.set(y, out);
+  return out;
+}
+const isWorkingDay = d => d.getDay() !== 0 && d.getDay() !== 6 && !bankHolidays(d.getFullYear()).has(localISO(d));
+// When a payment goes out in month m (1-12) of year y, from its rule: "c8" the 8th (the last day
+// in a shorter month), "d8" the same but moved on to the next working day (a Direct Debit), "w3"
+// the 3rd working day of the month. A month before January or after December rolls the year.
+function ruleDate(rule, y, m) {
+  const n = parseInt(String(rule || "").slice(1), 10), kind = String(rule || "")[0];
+  if (!(n > 0)) return null;
+  const first = new Date(y, m - 1, 1), yy = first.getFullYear(), mo = first.getMonth();
+  if (kind === "w") {
+    let c = 0;
+    for (let x = new Date(yy, mo, 1); x.getMonth() === mo; x.setDate(x.getDate() + 1)) if (isWorkingDay(x) && ++c === n) return new Date(x);
+    return null;
+  }
+  const x = new Date(yy, mo, Math.min(n, new Date(yy, mo + 1, 0).getDate()));
+  if (kind === "d") while (!isWorkingDay(x)) x.setDate(x.getDate() + 1);
+  return x;
+}
+// A Direct Debit's rule from the days it was taken: a set day moved on past weekends and bank
+// holidays, or the nth working day of the month (Medivet's 3rd, say), whichever fits more of them.
+// A tie goes to the set day, and between set days to the one nearest its usual day. A payment can
+// belong to the month before (the 31st moved on to the 1st).
+function ddRule(dates, usual) {
+  if (!dates.length) return usual ? "d" + usual : null;
+  const fits = rule => dates.filter(x => [0, -1].some(k => {
+    const r = ruleDate(rule, x.getFullYear(), x.getMonth() + 1 + k);
+    return r && localISO(r) === localISO(x);
+  })).length;
+  let bestD = null, hitsD = -1, distD = 99, bestW = null, hitsW = -1;
+  for (let d = 1; d <= 31; d++) {
+    const h = fits("d" + d), gap = usual ? Math.min(Math.abs(d - usual), 31 - Math.abs(d - usual)) : 0;
+    if (h > hitsD || (h === hitsD && gap < distD)) { bestD = "d" + d; hitsD = h; distD = gap; }
+  }
+  for (let n = 1; n <= 23; n++) { const h = fits("w" + n); if (h > hitsW) { bestW = "w" + n; hitsW = h; } }
+  return hitsW > hitsD ? bestW : bestD;
+}
 // Payments Monzo paid from a pot by itself (a bill set to come out of the Bills pot, say): the same
 // amount taken from a pot on the same account within a few seconds. tx_id -> pot_id. (Money you
 // move out of a pot yourself to cover a payment takes longer, so it isn't counted.)
@@ -1407,10 +1470,10 @@ function budgetLeft({ accounts, bills, sched = [], match, txns = [], myId = null
       if (s && (s.state === "paid" || s.state === "inpot")) continue;   // gone from the main balance
       const amount = Math.round(amountOf(x.b, mk) * 100);
       if (!(amount > 0)) continue;
-      // Its day that month: for a bill paid from a pot, the day the pot is topped up.
+      // Its day that month: a Direct Debit's working day; for a bill paid from a pot, the day the pot is topped up.
       const [y, mo] = mk.split("-").map(Number);
       const day = s && s.date && (s.state === "due" || s.state === "late") ? s.date.getDate() : g.day;
-      const due = new Date(y, mo - 1, Math.min(day, new Date(y, mo, 0).getDate()));
+      const due = g.isDD && g.rule ? ruleDate(g.rule, y, mo) : new Date(y, mo - 1, Math.min(day, new Date(y, mo, 0).getDate()));
       if (due < start || due >= next) continue;
       add(acc, { key: x.ref + "@" + mk, name: x.b.name, amount, due, late: !!(s && s.state === "late"), pot: (s && s.pot) || null });
     }
@@ -1555,6 +1618,7 @@ function payeeGroups(txns, pots, now = new Date()) {
     g.months = per.filter(Boolean).length;
     g.regular = g.months >= 2 && per.every(n => n <= 2);
     g.day = usualDay(g.main.map(txWhen));
+    g.rule = g.isDD ? ddRule(g.main.map(txWhen), g.day) : g.day ? "c" + g.day : null;   // when it goes out (ruleDate)
     g.latest = -Number(g.main[g.main.length - 1].amount);
     g.last = txWhen(last);
     // Its main payment, that is (not a small extra), and only while that's recent: a bill that's
@@ -1631,7 +1695,7 @@ function billStatus(keys, groups, mk, pence, now = new Date()) {
     return { state: "paid", date: txWhen(pays[pays.length - 1]), amount: pays.reduce((s, t) => s - Number(t.amount), 0), n: pays.length, pot };
   }
   const [y, m] = mk.split("-").map(Number);
-  const e = new Date(y, m - 1, Math.min(g0.day, new Date(y, m, 0).getDate()));
+  const e = (g0.rule && ruleDate(g0.rule, y, m)) || new Date(y, m - 1, Math.min(g0.day, new Date(y, m, 0).getDate()));
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   if (gs.some(g => g.months >= 2)) return { state: today.getTime() <= e.getTime() + 3 * DAY_MS ? "due" : "late", date: e, pot };
   return { state: "none", last: gs.reduce((a, g) => (g.last > a ? g.last : a), g0.last), pot };
@@ -4923,16 +4987,16 @@ const calcTimesheetTotals = days => {
   const nowMkBank=(()=>{const d=new Date(nowTick);return monthKeyOf(d.getFullYear(),d.getMonth()+1);})();
   // How a bill stands this month: live on the phone with the Monzo link, or, for shared bills,
   // what Glyn's phone last shared.
-  // The day of the month a bill usually goes out, from its Monzo payment: this phone's link, or for
+  // When a bill goes out (a rule for ruleDate), from its Monzo payment: this phone's link, or for
   // shared bills, what Glyn's phone shared. null if it isn't matched to a payment.
-  const billDay=(ref)=>{
+  const billRule=(ref)=>{
     if(bankMatch){
       const m=bankMatch.byRef[ref];
       const g=m&&m.kind==="tx"&&m.keys.length?bankMatch.groups.get(m.keys[0]):null;
-      return g&&g.day?g.day:null;
+      return g&&g.rule?g.rule:null;
     }
     const t=ref.startsWith("s:")&&bankSummary&&bankSummary.ticks?bankSummary.ticks[ref]:null;
-    return t&&t.dd?t.dd:null;
+    return t?(t.dr||(t.dd?"c"+t.dd:null)):null;
   };
   const billTick=(ref)=>{
     if(bankMatch){const m=bankMatch.byRef[ref];return m?m.status:null;}
@@ -5020,7 +5084,7 @@ const calcTimesheetTotals = days => {
       if(st.approx)t.x=1;
       if(st.group)t.g=1;   // (a pot's shortfall isn't shared: it can count your own bills)
       const g0=m.keys&&m.keys.length?bankMatch.groups.get(m.keys[0]):null;
-      if(g0&&g0.day)t.dd=g0.day;   // the day it usually goes out, for the Budget's dates
+      if(g0&&g0.rule)t.dr=g0.rule;   // when it goes out, for the Budget's dates
       ticks["s:"+b.id]=t;
     }
     const ids=bankPrefs.house_pots||[];
@@ -5525,10 +5589,11 @@ const calcTimesheetTotals = days => {
             </div>
           );
 
-          // The date a bill usually goes out in the month shown (from Monzo), e.g. "8 Dec".
+          // The date a bill goes out in the month shown (from Monzo), e.g. "8 Dec": a Direct Debit moves
+          // on past weekends and bank holidays.
           const dateFor=b=>{
-            const d=billDay((isG?"g:":"s:")+b.id);
-            return d&&laSel?Math.min(d,new Date(laSel.yr,laSel.m,0).getDate())+" "+MONTHS[laSel.m-1]:null;
+            const r=billRule((isG?"g:":"s:")+b.id),d=r&&laSel?ruleDate(r,laSel.yr,laSel.m):null;
+            return d?d.getDate()+" "+MONTHS[d.getMonth()]:null;
           };
           // Ticks: only for this month, against the bill's full amount (or what's typed in, if it varies).
           const tickFor=b=>{
