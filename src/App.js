@@ -818,11 +818,15 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.19.6";
+const APP_VERSION = "1.19.7";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.19.7", date: "31 Oct 2026", items: [
+    { b: "Bigger bills on Budget", t: " — bill names and their dates are bigger, with the amounts a little bigger to match." },
+    { b: "Even totals", t: " — Shared and Mine at the top of Budget are the same size as Left over." },
+  ] },
   { v: "1.19.6", date: "31 Oct 2026", items: [
     { b: "A shorter Dashboard", t: " — the Spending card is gone, and so is the note under Monthly Budget." },
   ] },
@@ -5470,16 +5474,16 @@ const calcTimesheetTotals = days => {
                 ...(first?{borderTop:"none"}:{})}}>
               <div onClick={onName} style={{flex:1,minWidth:0,cursor:onName?"pointer":"default"}}>
                 <div style={{display:"flex",alignItems:"baseline",gap:6,minWidth:0}}>
-                  <span style={{fontSize:14,color:neg?"#4ad07a":SUBTEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{name}</span>
+                  <span style={{fontSize:18,color:neg?"#4ad07a":SUBTEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{name}</span>
                   {tag&&<span style={{flex:"0 0 auto",display:"inline-block",fontSize:11.5,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#1d1608",color:"#ffb84a",alignSelf:"center"}}>{tag}</span>}
-                  {date&&<span style={{flex:"0 0 auto",fontSize:12.5,color:SUBTEXT,whiteSpace:"nowrap"}}>· {date}</span>}
+                  {date&&<span style={{flex:"0 0 auto",fontSize:15,color:SUBTEXT,whiteSpace:"nowrap"}}>· {date}</span>}
                 </div>
                 {sub&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{sub}</div>}
                 {tick&&<div data-tick="1" style={{fontSize:12.5,color:tick.color,marginTop:2,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tick.text}</div>}
               </div>
               <div onClick={onAmount} style={{textAlign:"right",cursor:onAmount?"pointer":"default"}}>
-                <div style={{fontSize:14,fontWeight:700,color:neg?"#4ad07a":"#e8eaf0"}}>{fmtS(amt)}</div>
-                {her!=null&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{themName} {fmtS(her)}</div>}
+                <div style={{fontSize:16,fontWeight:700,color:neg?"#4ad07a":"#e8eaf0"}}>{fmtS(amt)}</div>
+                {her!=null&&<div style={{fontSize:13.5,color:SUBTEXT,marginTop:2}}>{themName} {fmtS(her)}</div>}
               </div>
             </div>
           );
@@ -5638,11 +5642,11 @@ const calcTimesheetTotals = days => {
                 </div>
                 <div style={{flex:1}}>
                   <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Shared</div>
-                  <div style={{fontSize:15,fontWeight:700,color:"#4a9eff"}}>{fmtS(selShMine)}</div>
+                  <div style={{fontSize:21,fontWeight:800,color:"#4a9eff"}}>{fmtS(selShMine)}</div>
                 </div>
                 <div style={{flex:1}}>
                   <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Mine</div>
-                  <div style={{fontSize:15,fontWeight:700,color:"#ff8c4a"}}>{fmtS(selPersonal)}</div>
+                  <div style={{fontSize:21,fontWeight:800,color:"#ff8c4a"}}>{fmtS(selPersonal)}</div>
                 </div>
               </div>
             </div>
