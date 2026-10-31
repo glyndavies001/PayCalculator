@@ -818,11 +818,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.19.5";
+const APP_VERSION = "1.19.6";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.19.6", date: "31 Oct 2026", items: [
+    { b: "A shorter Dashboard", t: " — the Spending card is gone, and so is the note under Monthly Budget." },
+  ] },
   { v: "1.19.5", date: "31 Oct 2026", items: [
     { b: "What's really left for Hollie", t: " — the joint account's What's really left, with the payments still to go, is at the top of Hollie's Budget tab. It's updated whenever Glyn's phone checks Monzo." },
     { b: "Less small print", t: " — the notes under What's really left and the Joint account card are gone." },
@@ -1852,23 +1855,6 @@ function overdraftStatus(txns, account, mk, now = new Date()) {
   }
   return { state: "due", date: pd, od: true };
 }
-// Money spent from one account between two times, by Monzo category (pence; refunds count off).
-// Transfers, savings, income and pot moves aren't spending; your own categories go together.
-const SPEND_SKIP = new Set(["transfers", "savings", "income"]);
-function spendByCategory(txns, accountId, from, to) {
-  const out = new Map();
-  for (const t of txns) {
-    if (t.account_id !== accountId || isPotMove(t) || t.include_in_spending === false) continue;
-    const c = String(t.category || "general").startsWith("category_") ? "custom" : (t.category || "general");
-    if (SPEND_SKIP.has(c)) continue;
-    const d = txWhen(t);
-    if (d < from || d >= to) continue;
-    out.set(c, (out.get(c) || 0) - Number(t.amount));
-  }
-  return out;
-}
-const CAT_LABEL = { eating_out: "🍔 Eating out", groceries: "🛒 Groceries", shopping: "🛍️ Shopping", transport: "🚗 Transport", bills: "🧾 Bills", entertainment: "🎬 Entertainment", general: "📦 General", personal_care: "💆 Personal care", holidays: "✈️ Holidays", family: "👪 Family", charity: "❤️ Charity", gifts: "🎁 Gifts", cash: "💵 Cash", expenses: "💼 Expenses", finances: "💳 Finances", custom: "🏷️ Your own categories" };
-const catLabel = c => CAT_LABEL[c] || "📦 " + String(c || "Other").replace(/_/g, " ");
 // The payday transfers into the joint account: everything of £100 or more from each of you,
 // from 3 days before payday to a week after. With `want` (each share, pence), a smaller transfer
 // that makes up some or all of what a share is still short counts too ("+50p to top it up"), until
@@ -2546,74 +2532,6 @@ function JointCard({ check }) {
   );
 }
 
-// Spending by category, this pay month so far against last, per account, plus the allowances
-// that go into pots with what's left in each.
-function SpendCard({ data }) {
-  const [acc, setAcc] = useState(0);
-  const [all, setAll] = useState(false);
-  if (!data || !data.accs.length) return null;
-  const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
-  const lab = { fontSize: 12.5, color: SUBTEXT, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
-  const dshort = d => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-  const a = data.accs[Math.min(acc, data.accs.length - 1)];
-  const rows = all ? a.cats : a.cats.slice(0, 6);
-  const top = Math.max(1, ...a.cats.map(r => Math.max(r.now, r.last)));
-  const allow = data.allow.filter(x => x.accountId === a.id);
-  const lastEnd = new Date(data.start.getTime() - DAY_MS);
-  return (
-    <div data-spend="1" style={card}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-        <div style={lab}>📊 Spending</div>
-        {data.accs.length > 1 && <div style={{ display: "flex", gap: 4 }}>
-          {data.accs.map((x, i) => (
-            <button key={x.id} onClick={() => { haptic(); setAcc(i); setAll(false); }} style={{ background: i === acc ? "#4a9eff" : "#0d1117", color: i === acc ? "#fff" : SUBTEXT, border: "1px solid " + (i === acc ? "#4a9eff" : "#1e2535"), borderRadius: 7, fontSize: 12.5, fontWeight: 700, padding: "5px 10px", cursor: "pointer" }}>{x.label}</button>
-          ))}
-        </div>}
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 6, fontSize: 12, color: SUBTEXT, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", marginTop: 10, paddingBottom: 4, borderBottom: "1px solid #1a1f2e" }}>
-        <span></span><span style={{ textAlign: "right", whiteSpace: "nowrap" }}>This month</span><span style={{ textAlign: "right", whiteSpace: "nowrap" }}>Last month</span>
-      </div>
-      {rows.map(r => (
-        <div key={r.c} style={{ padding: "6px 0", borderBottom: "1px solid #161b28" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 6, alignItems: "baseline", fontSize: 13.5 }}>
-            <span style={{ color: SUBTEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{catLabel(r.c)}</span>
-            <span style={{ textAlign: "right", fontWeight: 700, color: r.last && r.now > r.last ? "#ffb84a" : "#e8eaf0" }}>{fmt(pounds(r.now))}</span>
-            <span style={{ textAlign: "right", color: SUBTEXT }}>{fmt(pounds(r.last))}</span>
-          </div>
-          <div style={{ position: "relative", height: 4, borderRadius: 2, background: "#1e2535", marginTop: 5, overflow: "hidden" }}>
-            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: (r.last / top * 100) + "%", background: "#2a3050" }} />
-            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: (r.now / top * 100) + "%", background: r.last && r.now > r.last ? "#ffb84a" : "#4a9eff", opacity: 0.9 }} />
-          </div>
-        </div>
-      ))}
-      {a.cats.length === 0 && <div style={{ fontSize: 13, color: SUBTEXT, padding: "10px 0" }}>No spending on this account in the last two months.</div>}
-      {a.cats.length > 6 && <button onClick={() => { haptic(); setAll(v => !v); }} style={{ ...lnkStyle, marginTop: 8, color: "#4a9eff", textDecoration: "none" }}>{all ? "▾ Show less" : "▸ Show all " + a.cats.length}</button>}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", gap: 6, fontSize: 13.5, fontWeight: 800, marginTop: 8 }}>
-        <span style={{ color: SUBTEXT }}>Total</span>
-        <span style={{ textAlign: "right", color: "#e8eaf0" }}>{fmt(pounds(a.now))}</span>
-        <span style={{ textAlign: "right", color: SUBTEXT }}>{fmt(pounds(a.last))}</span>
-      </div>
-      {allow.length > 0 && <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #1e2535" }}>
-        <div style={{ ...lab, fontSize: 12, marginBottom: 4 }}>Allowances · left in the pot</div>
-        {allow.map(x => {
-          const pct = x.amount > 0 ? Math.max(0, Math.min(100, x.left / x.amount * 100)) : 0;
-          return (
-            <div key={x.ref} style={{ padding: "6px 0" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13.5 }}>
-                <span style={{ color: SUBTEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.name} <span style={{ color: SUBTEXT, fontSize: 12.5 }}>· {x.pot} pot</span></span>
-                <span style={{ flexShrink: 0 }}><b style={{ color: x.left > 0 ? "#e8eaf0" : "#ff6b8a" }}>{fmt(pounds(x.left))}</b><span style={{ color: SUBTEXT }}> of {fmt(pounds(x.amount))}</span></span>
-              </div>
-              <div style={{ height: 4, borderRadius: 2, background: "#1e2535", marginTop: 5, overflow: "hidden" }}>
-                <div style={{ height: "100%", width: pct + "%", background: pct < 15 ? "#ff6b8a" : pct < 40 ? "#ffb84a" : "#00c88c" }} />
-              </div>
-            </div>
-          );
-        })}
-      </div>}
-      <div style={{ fontSize: 12, color: SUBTEXT, marginTop: 8 }}>Monzo's categories · this month is since payday ({dshort(data.start)}), last month {dshort(data.prevStart)} – {dshort(lastEnd)} · transfers, savings and pots not counted</div>
-    </div>
-  );
-}
 
 export default function App() {
   const [tab,setTab]=useState("Dashboard");
@@ -4120,7 +4038,6 @@ export default function App() {
   const homeNet=netForIdx(homeIdx);
   const homeSurplus=laHome?homeNet+laHome.income-laHome.total:surplus;
   const homeName=laHome?new Date(laHome.yr,laHome.m-1,1).toLocaleDateString("en-GB",{month:"long"}):"";
-  const homePayDay=laHome?getPayday(laHome.yr,laHome.m-2).toLocaleDateString("en-GB",{day:"numeric",month:"short"}):"";
   // Pay Calc's estimate is the pay at the end of this pay period, which pays for the month after
   // it: the month being paid in for, except between payday and both transfers landing, when it's
   // already the next one. Its surplus is against that month, as the Budget shows it.
@@ -5171,34 +5088,6 @@ const calcTimesheetTotals = days => {
   const jointCheck=jointPay&&bankLeft?{payday:jointPay.payday,month:jointPay.month,glyn:jointPay.glyn,hollie:jointPay.hollie,
     want:jointPay.want,row:bankLeft.rows.find(r=>r.id===jointPay.jointId),late:jointPay.late}:null;
 
-  // Spending by category, this pay month so far against last, on each account; and the
-  // allowances paid into pots, with what's left in each pot.
-  const spending=useMemo(()=>{
-    if(!isOwner||!bank.accounts.length||!bank.txns.length)return null;
-    const now=new Date(nowTick);
-    const cyc=payCycle(now);
-    const prevStart=getPayday(cyc.start.getFullYear(),cyc.start.getMonth()-1);
-    const accs=bank.accounts.map(a=>{
-      const cur=spendByCategory(bank.txns,a.account_id,cyc.start,cyc.next);
-      const last=spendByCategory(bank.txns,a.account_id,prevStart,cyc.start);
-      const cats=[...new Set([...cur.keys(),...last.keys()])].map(c=>({c,now:Math.max(0,cur.get(c)||0),last:Math.max(0,last.get(c)||0)}))
-        .filter(r=>r.now>0||r.last>0).sort((x,y)=>(y.now-x.now)||(y.last-x.last));
-      return {id:a.account_id,label:BANK_LABEL[a.type],cats,
-        now:cats.reduce((s,r)=>s+r.now,0),last:cats.reduce((s,r)=>s+r.last,0)};
-    });
-    const allow=[];
-    if(bankMatch){
-      const mk=bankMatch.mk;
-      for(const [ref,b] of [...sharedBills.map(b=>["s:"+b.id,b]),...glynBills.map(b=>["g:"+b.id,b])]){
-        const m=bankMatch.byRef[ref];
-        const g=m&&m.kind==="tx"&&m.keys.length?bankMatch.groups.get(m.keys[0]):null;
-        const pot=g&&g.pot?bank.pots.find(p=>p.pot_id===g.pot):null;
-        if(!pot)continue;
-        allow.push({ref,name:b.name,amount:Math.round(amountOf(b,mk)*100),left:Number(pot.balance)||0,pot:pot.name,accountId:pot.account_id});
-      }
-    }
-    return {start:cyc.start,prevStart,accs,allow};
-  },[isOwner,bank,bankMatch,sharedBills,glynBills,nowTick]);
   const bankPay=useMemo(()=>{
     if(!isOwner||!bank.txns.length)return null;
     const personal=bank.accounts.filter(a=>a.type==="uk_retail").map(a=>a.account_id);
@@ -5461,7 +5350,6 @@ const calcTimesheetTotals = days => {
 
             <div style={{...card,marginBottom:12}}>
               <SectionLabel>Monthly Budget · {homeName}</SectionLabel>
-              <div style={{fontSize:12,color:SUBTEXT,marginBottom:8}}>Your {homePayDay} pay against {homeName}'s bills — the month you're paying in for</div>
               {[
                 ["Net Pay",               fmt(homeNet),   "#4a9eff"],
                 ...(laHome&&laHome.income?[["Other Income",fmtS(laHome.income),"#00c88c"]]:[]),
@@ -5474,10 +5362,9 @@ const calcTimesheetTotals = days => {
               ))}
             </div>
 
-            {/* Monzo: what's really left, the joint account and spending */}
+            {/* Monzo: what's really left and the joint account */}
             <BankCards part="left" left={bankLeft}/>
             <JointCard check={jointCheck}/>
-            <SpendCard data={spending}/>
 
             <div style={{...card,marginBottom:12}}>
               <SectionLabel>Student Loan -- Plan 2</SectionLabel>
