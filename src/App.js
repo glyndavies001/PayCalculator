@@ -2537,7 +2537,7 @@ function NavTiles({ tabs, onGo }) {
   return (
     <div data-shortcuts="1" style={{ display: "grid", gridTemplateColumns: "repeat(" + Math.min(tabs.length, 5) + ",1fr)", gap: 6, marginBottom: 12 }}>
       {tabs.map(t => (
-        <button key={t} onClick={() => onGo(t)} style={{ minWidth: 0, background: "#141824", border: "1px solid #1e2535", borderRadius: 12, padding: "10px 2px 9px", textAlign: "center", cursor: "pointer" }}>
+        <button key={t} onClick={() => onGo(t)} style={{ minWidth: 0, background: "#141824", border: "1px solid #1e2535", borderRadius: 12, padding: "10px 0 9px", textAlign: "center", cursor: "pointer" }}>
           <div style={{ fontSize: 20, lineHeight: 1 }}>{TAB_ICON[t] || "•"}</div>
           <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaf0", marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t}</div>
         </button>
