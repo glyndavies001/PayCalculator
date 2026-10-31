@@ -818,11 +818,16 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.19.4";
+const APP_VERSION = "1.19.5";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.19.5", date: "31 Oct 2026", items: [
+    { b: "What's really left for Hollie", t: " — the joint account's What's really left, with the payments still to go, is at the top of Hollie's Budget tab. It's updated whenever Glyn's phone checks Monzo." },
+    { b: "Less small print", t: " — the notes under What's really left and the Joint account card are gone." },
+    { b: "Names with a capital", t: " — Budget's bills show \"Hollie £150.00\" (and \"Glyn\" on Hollie's phone)." },
+  ] },
   { v: "1.19.4", date: "31 Oct 2026", items: [
     { b: "One-offs match the bill list", t: " — one-off and yearly bills on Budget show just their name and ONE-OFF or ANNUAL. Tap one to see its total and split." },
   ] },
@@ -2494,7 +2499,6 @@ function BankCards({ part, left, pay, locked, attention, onDismissPay, onUnlock,
           ))}
         </div>
       ))}
-      <div style={{ fontSize: 12, color: SUBTEXT, marginTop: 8 }}>Your Budget's bills, ticked off as Monzo sees them go · Monzo updated {agoText(left.updated)}</div>
     </div>}
   </>);
 }
@@ -2506,7 +2510,6 @@ function JointCard({ check }) {
   const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 12 };
   const lab = { fontSize: 12.5, color: SUBTEXT, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" };
   const dshort = d => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-  const mon = check.month.toLocaleDateString("en-GB", { month: "long" });
   // Ticked only when the transfer matches the share to the penny (a 50/50 split can come to half a
   // penny, so 1p either way still matches); any other gap is shown, under £1 in pence ("50p").
   const gap = p => (p < 100 ? Math.round(p) + "p" : fmt(pounds(p)));
@@ -2538,7 +2541,6 @@ function JointCard({ check }) {
         {r.left >= 0
           ? <span style={{ color: "#00c88c", fontWeight: 600 }}>{r.dueTotal > 0 ? `✓ Covers the ${fmt(pounds(r.dueTotal))} still to go, with ${fmt(pounds(r.left))} spare` : `✓ Nothing else due before payday · ${fmt(pounds(r.left))} spare`}{r.comeTotal > 0 ? " " + onceIn(r.come) : ""}</span>
           : <span style={{ color: "#ff6b8a", fontWeight: 700 }}>⚠ {fmt(pounds(-r.left))} short of the {fmt(pounds(r.dueTotal))} still to go{r.comeTotal > 0 ? ", even " + onceIn(r.come) : ""}</span>}
-        <div style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 2 }}>Shares are your split for {mon}'s shared bills · {fmt(pounds(r.balance))} in the joint account now{r.unlisted > 0 ? ", after " + fmt(pounds(r.unlisted)) + " Monzo has taken but not listed yet" : ""}</div>
       </div>}
     </div>
   );
@@ -2644,6 +2646,7 @@ export default function App() {
   const [dragOver,setDragOver]=useState(null);
   const [budTab,setBudTab]=useState("shared");
   const monthStrip=useRef(null);                   // Budget tab: the month strip (to slide it to the month being paid in for)
+  const stripShown=useRef(null);                   // the strip element last slid into place when it appeared
   const [selPick,setSelPick]=useState(null);       // Budget tab: month picked (offset 0-11 from this month), or null = the month being paid in for
   const [laOpen,setLaOpen]=useState(false);        // collapsed 12-month Year view
   const dragBill=useRef(null);
@@ -5093,14 +5096,21 @@ const calcTimesheetTotals = days => {
     const hp=bank.pots.filter(p=>ids.includes(p.pot_id));
     // pay: who's paid into the joint account around the last and next paydays (no amounts), so
     // Hollie's Budget moves on to the next month at the same time.
+    // left: the joint account's What's really left, for Hollie's Budget tab. Your own bills paid from
+    // it show as "Glyn's bill"; your personal account isn't shared.
+    const jr=bankLeft&&bankLeft.rows.find(r=>r.type==="uk_retail_joint");
+    const nm=it=>String(it.key||"").startsWith("g:")?"Glyn's bill":it.name;
+    const left=jr?{next:localISO(bankLeft.next),balance:jr.balance,dueTotal:jr.dueTotal,left:jr.left,comeTotal:jr.comeTotal,
+      come:jr.come.map(c=>({who:c.who==="you"?"Glyn":c.who,amount:c.amount})),unlisted:jr.unlisted||0,taken:jr.taken.map(nm),
+      due:jr.due.map(d=>({n:nm(d),a:d.amount,d:d.due?localISO(d.due):null,...(d.late?{l:1}:{}),...(d.pot?{p:d.pot}:{})}))}:null;
     const body={v:1,by:user.id,mk:bankMatch.mk,ticks,house:hp.length?{total:hp.reduce((s,p)=>s+(Number(p.balance)||0),0),n:hp.length}:null,
-      pay:ownPay?ownPay.pay:null};
+      pay:ownPay?ownPay.pay:null,left};
     const src=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&Date.parse(a.updated_at)>Date.parse(m))?a.updated_at:m,null);
     const key=stableJson(body);
     const newer=s=>!s||(src&&Date.parse(src)-Date.parse(s)>3*3600000);
     const mine=cur&&cur.by===user.id;
     if(mine&&cur.src&&src&&Date.parse(cur.src)>Date.parse(src))return;   // another of your devices has newer figures
-    if(mine&&stableJson({v:cur.v,by:cur.by,mk:cur.mk,ticks:cur.ticks,house:cur.house,pay:cur.pay})===key&&!newer(cur.src)){summarySent.current={key,src:cur.src};return;}
+    if(mine&&stableJson({v:cur.v,by:cur.by,mk:cur.mk,ticks:cur.ticks,house:cur.house,pay:cur.pay,left:cur.left??null})===key&&!newer(cur.src)){summarySent.current={key,src:cur.src};return;}
     if(sent&&sent.key===key&&!newer(sent.src))return;   // this phone already shared it (so no two phones can keep answering each other)
     sendSummary({...body,src,at:new Date().toISOString()},key,src);
   });
@@ -5144,6 +5154,19 @@ const calcTimesheetTotals = days => {
       sched:scheduledBills,match:bankMatch,txns:bank.txns,myId,pay:jointPay,now:new Date(nowTick)});
     const updated=bank.accounts.reduce((m,a)=>!m||(a.updated_at&&a.updated_at>m)?a.updated_at:m,null);
     return {rows,next:bankMatch.cyc.next,updated};
+  })();
+  // Hollie's phone: the joint account's What's really left, as Glyn's phone last shared it, until
+  // the payday it runs to. Her own share still to come in reads as "you".
+  const sharedLeft=(()=>{
+    const L=!isOwner&&bankSummary&&bankSummary.left;
+    if(!L||!L.next)return null;
+    const next=new Date(L.next+"T00:00:00");
+    if(!(next.getTime()>nowTick))return null;
+    const row={id:"joint",type:"uk_retail_joint",label:BANK_LABEL.uk_retail_joint,balance:L.balance,dueTotal:L.dueTotal,left:L.left,
+      comeTotal:L.comeTotal||0,come:(L.come||[]).map(c=>({...c,who:c.who==="Hollie"?"you":c.who})),unlisted:L.unlisted||0,
+      taken:(L.taken||[]).map(n=>({name:n})),shortAt:null,
+      due:(L.due||[]).map((d,i)=>({key:"j"+i,name:d.n,amount:d.a,due:d.d?new Date(d.d+"T12:00:00"):null,late:!!d.l,pot:d.p||null}))};
+    return {rows:[row],next,updated:bankSummary.src||null};
   })();
   const jointCheck=jointPay&&bankLeft?{payday:jointPay.payday,month:jointPay.month,glyn:jointPay.glyn,hollie:jointPay.hollie,
     want:jointPay.want,row:bankLeft.rows.find(r=>r.id===jointPay.jointId),late:jointPay.late}:null;
@@ -5569,7 +5592,7 @@ const calcTimesheetTotals = days => {
               </div>
               <div onClick={onAmount} style={{textAlign:"right",cursor:onAmount?"pointer":"default"}}>
                 <div style={{fontSize:14,fontWeight:700,color:neg?"#4ad07a":"#e8eaf0"}}>{fmtS(amt)}</div>
-                {her!=null&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{themName.toLowerCase()} {fmtS(her)}</div>}
+                {her!=null&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{themName} {fmtS(her)}</div>}
               </div>
             </div>
           );
@@ -5668,6 +5691,9 @@ const calcTimesheetTotals = days => {
           return (
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
 
+            {/* Hollie's phone: the joint account's What's really left (Glyn's has it on the Dashboard) */}
+            {sharedLeft&&<div style={{marginBottom:-12}}><BankCards part="left" left={sharedLeft}/></div>}
+
             {/* ── header: month, what's left, and the two totals ── */}
             <div style={{...card,borderRadius:12,padding:"12px 12px 13px",display:"flex",flexDirection:"column",gap:11}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
@@ -5677,7 +5703,7 @@ const calcTimesheetTotals = days => {
                   : <button onClick={()=>{haptic();setSelPick(null);stripTo(homeIdx,true);}} style={{background:"transparent",border:"1px solid #2a5a8a",borderRadius:20,color:"#8ec5ff",fontSize:12.5,fontWeight:700,padding:"3px 10px",cursor:"pointer"}}>Back to {homeLabel}</button>}
               </div>
 
-              <div ref={monthStrip} style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4,WebkitOverflowScrolling:"touch"}}>
+              <div ref={el=>{monthStrip.current=el;if(el&&stripShown.current!==el){stripShown.current=el;stripTo(selPick!=null?selPick:homeIdx,false);}}} style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4,WebkitOverflowScrolling:"touch"}}>
                 {lookAheadMonths.map((r,i)=>{
                   const on=i===selIdx;
                   return (
