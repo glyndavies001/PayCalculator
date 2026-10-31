@@ -818,11 +818,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.19.3";
+const APP_VERSION = "1.19.4";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.19.4", date: "31 Oct 2026", items: [
+    { b: "One-offs match the bill list", t: " — one-off and yearly bills on Budget show just their name and ONE-OFF or ANNUAL. Tap one to see its total and split." },
+  ] },
   { v: "1.19.3", date: "31 Oct 2026", items: [
     { b: "Truer bill dates", t: " — a Direct Debit due at a weekend or on a bank holiday shows the next working day, and ones taken on a working day of the month (like the 3rd) are worked out from when they've gone out before. Card payments, transfers and pot top-ups keep their day. The Dashboard's payments still to go use the same dates." },
   ] },
@@ -4676,7 +4679,6 @@ export default function App() {
     showUndoToast("Person removed",()=>{setGifts(prev);if(user&&g)trackSave(db.upsertGift(g));});
   };
 
-  const lastDayLabel=(m)=>{const d=new Date(schedNowYear,m,0).getDate();return `${d} ${MONTHS[m-1]}`;};
   const schedWhenLabel=(sb)=>{
     const ms=(Array.isArray(sb.months)?sb.months:[]).slice().sort((a,b)=>a-b);
     const names=ms.map(m=>MONTHS[m-1]).join(", ");
@@ -5550,13 +5552,6 @@ const calcTimesheetTotals = days => {
           const rate=selNet>0?Math.round(selSurplus/selNet*100):0;
           const rateCol=rate>=20?"#00c88c":rate>=10?"#ffb84a":"#ff4a6a";
 
-          const splitNote=b=>{
-            const t=amt1(b);
-            const pre=isVariable(b)?"Varies · "+fmt(t):fmt(t);
-            if(b.splitMode==="pct"&&b.splitValue!=null)return pre+" · "+b.splitValue+"% mine";
-            if(b.splitMode==="fixed"&&b.splitValue!=null)return pre+" · "+themName+" "+fmt(b.splitValue);
-            return pre+" · 50/50";
-          };
 
           // One row, used for standing bills and for this month's scheduled ones.
           const row=(key,{name,date,sub,amt,her,onName,onAmount,drag,tag,neg,first,tick})=>(
@@ -5817,7 +5812,6 @@ const calcTimesheetTotals = days => {
                     return row("s"+b.id,{
                       first:si===0,
                       name:b.name,
-                      sub:(isG?fmt(b.total):splitNote({total:Number(b.total)||0,splitMode:b.split_mode,splitValue:b.split_value}))+" · ends "+lastDayLabel(laSel?laSel.m:schedNowMonth),
                       amt:myAmt,
                       her:isG?null:sh[isOwner?"hollie":"glyn"],
                       neg:Number(b.total)<0,
