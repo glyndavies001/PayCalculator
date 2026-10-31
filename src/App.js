@@ -824,11 +824,17 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.20.0";
+const APP_VERSION = "1.21.0";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.21.0", date: "31 Oct 2026", items: [
+    { b: "Several documents at once", t: " — pick or share up to 10 PDFs or photos. Claude works out which belong together (a schedule and its certificate become one policy) and you check each policy in turn, with Save or Skip." },
+    { b: "Policies in Budget", t: " — link a policy to its Budget bill from the policy's page. If the prices don't match, one tap updates the bill from the right month, and a renewal letter offers to do it too. Bills with a policy show 🛡️ on Budget; tap the bill to open it." },
+    { b: "Boiler & home emergency", t: " — a new type for boiler cover, and TV packages like Sky go under Broadband & TV." },
+    { b: "Tidier details", t: " — adding more documents to a policy doesn't repeat details, and prices or dates in general terms and price lists are ignored." },
+  ] },
   { v: "1.20.0", date: "31 Oct 2026", items: [
     { b: "Policies", t: " — a new page (🛡️ at the top of the Dashboard) for your insurance, energy, broadband and other deals. Add a PDF or a photo of the paperwork and Claude fills in the details: policy number, price, dates, phone number and more. Tap Copy for the policy number." },
     { b: "When to act", t: " — each one shows when it ends and the best time to sort it, like car insurance quotes 3–4 weeks before it renews, or switching energy in the last 49 days of a fix." },
@@ -2597,27 +2603,31 @@ function JointCard({ check, me = "glyn" }) {
 }
 
 
-// ── Policies (v1.20.0) ───────────────────────────────────────────────────────────────────────
+// ── Policies (v1.20.0; several documents at once and Budget links v1.21.0) ────────────────────
 // Insurance, energy, broadband and anything else with an end or renewal date, with their
 // documents. Glyn's only: the policies table and the private "policies" bucket need a two-step
-// (aal2) session, like the Monzo data. Documents are read by Claude through /api/claude.
+// (aal2) session, like the Monzo data. Documents are read by Claude through /api/claude, several
+// at a time, and sorted into policies. A policy can be linked to a Budget bill: bill_ref is the
+// bill's key like the Monzo links ("s:<id>" shared, "g:<id>" personal), and bill_part marks a
+// bill that covers other things too (one Utility Warehouse bill for several services, say).
 const POLICY_KINDS = [
-  { k: "car",       l: "Car insurance",       e: "🚗", rule: "insure" },
-  { k: "home",      l: "Home insurance",      e: "🏠", rule: "insure" },
-  { k: "pet",       l: "Pet insurance",       e: "🐶", rule: "pet" },
-  { k: "energy",    l: "Energy",              e: "⚡", rule: "energy" },
-  { k: "broadband", l: "Broadband & TV",      e: "🌐", rule: "telecom" },
-  { k: "mobile",    l: "Mobile",              e: "📱", rule: "telecom" },
-  { k: "breakdown", l: "Breakdown cover",     e: "🛟", rule: "insure" },
-  { k: "travel",    l: "Travel insurance",    e: "✈️", rule: "insure" },
-  { k: "life",      l: "Life insurance",      e: "❤️", rule: "check" },
-  { k: "gadget",    l: "Gadget or warranty",  e: "🔧", rule: "check" },
-  { k: "mortgage",  l: "Mortgage",            e: "🏦", rule: "mortgage" },
-  { k: "finance",   l: "Car finance or loan", e: "💳", rule: "ends" },
-  { k: "mot",       l: "MOT",                 e: "🔩", rule: "mot" },
-  { k: "cartax",    l: "Car tax",             e: "🚘", rule: "due" },
-  { k: "tv",        l: "TV licence",          e: "📺", rule: "due" },
-  { k: "other",     l: "Other",               e: "📄", rule: "check" },
+  { k: "car",       l: "Car insurance",           e: "🚗", rule: "insure" },
+  { k: "home",      l: "Home insurance",          e: "🏠", rule: "insure" },
+  { k: "boiler",    l: "Boiler & home emergency", e: "🔥", rule: "insure" },
+  { k: "pet",       l: "Pet insurance",           e: "🐶", rule: "pet" },
+  { k: "energy",    l: "Energy",                  e: "⚡", rule: "energy" },
+  { k: "broadband", l: "Broadband & TV",          e: "🌐", rule: "telecom" },
+  { k: "mobile",    l: "Mobile",                  e: "📱", rule: "telecom" },
+  { k: "breakdown", l: "Breakdown cover",         e: "🛟", rule: "insure" },
+  { k: "travel",    l: "Travel insurance",        e: "✈️", rule: "insure" },
+  { k: "life",      l: "Life insurance",          e: "❤️", rule: "check" },
+  { k: "gadget",    l: "Gadget or warranty",      e: "🔧", rule: "check" },
+  { k: "mortgage",  l: "Mortgage",                e: "🏦", rule: "mortgage" },
+  { k: "finance",   l: "Car finance or loan",     e: "💳", rule: "ends" },
+  { k: "mot",       l: "MOT",                     e: "🔩", rule: "mot" },
+  { k: "cartax",    l: "Car tax",                 e: "🚘", rule: "due" },
+  { k: "tv",        l: "TV licence",              e: "📺", rule: "due" },
+  { k: "other",     l: "Other",                   e: "📄", rule: "check" },
 ];
 const POLICY_KIND = Object.fromEntries(POLICY_KINDS.map(x => [x.k, x]));
 // When to act on each kind: how many days before the end date, and what to say.
@@ -2639,9 +2649,10 @@ const POLICY_RULES = {
 };
 const POLICY_PERIOD = { month: "a month", year: "a year", once: "one-off" };
 const POLICY_PERIOD_SHORT = { month: "/mo", year: "/yr", once: "" };
-const POLICY_DOC_WORD = { policy: "Policy", renewal: "Renewal", contract: "Contract", statement: "Statement", other: "Document" };
-const POLICY_READ_MAX = 3 * 1024 * 1024;   // bigger than this can't go through /api/claude (4.5 MB limit)
+const POLICY_DOC_WORD = { policy: "Policy", renewal: "Renewal", contract: "Contract", statement: "Statement", terms: "Terms", other: "Document" };
+const POLICY_READ_MAX = 3 * 1024 * 1024;   // read together up to this much (/api/claude takes 4.5 MB once encoded)
 const POLICY_FILE_MAX = 20 * 1024 * 1024;  // the bucket's limit
+const POLICY_MAX_FILES = 10;               // at once
 const policyFiles = () => supabase.storage.from("policies");
 const policiesMissing = error => {
   if (!error) return false;
@@ -2654,6 +2665,7 @@ const isoDaysBetween = (a, b) => Math.round((isoUTC(b) - isoUTC(a)) / DAY_MS);
 const isoAddDays = (s, n) => new Date(isoUTC(s) + n * DAY_MS).toISOString().slice(0, 10);
 const policyDay = (s, withYear = true) => s ? new Date(s + "T00:00:00").toLocaleDateString("en-GB", withYear ? { day: "numeric", month: "short", year: "numeric" } : { day: "numeric", month: "short" }) : "";
 const policyDayNear = (s, today) => policyDay(s, s.slice(0, 4) !== today.slice(0, 4));
+const policyMonthLabel = mk => MONTHS[Number(mk.slice(5, 7)) - 1] + " " + mk.slice(2, 4);   // "2027-01" -> "Jan 27"
 const policyKindOf = p => POLICY_KIND[p && p.kind] || POLICY_KIND.other;
 const policyLabel = p => (p && (p.name || p.provider)) || policyKindOf(p).l;
 const policyEndWord = p => p.kind === "mortgage" ? "Fixed rate ends" : (p.kind === "mot" || p.kind === "cartax" || p.kind === "tv") ? "Due" : p.auto_renew === true ? "Renews" : "Ends";
@@ -2703,6 +2715,34 @@ function policyMatch(list, read) {
     (p.provider.toLowerCase().includes(prov) || prov.includes(p.provider.toLowerCase())));
   return same.length === 1 ? same[0] : null;
 }
+// Two detail labels about the same thing ("Excess" / "Policy excess", "Unoccupied limit" /
+// "Unoccupancy limit"), but not "Excess" / "Property damage excess".
+const DETAIL_FILLER = new Set(["the", "and", "for", "per", "your", "you", "policy", "limit", "limits", "amount", "total", "cover", "covered"]);
+const detailTokens = s => new Set(String(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/)
+  .filter(w => w.length >= 3 && !DETAIL_FILLER.has(w)).map(w => w.replace(/s$/, "").slice(0, 6)));
+function sameDetail(a, b) {
+  const x = detailTokens(a), y = detailTokens(b);
+  if (!x.size || !y.size) return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+  if (x.size !== y.size) return false;
+  for (const t of x) if (!y.has(t)) return false;
+  return true;
+}
+const detailVal = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+// New details into a policy's: the same fact updates (or, from general terms, is left), a fact
+// already there under another name is skipped, and there are never more than `max`.
+function policyMergeDetails(existing, incoming, replace = true, max = 20) {
+  const out = existing.map(d => ({ ...d }));
+  for (const d of incoming) {
+    if (!d.label || !d.value) continue;
+    const i = out.findIndex(x => sameDetail(x.label, d.label));
+    if (i >= 0) { if (replace) out[i] = { label: out[i].label, value: d.value }; continue; }
+    const v = detailVal(d.value), dt = detailTokens(d.label);
+    if (v && out.some(x => detailVal(x.value) === v && [...detailTokens(x.label)].some(t => dt.has(t)))) continue;
+    if (out.length >= max) continue;
+    out.push({ ...d });
+  }
+  return out;
+}
 const POLICY_FIELDS = ["provider", "name", "policy_number", "cover", "start_date", "end_date", "price", "price_period", "payment", "phone", "website", "notes"];
 const policyEmptyForm = (kind = "other") => ({ kind, provider: "", name: "", policy_number: "", cover: "", start_date: "", end_date: "",
   price: "", price_period: "month", payment: "", auto_renew: null, phone: "", website: "", details: [], notes: "", archived: false });
@@ -2714,18 +2754,16 @@ const policyFormOf = p => ({ ...policyEmptyForm(p.kind || "other"),
 const policyFormFromRead = read => !read ? policyEmptyForm() : ({ ...policyEmptyForm(read.kind),
   ...Object.fromEntries(POLICY_FIELDS.filter(k => k !== "notes").map(k => [k, read[k] || ""])),
   price_period: read.price_period || "month", auto_renew: read.auto_renew, details: read.details.map(d => ({ ...d })) });
-// A renewal read into a saved policy: what the document says wins, the rest is kept.
-function policyMergeRead(form, read) {
+// Documents read into a saved policy: what they say wins, the rest is kept. From general terms
+// only (a policy wording, say) nothing that's already filled in changes.
+function policyMergeRead(form, read, termsOnly = false) {
   if (!read) return form;
   const out = { ...form, details: form.details.map(d => ({ ...d })) };
-  ["policy_number", "cover", "start_date", "end_date", "price", "payment", "phone", "website"].forEach(k => { if (read[k]) out[k] = read[k]; });
+  ["policy_number", "cover", "start_date", "end_date", "price", "payment", "phone", "website"].forEach(k => { if (read[k] && (!termsOnly || !out[k])) out[k] = read[k]; });
   ["provider", "name"].forEach(k => { if (!out[k] && read[k]) out[k] = read[k]; });
-  if (read.price && read.price_period) out.price_period = read.price_period;
-  if (read.auto_renew !== null) out.auto_renew = read.auto_renew;
-  read.details.forEach(d => {
-    const i = out.details.findIndex(x => x.label.trim().toLowerCase() === d.label.toLowerCase());
-    if (i >= 0) out.details[i] = { ...d }; else out.details.push({ ...d });
-  });
+  if (read.price && read.price_period && (!termsOnly || !form.price)) out.price_period = read.price_period;
+  if (read.auto_renew !== null && (!termsOnly || out.auto_renew === null)) out.auto_renew = read.auto_renew;
+  out.details = policyMergeDetails(out.details, read.details, !termsOnly);
   return out;
 }
 // What Claude read, tidied: only known kinds, real dates, a number for the price.
@@ -2733,44 +2771,62 @@ function policyCleanRead(r) {
   const s = v => (v == null ? "" : String(v)).trim();
   const d = v => /^\d{4}-\d{2}-\d{2}$/.test(s(v)) && !isNaN(Date.parse(s(v))) ? s(v) : "";
   const pn = parseFloat(s(r.price).replace(/[^0-9.]/g, ""));
-  const kind = s(r.kind).toLowerCase(), doc = s(r.doc_type).toLowerCase(), per = s(r.price_period).toLowerCase();
+  const kind = s(r.kind).toLowerCase(), per = s(r.price_period).toLowerCase();
   return {
     kind: POLICY_KIND[kind] ? kind : "other",
-    doc_type: POLICY_DOC_WORD[doc] ? doc : "other",
     provider: s(r.provider), name: s(r.name), policy_number: s(r.policy_number), cover: s(r.cover),
     start_date: d(r.start_date), end_date: d(r.end_date),
     price: isFinite(pn) && pn > 0 ? (Math.round(pn * 100) / 100).toFixed(2) : "",
     price_period: POLICY_PERIOD[per] ? per : "",
     payment: s(r.payment), auto_renew: r.auto_renew === true ? true : r.auto_renew === false ? false : null,
     phone: s(r.phone), website: s(r.website),
-    details: (Array.isArray(r.details) ? r.details : []).map(x => ({ label: s(x && x.label), value: s(x && x.value) }))
-      .filter(x => x.label && x.value).slice(0, 12),
+    details: policyMergeDetails([], (Array.isArray(r.details) ? r.details : []).map(x => ({ label: s(x && x.label), value: s(x && x.value) })), false, 12),
   };
 }
-const POLICY_READ_PROMPT = `This is a UK household document: an insurance policy or renewal notice, an energy, broadband or mobile contract, a mortgage or finance agreement, an MOT certificate, or similar. Pull out the details someone would want to keep. Return ONLY valid JSON, no markdown, in exactly this shape:
-{"kind":"","doc_type":"","provider":"","name":"","policy_number":"","cover":"","start_date":"","end_date":"","price":0,"price_period":"","payment":"","auto_renew":null,"phone":"","website":"","details":[{"label":"","value":""}]}
+// Two reads of the same policy (from separate batches): the first's details win, gaps filled.
+function policyFillRead(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const out = { ...a };
+  Object.keys(b).forEach(k => { if (k !== "details" && (out[k] === "" || out[k] == null)) out[k] = b[k]; });
+  out.details = policyMergeDetails(a.details, b.details, false, 14);
+  return out;
+}
+function policyReadPrompt(n, onePolicy, known) {
+  return `${n === 1 ? "This is a document" : `These are ${n} documents, numbered in order,`} about UK household policies or deals: insurance, boiler cover, energy, broadband, TV, mobile, a mortgage or finance agreement, an MOT, or similar. ${onePolicy ? "They're all for the same policy." : n === 1 ? "" : "They may be for one policy or several."} Pull out what someone would want to keep. Return ONLY valid JSON, no markdown, in exactly this shape:
+{"doc_types":[""],"policies":[{"files":[1],"kind":"","provider":"","name":"","policy_number":"","cover":"","start_date":"","end_date":"","price":0,"price_period":"","payment":"","auto_renew":null,"phone":"","website":"","details":[{"label":"","value":""}]}]}
 
-kind: one of car, home, pet, energy, broadband, mobile, breakdown, travel, life, gadget, mortgage, finance, mot, cartax, tv, other (home = buildings and/or contents insurance; broadband includes landline and TV packages; finance = car finance or a loan; cartax = vehicle tax; tv = TV licence).
-doc_type: policy (schedule, certificate, welcome pack), renewal (renewal notice or invitation), contract (contract summary, terms, offer), statement, or other.
+doc_types: one per document, in order: policy (schedule, certificate, welcome letter), renewal (renewal notice or invitation), contract (contract summary or agreement made out to the customer), statement (a bill or statement), terms (general terms and conditions, policy wording, IPID or key facts, price lists or brochures that aren't made out to the customer), or other.
+policies: one per policy or deal${onePolicy ? " (here exactly one, holding every document)" : ""}. files lists the document numbers that belong to it, and every document goes in exactly one. A policy's schedule, certificate, wording and terms, and the pages of one letter, go together.
+kind: one of car, home, boiler, pet, energy, broadband, mobile, breakdown, travel, life, gadget, mortgage, finance, mot, cartax, tv, other. home = buildings and/or contents insurance only. boiler = boiler cover, home emergency or central heating cover. broadband includes landline, TV packages and TV streaming subscriptions such as Sky, Virgin TV or Netflix. tv = the TV licence only. finance = car finance or a loan. cartax = vehicle tax.
 provider: the company the customer deals with, e.g. "Admiral", "Octopus Energy", "BT". The brand name, not a parent company or underwriter.
 name: what it's for in 1-4 words, e.g. the car's make and model ("Kia Sportage"), the pet's name, "Home", "Electricity & gas", "Fibre broadband".
-policy_number: the policy, account, agreement or customer reference you'd quote when calling them. Prefer the policy number over a customer number.
+policy_number: the policy, account, agreement or customer reference you'd quote when calling them, taken only from a document made out to the customer. Prefer the policy number over a customer number.
 cover: one short sentence on the cover or deal, e.g. "Comprehensive, protected no-claims bonus" or "12-month fixed tariff, electricity and gas".
-start_date and end_date: when this cover, contract or fixed deal starts and ends, as YYYY-MM-DD. end_date is the renewal date, or the end of the minimum term or fixed rate; for an MOT it's the expiry date. For a renewal notice, give the NEW period's dates.
-price: what it costs now, as a number. For a renewal notice, the NEW price. If paid monthly, the monthly amount with price_period "month"; if paid yearly, the yearly total with "year"; a single payment for something one-off (like single-trip travel insurance) is "once". Use 0 if no price is shown.
+start_date and end_date: when this cover, contract or fixed deal starts and ends, as YYYY-MM-DD, from the customer's own documents only. end_date is the renewal date, or the end of the minimum term or fixed rate; for an MOT it's the expiry date. For a renewal notice, give the NEW period's dates.
+price: what the customer pays now, as a number, from their own documents only. Never use example prices, tariffs or packages from general terms, price lists or brochures: use 0 if the customer's own price isn't shown. For a renewal notice, the NEW price. If paid monthly, the monthly amount with price_period "month"; if paid yearly, the yearly total with "year"; a single payment for something one-off (like single-trip travel insurance) is "once".
 payment: how it's paid, e.g. "Direct Debit, monthly" or "Paid in full by card".
 auto_renew: true if it says it renews automatically, false if it says it won't, null if it doesn't say.
 phone: the main customer services number (the claims number if that's the only one). website: their website, e.g. "admiral.com".
-details: up to 10 other useful facts with short labels, such as Excess, Car reg, No-claims, Drivers, Pet, Vet fees limit, Rebuild sum, Contents sum, Tariff, Unit rate, Standing charge, Exit fee, Speed, Minimum term, Price rise, Interest rate, Balance, Last year's price, Mileage.
-Use "" for anything that isn't in the document. Return the JSON only.`;
-async function readPolicyDoc(b64, mime) {
-  const block = mime === "application/pdf"
-    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
-    : { type: "image", source: { type: "base64", media_type: mime, data: b64 } };
+details: up to 10 useful facts with short labels: the customer's own specifics first (Excess, Car reg, No-claims, Drivers, Pet, Vet fees limit, Rebuild sum, Contents sum, Tariff, Unit rate, Standing charge, Exit fee, Speed, Minimum term, Price rise, Interest rate, Balance, Last year's price, Mileage), then the most important limits or exclusions from the terms. Never two details about the same thing. Leave out regulatory and company boilerplate: FCA numbers, the ombudsman, governing law, company addresses, complaints procedures.${known ? `\nThe policy already has these details: ${known}. In details, give only facts that aren't there yet or have changed, using the same label for a changed one.` : ""}
+Use "" for anything that isn't in the documents. Return the JSON only.`;
+}
+// One request to Claude for some documents (up to POLICY_READ_MAX between them).
+async function readPolicyChunk(preps, onePolicy, known) {
+  const content = [];
+  for (let i = 0; i < preps.length; i++) {
+    const p = preps[i];
+    if (!p.b64) p.b64 = await blobToBase64(p.blob);
+    content.push({ type: "text", text: "Document " + (i + 1) + ": " + p.name });
+    content.push(p.mime === "application/pdf"
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: p.b64 } }
+      : { type: "image", source: { type: "base64", media_type: p.mime, data: p.b64 } });
+  }
+  content.push({ type: "text", text: policyReadPrompt(preps.length, onePolicy, known) });
   const resp = await fetch(API_PROXY, {
     method: "POST",
     headers: await authHeaders(),
-    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1500, messages: [{ role: "user", content: [block, { type: "text", text: POLICY_READ_PROMPT }] }] }),
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: Math.min(4000, 1400 + 700 * preps.length), messages: [{ role: "user", content }] }),
   });
   if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error("API " + resp.status + (t ? ": " + t.slice(0, 120) : "")); }
   const data = await resp.json();
@@ -2778,7 +2834,62 @@ async function readPolicyDoc(b64, mime) {
   const raw = (data.content || []).map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) throw new Error("no details came back");
-  return policyCleanRead(JSON.parse(m[0]));
+  const j = JSON.parse(m[0]);
+  const n = preps.length;
+  const types = Array.from({ length: n }, (_, i) => { const t = String((Array.isArray(j.doc_types) ? j.doc_types : [])[i] || "").toLowerCase(); return POLICY_DOC_WORD[t] ? t : "other"; });
+  const list = Array.isArray(j.policies) ? j.policies : (j.kind ? [{ ...j, files: preps.map((_, i) => i + 1) }] : []);
+  const policies = list.map(p => ({ files: (Array.isArray(p.files) ? p.files : []).map(x => parseInt(x, 10) - 1).filter(x => x >= 0 && x < n), read: policyCleanRead(p) }));
+  return { types, policies };
+}
+// Reads documents and sorts them into policies: [{idx: [file indexes], read | null, why}], and the
+// type of each file. Read together where they fit in one request; anything too big, or a request
+// that fails, is left for filling in by hand (the files are still kept).
+async function readPolicyBatch(preps, onePolicy, known) {
+  const types = preps.map(() => "other");
+  let groups = [];
+  const big = [], fit = [];
+  preps.forEach((p, i) => (p.mime === "application/pdf" && p.blob.size > POLICY_READ_MAX ? big : fit).push(i));
+  const chunks = [];
+  let cur = [], size = 0;
+  for (const i of fit) {
+    const s = preps[i].blob.size;
+    if (cur.length && size + s > POLICY_READ_MAX) { chunks.push(cur); cur = []; size = 0; }
+    cur.push(i); size += s;
+  }
+  if (cur.length) chunks.push(cur);
+  for (const chunk of chunks) {
+    try {
+      const res = await readPolicyChunk(chunk.map(i => preps[i]), onePolicy, known);
+      res.types.forEach((t, j) => { types[chunk[j]] = t; });
+      const placed = new Set();
+      res.policies.forEach(pol => {
+        const idx = pol.files.map(j => chunk[j]).filter(i => !placed.has(i));
+        idx.forEach(i => placed.add(i));
+        if (idx.length) groups.push({ idx, read: pol.read, why: "" });
+      });
+      chunk.forEach(i => { if (!placed.has(i)) groups.push({ idx: [i], read: null, why: "Claude couldn't tell what " + preps[i].name + " is for, so fill in the details yourself." }); });
+    } catch (e) {
+      console.error("Policy read failed:", e);
+      const why = "Couldn't read it automatically (" + String((e && e.message) || e).slice(0, 90) + "), so fill in the details yourself. The file will still be kept.";
+      chunk.forEach(i => groups.push({ idx: [i], read: null, why }));
+    }
+  }
+  big.forEach(i => groups.push({ idx: [i], read: null, why: preps[i].name + " is too big to read automatically, so fill in the details yourself. The file will still be kept." }));
+  // Read in separate requests but with the same policy number: one policy.
+  const merged = [];
+  for (const g of groups) {
+    const key = g.read ? policyNorm(g.read.policy_number) : "";
+    const same = key.length >= 4 ? merged.find(o => o.read && policyNorm(o.read.policy_number) === key) : null;
+    if (same) { same.idx.push(...g.idx); same.read = policyFillRead(same.read, g.read); }
+    else merged.push({ ...g, idx: [...g.idx] });
+  }
+  groups = merged;
+  if (onePolicy && groups.length > 1) {
+    const read = groups.reduce((a, g) => policyFillRead(a, g.read), null);
+    groups = [{ idx: groups.flatMap(g => g.idx), read, why: read ? "" : groups[0].why }];
+  }
+  groups.forEach(g => g.idx.sort((a, b) => a - b));
+  return { groups, types };
 }
 const blobToBase64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(blob); });
 // Photos are shrunk to 2000px on the long side (plenty to read a letter, and far smaller).
@@ -2803,12 +2914,70 @@ async function preparePolicyFile(file) {
     const blob = await shrinkPhoto(file);
     return { blob, mime: "image/jpeg", name: name.replace(/\.[^.]+$/, "") + ".jpg", ext: "jpg" };
   }
-  throw new Error("That isn't a PDF or a photo. Pick a PDF, or take a photo of the paperwork.");
+  throw new Error("isn't a PDF or a photo");
 }
 const policyTrim = v => { const s = String(v == null ? "" : v).trim(); return s || null; };
 const policyWebsite = w => /^https?:\/\//i.test(w) ? w : "https://" + w;
 
-function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTaken }) {
+// ── Budget links ──
+// The bill a policy is linked to: {bill, shared} or null.
+function policyBillOf(bills, ref) {
+  const m = /^([sg]):(.+)$/.exec(ref || "");
+  if (!m || !bills) return null;
+  const bill = ((m[1] === "s" ? bills.shared : bills.mine) || []).find(b => String(b.id) === m[2]);
+  return bill ? { bill, shared: m[1] === "s" } : null;
+}
+// Words a bill's name might use for each kind.
+const POLICY_BILL_WORDS = {
+  car: ["car", "motor", "vehicle"], home: ["home", "house", "buildings", "contents"], boiler: ["boiler", "homecare", "heating", "emergency"],
+  pet: ["pet", "dog", "cat"], energy: ["energy", "gas", "electric", "electricity"], broadband: ["broadband", "internet", "wifi", "fibre", "sky", "tv", "virgin"],
+  mobile: ["mobile", "phone", "sim"], breakdown: ["breakdown", "recovery"], travel: ["travel", "holiday"], life: ["life"], gadget: ["gadget", "warranty"],
+  mortgage: ["mortgage"], finance: ["finance", "loan"], mot: ["mot"], cartax: ["tax"], tv: ["licence", "license"], other: [],
+};
+const billWords = s => String(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean);
+// How well a bill fits a policy: the provider's name or initials ("UW"), words for its kind, and
+// the same monthly amount.
+function policyBillScore(p, billName, amount) {
+  const bw = billWords(billName);
+  if (!bw.length) return 0;
+  let s = 0;
+  const own = new Set([...billWords(p.name), ...billWords(p.provider)].filter(w => w.length >= 3 && !["insurance", "cover", "policy", "the", "and", "plan", "home"].includes(w)));
+  bw.forEach(w => { if (own.has(w)) s += 4; });
+  const initials = billWords(p.provider).map(w => w[0]).join("");
+  if (initials.length >= 2 && bw.includes(initials)) s += 4;
+  (POLICY_BILL_WORDS[p.kind] || []).forEach(w => { if (bw.includes(w)) s += 1; });
+  if (bw.includes("insurance") && /insurance/i.test(policyKindOf(p).l)) s += 1;
+  if (p.price_period === "month" && p.price != null && Math.abs(amount - Number(p.price)) < 0.005) s += 5;
+  return s;
+}
+// Every bill, best fit first: [{ref, bill, shared, amt, score}].
+function policyBillChoices(p, bills, mk) {
+  const all = [...((bills && bills.shared) || []).map(b => ({ ref: "s:" + b.id, bill: b, shared: true })),
+    ...((bills && bills.mine) || []).map(b => ({ ref: "g:" + b.id, bill: b, shared: false }))];
+  return all.map(x => { const amt = amountOf(x.bill, mk); return { ...x, amt, score: policyBillScore(p, x.bill.name, amt) }; })
+    .sort((a, b) => b.score - a.score || a.bill.name.localeCompare(b.bill.name));
+}
+// What a new monthly price would change in the linked bill: {ref, name, part, from, to, diff, mk},
+// or null when there's nothing to change. It starts from the price's start month (not before
+// this month): the months before keep what they were.
+function policyBudgetChange(p, bills, price, period, startDate, today) {
+  if (!p || !p.bill_ref || period !== "month" || price == null) return null;
+  const hit = policyBillOf(bills, p.bill_ref);
+  if (!hit) return null;
+  const nowKey = today.slice(0, 7);
+  const mk = startDate && startDate.slice(0, 7) > nowKey ? startDate.slice(0, 7) : nowKey;
+  const cur = amountOf(hit.bill, mk);
+  if (p.bill_part) {
+    const was = p.price_period === "month" && p.price != null ? Number(p.price) : null;
+    if (was == null || Math.abs(was - price) < 0.005) return null;
+    const diff = Math.round((price - was) * 100) / 100;
+    return { ref: p.bill_ref, name: hit.bill.name, part: true, diff, from: cur, to: Math.round((cur + diff) * 100) / 100, mk };
+  }
+  if (Math.abs(cur - price) < 0.005) return null;
+  return { ref: p.bill_ref, name: hit.bill.name, part: false, from: cur, to: price, mk };
+}
+
+function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTaken, bills, onBillAmount, onListChange, openRequest, onOpenTaken }) {
   const [state, setState] = useState("loading");    // loading | ready | locked | nofactor | missing | error
   const [list, setList] = useState([]);
   const [q, setQ] = useState("");
@@ -2820,9 +2989,13 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
   const [copied, setCopied] = useState(null);       // what was just copied
   const [links, setLinks] = useState({});           // document path -> {u: signed URL, at}
   const [sure, setSure] = useState(null);           // tapped once: "del:<id>" / "doc:<id>"
+  const [picker, setPicker] = useState(null);       // choosing a Budget bill: {id, ask: choice waiting for "just this / part"}
   const listRef = useRef([]);
   listRef.current = list;
+  const queueRef = useRef([]);                      // the next policies to check, after the one showing
+  const batchSaved = useRef(0);
   const today = localISO();
+  const nowKey = today.slice(0, 7);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -2840,48 +3013,63 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
     setState("ready");
   }, [user, mfa.hasFactor, mfa.level]);
   useEffect(() => { load(); }, [load, reloadTick]);
+  // Budget shows which bills have a policy: it's kept up to date from here.
+  useEffect(() => { if (state === "ready" && onListChange) onListChange(list); }, [list, state, onListChange]);
 
-  // ── Adding a document: pick it, shrink a photo, have Claude read it, then check the details ──
+  // ── Adding documents: pick them, shrink photos, have Claude read them, then check each policy ──
   const fileInput = useRef(null);
-  const target = useRef(null);       // the policy it's being added to (null = work it out)
+  const target = useRef(null);       // the policy they're being added to (null = work it out)
   const tapAt = useRef(0), gotAt = useRef(0), lastSig = useRef(null);
-  const startDoc = async (file, policy) => {
-    setNote(null);
-    let prep;
-    try { prep = await preparePolicyFile(file); }
-    catch (e) { setNote({ ok: false, text: e.message || "Couldn't open that file." }); return; }
-    if (prep.blob.size > POLICY_FILE_MAX) { setNote({ ok: false, text: "That file's over 20 MB, too big to keep. Try a photo of the main page instead." }); return; }
-    setOpenId(null);
-    let read = null, why = "";
-    if (prep.mime === "application/pdf" && prep.blob.size > POLICY_READ_MAX) {
-      why = "This PDF is too big to read automatically, so fill in the details yourself. The file will still be kept.";
-    } else {
-      setReading("Reading " + prep.name + "…");
-      try { read = await readPolicyDoc(await blobToBase64(prep.blob), prep.mime); }
-      catch (e) {
-        console.error("Policy read failed:", e);
-        why = "Couldn't read it automatically (" + String((e && e.message) || e).slice(0, 90) + "), so fill in the details yourself. The file will still be kept.";
-      } finally { setReading(null); }
-    }
-    const fresh = policy ? (listRef.current.find(x => x.id === policy.id) || policy) : null;
-    const match = fresh || policyMatch(listRef.current, read);
-    setEdit({
-      mode: "doc", file: prep, read, why, fixed: !!policy, match, useMatch: !!match,
-      form: match ? policyMergeRead(policyFormOf(match), read) : policyFormFromRead(read),
-      base: match ? policyFormOf(match) : null, saving: false, err: "",
-    });
+  const reviewOf = (g, preps, types, fixed) => {
+    const files = g.idx.map(i => ({ ...preps[i], docType: types[i] || "other" }));
+    const termsOnly = files.length > 0 && files.every(f => f.docType === "terms");
+    const match = fixed || policyMatch(listRef.current, g.read);
+    return {
+      mode: "doc", files, read: g.read, why: g.why, fixed: !!fixed, match, useMatch: !!match, termsOnly,
+      form: match ? policyMergeRead(policyFormOf(match), g.read, termsOnly) : policyFormFromRead(g.read),
+      base: match ? policyFormOf(match) : null, saving: false, err: "", budget: true,
+    };
   };
-  const startDocRef = useRef(startDoc);
-  startDocRef.current = startDoc;
+  const startDocs = async (files, policy) => {
+    setNote(null);
+    const all = Array.from(files || []);
+    const take = all.slice(0, POLICY_MAX_FILES);
+    const problems = [];
+    if (all.length > take.length) problems.push(`Only the first ${POLICY_MAX_FILES} were added: add the rest after.`);
+    const preps = [];
+    for (const f of take) {
+      try {
+        const p = await preparePolicyFile(f);
+        if (p.blob.size > POLICY_FILE_MAX) problems.push(p.name + " is over 20 MB, too big to keep.");
+        else preps.push(p);
+      } catch (e) { problems.push((f.name || "A file") + " " + (e.message || "couldn't be opened") + "."); }
+    }
+    if (!preps.length) { setNote({ ok: false, text: problems.join(" ") || "Nothing to add." }); return; }
+    setOpenId(null);
+    const fresh = policy ? (listRef.current.find(x => x.id === policy.id) || policy) : null;
+    const known = fresh && Array.isArray(fresh.details) && fresh.details.length ? fresh.details.map(d => d.label + ": " + d.value).join("; ").slice(0, 1500) : "";
+    setReading(preps.length === 1 ? "Reading " + preps[0].name + "…" : "Reading " + preps.length + " documents…");
+    let res;
+    try { res = await readPolicyBatch(preps, !!fresh, known); }
+    finally { setReading(null); }
+    const items = res.groups.map(g => reviewOf(g, preps, res.types, fresh));
+    items.forEach((it, i) => { it.pos = i + 1; it.of = items.length; });
+    if (problems.length) setNote({ ok: false, text: problems.join(" ") });
+    batchSaved.current = 0;
+    queueRef.current = items.slice(1);
+    setEdit(items[0]);
+  };
+  const startDocsRef = useRef(startDocs);
+  startDocsRef.current = startDocs;
   const intake = async (files, input) => {
     gotAt.current = Date.now();
-    const f = files && files[0];
-    if (!f) { if (input) input.value = ""; return; }
+    const fs = Array.from(files || []);
+    if (!fs.length) { if (input) input.value = ""; return; }
     // change and input (or the rescue) can both hand over the same pick: take it once per tap.
-    const sig = f.name + ":" + f.size + ":" + (f.lastModified || 0);
+    const sig = fs.map(f => f.name + ":" + f.size + ":" + (f.lastModified || 0)).join("|");
     if (lastSig.current && lastSig.current.sig === sig && lastSig.current.tap === tapAt.current) { if (input) input.value = ""; return; }
     lastSig.current = { sig, tap: tapAt.current };
-    try { await startDocRef.current(f, target.current); }
+    try { await startDocsRef.current(fs, target.current); }
     finally { if (input) input.value = ""; }
   };
   const intakeRef = useRef(intake);
@@ -2908,16 +3096,38 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
     window.addEventListener("focus", rescue);
     return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", rescue); };
   }, []);
-  // A document shared into Vaulted (Share → Vaulted → Policy).
+  // Documents shared into Vaulted (Share → Vaulted → Policies).
   useEffect(() => {
     if (!shared || state !== "ready" || reading) return;
-    const f = shared;
+    const fs = Array.isArray(shared) ? shared : [shared];
     onSharedTaken();
     target.current = null;
-    startDocRef.current(f, null);
+    startDocsRef.current(fs, null);
   }, [shared, state, reading, onSharedTaken]);
+  // Opened from a bill on the Budget tab.
+  useEffect(() => {
+    if (!openRequest || state !== "ready") return;
+    if (listRef.current.some(p => p.id === openRequest)) { setSure(null); setOpenId(openRequest); }
+    if (onOpenTaken) onOpenTaken();
+  }, [openRequest, state, onOpenTaken]);
 
   // ── Saving ──
+  const showNext = () => {
+    const q = queueRef.current;
+    if (!q.length) { setEdit(null); return false; }
+    queueRef.current = q.slice(1);
+    let next = q[0];
+    // One saved earlier in this batch might be the same policy.
+    if (!next.match && !next.fixed && next.read) {
+      const m = policyMatch(listRef.current, next.read);
+      if (m) next = { ...next, match: m, useMatch: true, form: policyMergeRead(policyFormOf(m), next.read, next.termsOnly), base: policyFormOf(m) };
+    }
+    setEdit(next);
+    return true;
+  };
+  const budgetText = c => c.part
+    ? "Also change " + c.name + " in Budget by " + (c.diff > 0 ? "+" : "−") + fmt(Math.abs(c.diff)) + " (" + fmt(c.from) + " → " + fmt(c.to) + ") from " + policyMonthLabel(c.mk)
+    : "Also update " + c.name + " in Budget: " + fmt(c.from) + " → " + fmt(c.to) + " from " + policyMonthLabel(c.mk);
   const saveEdit = async () => {
     const e = edit;
     if (!e || e.saving || !user) return;
@@ -2933,40 +3143,50 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
     const id = base ? base.id : genUUID();
     setEdit(x => ({ ...x, saving: true, err: "" }));
     const docs = base && Array.isArray(base.docs) ? [...base.docs] : [];
-    let uploaded = null;
-    if (e.file) {
+    const uploaded = [];
+    for (const file of (e.files || [])) {
       const docId = genUUID();
-      const path = user.id + "/" + id + "/" + docId + "." + e.file.ext;
-      const { error } = await trackSave(policyFiles().upload(path, e.file.blob, { contentType: e.file.mime, upsert: false }));
+      const path = user.id + "/" + id + "/" + docId + "." + file.ext;
+      const { error } = await trackSave(policyFiles().upload(path, file.blob, { contentType: file.mime, upsert: false }));
       if (error) {
+        if (uploaded.length) policyFiles().remove(uploaded).catch(() => {});
         reportDbError("savePolicyFile", error);
-        setEdit(x => x && ({ ...x, saving: false, err: "Couldn't save the file: " + error.message }));
+        setEdit(x => x && ({ ...x, saving: false, err: "Couldn't save " + file.name + ": " + error.message }));
         return;
       }
-      uploaded = path;
-      docs.push({ id: docId, path, name: e.file.name, mime: e.file.mime, size: e.file.blob.size, kind: (e.read && e.read.doc_type) || "other", added: today });
+      uploaded.push(path);
+      docs.push({ id: docId, path, name: file.name, mime: file.mime, size: file.blob.size, kind: file.docType || "other", added: today });
     }
     const period = price != null ? (f.price_period || "month") : null;
-    const priceDate = e.file && f.start_date ? f.start_date : today;
+    const src = (e.files || []).find(x => x.docType !== "terms") || (e.files || [])[0];
+    const priceDate = src && f.start_date ? f.start_date : today;
+    const change = e.budget ? policyBudgetChange(base, bills, price, period, f.start_date, today) : null;
     const row = {
       id, user_id: user.id, kind: f.kind || "other",
       provider: policyTrim(f.provider), name: policyTrim(f.name), policy_number: policyTrim(f.policy_number), cover: policyTrim(f.cover),
       start_date: f.start_date || null, end_date: f.end_date || null, price, price_period: period,
       payment: policyTrim(f.payment), auto_renew: f.auto_renew, phone: policyTrim(f.phone), website: policyTrim(f.website),
       details: f.details.map(d => ({ label: d.label.trim(), value: d.value.trim() })).filter(d => d.label || d.value),
-      prices: policyNextPrices(base && base.prices, price, period, priceDate, e.file ? e.file.name : null),
+      prices: policyNextPrices(base && base.prices, price, period, priceDate, src ? src.name : null),
       docs, notes: policyTrim(f.notes), archived: !!f.archived, updated_at: new Date().toISOString(),
     };
     const { data, error } = await trackSave(supabase.from("policies").upsert(row, { onConflict: "id" }).select().single());
     if (error) {
-      if (uploaded) policyFiles().remove([uploaded]).catch(() => {});
+      if (uploaded.length) policyFiles().remove(uploaded).catch(() => {});
       reportDbError("savePolicy", error);
       setEdit(x => x && ({ ...x, saving: false, err: "Couldn't save: " + error.message }));
       return;
     }
     reportDbError("savePolicy", null);
     haptic("success");
+    listRef.current = [...listRef.current.filter(p => p.id !== id), data || row];   // (the next in a batch is matched against it)
     setList(l => [...l.filter(p => p.id !== id), data || row]);
+    if (change && onBillAmount) onBillAmount(change.ref, change.to, change.mk);
+    if (e.mode === "doc" && e.of > 1) {
+      batchSaved.current++;
+      if (!showNext()) setNote({ ok: true, text: batchSaved.current + " of " + e.of + " saved." });
+      return;
+    }
     setEdit(null);
     setOpenId(id);
   };
@@ -2994,6 +3214,18 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
     const done = await patchPolicy(p, { docs: (p.docs || []).filter(x => x.id !== d.id) });
     if (done) policyFiles().remove([d.path]).catch(() => {});
   };
+  // Linking to a Budget bill. A bill for a different amount might cover other things too: ask.
+  const linkBill = async (p, choice, part) => {
+    if (part === undefined) {
+      const monthly = p.price_period === "month" && p.price != null;
+      if (monthly && Math.abs(choice.amt - Number(p.price)) >= 0.005) { setPicker({ id: p.id, ask: choice }); return; }
+      part = false;
+    }
+    haptic();
+    const done = await patchPolicy(p, { bill_ref: choice.ref, bill_part: !!part });
+    if (done) setPicker(null);
+  };
+  const unlinkBill = async p => { haptic(); const done = await patchPolicy(p, { bill_ref: null, bill_part: false }); if (done) setPicker(null); };
   const copy = async (text, key) => {
     let ok = false;
     try { await navigator.clipboard.writeText(text); ok = true; }
@@ -3029,13 +3261,15 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
   const small = { fontSize: 13, color: SUBTEXT, lineHeight: 1.5 };
   const mini = { background: "#1e2535", border: "1px solid #2a3050", borderRadius: 7, color: "#8ec5ff", fontSize: 12.5, fontWeight: 700, padding: "7px 11px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0, textDecoration: "none", display: "inline-block" };
   const bigBtn = { background: "#1a3a5a", border: "1px solid #2a5a8a", borderRadius: 10, color: "#8ec5ff", fontSize: 15, fontWeight: 700, padding: "13px", cursor: "pointer" };
+  const sideBtn = { background: "#161b28", border: "1px solid #2a3050", borderRadius: 10, color: "#8ec5ff", fontSize: 13.5, fontWeight: 700, padding: "12px 8px", cursor: "pointer" };
   const overlay = { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 210, background: "rgba(0,0,0,0.6)" };
   const sheet = { position: "absolute", left: 0, right: 0, bottom: 0, background: "#141824", borderTop: "1px solid #2a3050", borderRadius: "16px 16px 0 0", padding: "8px 14px", paddingBottom: "calc(16px + env(safe-area-inset-bottom))", maxHeight: "90vh", overflowY: "auto" };
   const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #2a3050", borderRadius: 8, color: "#e8eaf0", fontSize: 15, padding: "12px 14px", marginBottom: 12, fontFamily: "inherit" };
   const seg = on => ({ flex: 1, background: on ? "#1a3a5a" : "transparent", border: "1px solid " + (on ? "#2a5a8a" : "#2a3050"), borderRadius: 8, color: on ? "#8ec5ff" : SUBTEXT, fontSize: 13.5, fontWeight: 700, padding: "10px 6px", cursor: "pointer" });
   const plainBtn = { width: "100%", background: "transparent", border: "none", color: SUBTEXT, fontSize: 13.5, fontWeight: 600, padding: "10px", cursor: "pointer" };
-  const fileEl = <input ref={fileInput} type="file" accept="application/pdf,image/*"
-    onChange={e => intake(Array.from(e.target.files || []), e.target)} onInput={e => intake(Array.from(e.target.files || []), e.target)} style={{ display: "none" }}/>;
+  const tick = on => <span style={{ flex: "0 0 auto", width: 20, height: 20, borderRadius: 5, border: "2px solid " + (on ? "#4a9eff" : "#2a3050"), background: on ? "#4a9eff" : "transparent", color: "#000", fontSize: 14, fontWeight: 900, lineHeight: "16px", textAlign: "center" }}>{on ? "✓" : ""}</span>;
+  const fileEl = <input ref={fileInput} type="file" accept="application/pdf,image/*" multiple
+    onChange={e => intake(e.target.files, e.target)} onInput={e => intake(e.target.files, e.target)} style={{ display: "none" }}/>;
 
   if (state !== "ready") {
     const box = (body, extra) => <div style={{ ...card, textAlign: "center", padding: "22px 14px", lineHeight: 1.55 }}><div style={{ fontSize: 28, marginBottom: 6 }}>🛡️</div>{body}{extra}</div>;
@@ -3096,6 +3330,52 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
     );
   };
 
+  // ── The policy's Budget bill ──
+  const budgetSection = p => {
+    if (!bills) return null;
+    const hitBill = policyBillOf(bills, p.bill_ref);
+    const prices = Array.isArray(p.prices) ? p.prices : [];
+    const last = prices[prices.length - 1];
+    const mk = last && last.date && last.date.slice(0, 7) > nowKey ? last.date.slice(0, 7) : nowKey;
+    if (hitBill) {
+      const amt = amountOf(hitBill.bill, mk);
+      const monthly = p.price_period === "month" && p.price != null;
+      const differs = !p.bill_part && monthly && Math.abs(amt - Number(p.price)) >= 0.005;
+      return (
+        <>
+          <div style={{ ...hdr, marginTop: 18 }}>Budget</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14.5, color: "#e8eaf0", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{(p.bill_part ? "Part of " : "") + hitBill.bill.name}</div>
+              <div style={{ fontSize: 12.5, color: SUBTEXT, marginTop: 2 }}>{fmt(amt) + " in " + policyMonthLabel(mk) + (hitBill.shared ? " · shared" : " · yours")}</div>
+            </div>
+            <button onClick={() => { haptic(); setPicker({ id: p.id }); }} style={mini}>Change</button>
+          </div>
+          {!p.bill_part && monthly && !differs && <div style={{ fontSize: 13, color: "#4ad07a", fontWeight: 700, marginTop: 6 }}>✓ Matches the policy's price</div>}
+          {differs && <>
+            <div style={{ fontSize: 13, color: "#ffb84a", fontWeight: 700, marginTop: 6 }}>Budget has {fmt(amt)}, the policy says {fmt(p.price)} a month</div>
+            <button onClick={() => { haptic("success"); onBillAmount(p.bill_ref, Number(p.price), mk); setNote({ ok: true, text: hitBill.bill.name + " updated to " + fmt(p.price) + " from " + policyMonthLabel(mk) + "." }); }}
+              style={{ ...bigBtn, width: "100%", marginTop: 8, fontSize: 14, padding: "11px" }}>Update Budget to {fmt(p.price)} from {policyMonthLabel(mk)}</button>
+          </>}
+        </>
+      );
+    }
+    const best = policyBillChoices(p, bills, nowKey).filter(x => x.score >= 3).slice(0, 2);
+    return (
+      <>
+        <div style={{ ...hdr, marginTop: 18 }}>Budget</div>
+        <div style={{ ...small, marginBottom: 8 }}>{p.bill_ref ? "The bill it was linked to isn't in Budget any more." : "Link it to its Budget bill to keep the two in step."}</div>
+        {best.map(x => (
+          <button key={x.ref} onClick={() => linkBill(p, x)} style={{ ...sideBtn, width: "100%", textAlign: "left", marginBottom: 6, display: "flex", justifyContent: "space-between", gap: 8 }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Link to {x.bill.name}</span>
+            <span style={{ color: SUBTEXT, flexShrink: 0 }}>{fmt(x.amt)}</span>
+          </button>
+        ))}
+        <button onClick={() => { haptic(); setPicker({ id: p.id }); }} style={{ ...mini, marginTop: 2 }}>{best.length ? "Another bill…" : "Pick a bill…"}</button>
+      </>
+    );
+  };
+
   // ── The policy sheet ──
   const policySheet = () => {
     const p = open, kind = policyKindOf(p), s = policyStatus(p, today), ch = policyPriceChange(p);
@@ -3123,7 +3403,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
               <div style={{ fontSize: 17, fontWeight: 800, color: "#e8eaf0", wordBreak: "break-word" }}>{policyLabel(p)}</div>
               <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 2 }}>{sub}{p.archived ? " · old" : ""}</div>
             </div>
-            <button onClick={() => { haptic(); setEdit({ mode: "edit", policy: p, form: policyFormOf(p), base: null, saving: false, err: "" }); }} style={mini}>Edit</button>
+            <button onClick={() => { haptic(); setEdit({ mode: "edit", policy: p, form: policyFormOf(p), base: null, saving: false, err: "", budget: true }); }} style={mini}>Edit</button>
           </div>
           {showBox && (
             <div style={{ background: boxTone[0], border: "1px solid " + boxTone[1], borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}>
@@ -3141,7 +3421,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
           {p.price != null && line("Price", <>
             {fmt(p.price)} {POLICY_PERIOD[p.price_period] || ""}{p.price_period === "month" ? <span style={{ color: SUBTEXT }}>{" (" + fmt(Number(p.price) * 12) + " a year)"}</span> : null}
             {ch && <div style={{ fontSize: 13, fontWeight: 700, color: ch.diffYear > 0 ? "#ffb84a" : "#4ad07a", marginTop: 2 }}>
-              {(ch.diffYear > 0 ? "Up " : "Down ") + (ch.from.period === ch.to.period && POLICY_PERIOD[ch.to.period] && ch.to.period !== "once"
+              {(ch.diffYear > 0 ? "Up " : "Down ") + (ch.from.period === ch.to.period && POLICY_PERIOD[ch.to.period]
                 ? fmt(Math.abs(Number(ch.to.price) - Number(ch.from.price))) + " " + POLICY_PERIOD[ch.to.period]
                 : fmt(Math.abs(ch.diffYear)) + " a year") + " (" + (ch.pct > 0 ? "+" : "") + ch.pct + "%) on last time"}
             </div>}
@@ -3155,6 +3435,8 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
           {p.cover && line("Covers", p.cover)}
           {(p.details || []).map((d, i) => line(d.label || "Detail", d.value, null, "d" + i))}
           {p.notes && line("Notes", <span style={{ whiteSpace: "pre-wrap" }}>{p.notes}</span>)}
+
+          {budgetSection(p)}
 
           <div style={{ ...hdr, marginTop: 18 }}>Documents</div>
           {docs.length === 0 && <div style={{ ...small, marginBottom: 6 }}>None yet.</div>}
@@ -3175,7 +3457,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
               </div>
             );
           })}
-          <button onClick={() => pick(p)} disabled={!!reading} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>＋ Add a document</button>
+          <button onClick={() => pick(p)} disabled={!!reading} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>＋ Add documents</button>
           <div style={{ ...small, marginTop: 6, textAlign: "center" }}>A renewal letter updates the dates and the price.</div>
 
           {prices.length > 1 && <>
@@ -3197,8 +3479,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
           </>}
 
           <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
-            <button onClick={() => { haptic(); patchPolicy(p, { archived: !p.archived }); }}
-              style={{ flex: 1, background: "#161b28", border: "1px solid #2a3050", borderRadius: 10, color: "#8ec5ff", fontSize: 13.5, fontWeight: 700, padding: "12px 8px", cursor: "pointer" }}>
+            <button onClick={() => { haptic(); patchPolicy(p, { archived: !p.archived }); }} style={{ ...sideBtn, flex: 1 }}>
               {p.archived ? "Back to current" : "Mark as old"}
             </button>
             <button onClick={() => { haptic(); if (sure === "del:" + p.id) removePolicy(p); else setSure("del:" + p.id); }}
@@ -3212,17 +3493,57 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
     );
   };
 
+  // ── Choosing the Budget bill ──
+  const pickerSheet = () => {
+    const p = list.find(x => x.id === picker.id);
+    if (!p) return null;
+    const close = () => setPicker(null);
+    const ask = picker.ask;
+    const choices = policyBillChoices(p, bills, nowKey);
+    return (
+      <div onClick={close} onTouchStart={e => e.stopPropagation()} style={{ ...overlay, zIndex: 216 }}>
+        <div onClick={e => e.stopPropagation()} style={sheet}>
+          <SheetGrab onClose={close}/>
+          {ask ? <>
+            <div style={{ fontSize: 15, color: "#e8eaf0", fontWeight: 800, marginBottom: 6 }}>Is {ask.bill.name} just this policy?</div>
+            <div style={{ ...small, marginBottom: 14 }}>{ask.bill.name} is {fmt(ask.amt)} this month and the policy is {fmt(p.price)} a month. If the bill covers other things too (like one bill for several services), Vaulted won't flag the difference, and a price change adds or takes off just the difference.</div>
+            <button onClick={() => linkBill(p, ask, false)} style={{ ...bigBtn, width: "100%", marginBottom: 8 }}>Just this policy</button>
+            <button onClick={() => linkBill(p, ask, true)} style={{ ...sideBtn, width: "100%" }}>It covers other things too</button>
+            <button onClick={() => setPicker({ id: p.id })} style={plainBtn}>Back</button>
+          </> : <>
+            <div style={{ fontSize: 15, color: "#e8eaf0", fontWeight: 800, marginBottom: 4 }}>Budget bill for {policyLabel(p)}</div>
+            <div style={{ ...small, marginBottom: 10 }}>Best matches first. Amounts are for {policyMonthLabel(nowKey)}.</div>
+            {choices.map(x => (
+              <button key={x.ref} onClick={() => linkBill(p, x)} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: p.bill_ref === x.ref ? "#1a2535" : "transparent", border: "none", borderBottom: "1px solid #1a1f2e", color: "#e8eaf0", padding: "12px 4px", cursor: "pointer" }}>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.bill.name}</span>
+                <span style={{ fontSize: 12.5, color: SUBTEXT, flexShrink: 0 }}>{x.shared ? "Shared" : "Yours"}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: "#e8eaf0", flexShrink: 0, minWidth: 64, textAlign: "right" }}>{fmt(x.amt)}</span>
+                {p.bill_ref === x.ref && <span style={{ color: "#4a9eff", flexShrink: 0 }}>✓</span>}
+              </button>
+            ))}
+            {choices.length === 0 && <div style={{ ...small, padding: "8px 0" }}>No bills in Budget yet.</div>}
+            {p.bill_ref && <button onClick={() => unlinkBill(p)} style={{ ...plainBtn, color: "#ff6b8a", marginTop: 6 }}>Unlink from Budget</button>}
+            <button onClick={close} style={plainBtn}>Cancel</button>
+          </>}
+        </div>
+      </div>
+    );
+  };
+
   // ── The edit / check-the-details sheet ──
   const editSheet = () => {
     const e = edit, f = e.form;
     const set = patch => setEdit(x => ({ ...x, form: { ...x.form, ...patch } }));
     const setDetail = (i, patch) => setEdit(x => ({ ...x, form: { ...x.form, details: x.form.details.map((d, j) => (j === i ? { ...d, ...patch } : d)) } }));
-    const close = () => { if (!e.saving) setEdit(null); };
+    const more = e.mode === "doc" && queueRef.current.length > 0;
+    const skip = () => { if (!e.saving) showNext(); };
+    const stop = () => { if (!e.saving) { queueRef.current = []; setEdit(null); } };
+    const close = () => { if (!e.saving) { if (e.mode === "doc") showNext(); else setEdit(null); } };
     const chooseMatch = on => setEdit(x => ({ ...x, useMatch: on,
-      form: on ? policyMergeRead(policyFormOf(x.match), x.read) : policyFormFromRead(x.read), base: on ? policyFormOf(x.match) : null }));
-    const title = e.mode === "edit" ? "Edit policy" : e.mode === "new" ? "Add a policy" : "Check the details";
+      form: on ? policyMergeRead(policyFormOf(x.match), x.read, x.termsOnly) : policyFormFromRead(x.read), base: on ? policyFormOf(x.match) : null }));
+    const title = e.mode === "edit" ? "Edit policy" : e.mode === "new" ? "Add a policy" : "Check the details" + (e.of > 1 ? " (" + e.pos + " of " + e.of + ")" : "");
     const lab = t => <div style={{ ...hdr, marginBottom: 6 }}>{t}</div>;
-    // A renewal going into a saved policy: what's changing.
+    // Going into a saved policy: what's changing.
     const changes = [];
     if (e.base && e.useMatch) {
       const a = parseFloat(e.base.price), b = parseFloat(f.price);
@@ -3234,13 +3555,29 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
       if (f.end_date && f.end_date !== e.base.end_date) changes.push({ k: "end", t: "Ends: " + (e.base.end_date ? policyDay(e.base.end_date) + " → " : "") + policyDay(f.end_date) });
       if (f.policy_number && policyNorm(f.policy_number) !== policyNorm(e.base.policy_number)) changes.push({ k: "num", t: "Number: " + (e.base.policy_number ? e.base.policy_number + " → " : "") + f.policy_number });
     }
-    const namePh = { car: "e.g. Kia Sportage", pet: "e.g. your pet's name", home: "e.g. Home", energy: "e.g. Electricity & gas", broadband: "e.g. Fibre broadband", mobile: "e.g. Glyn's phone", mortgage: "e.g. NatWest mortgage" }[f.kind] || "e.g. what it's for";
+    // A linked policy whose monthly price changes: the Budget bill can follow.
+    const linked = e.mode === "edit" ? e.policy : (e.useMatch ? e.match : null);
+    const fresh = linked ? (list.find(x => x.id === linked.id) || linked) : null;
+    const pn = parseFloat(String(f.price).replace(/[^0-9.]/g, ""));
+    const budget = fresh && isFinite(pn) && String(f.price).trim() !== "" ? policyBudgetChange(fresh, bills, Math.round(pn * 100) / 100, f.price_period, f.start_date, today) : null;
+    const namePh = { car: "e.g. Kia Sportage", pet: "e.g. your pet's name", home: "e.g. Home", boiler: "e.g. Boiler cover", energy: "e.g. Electricity & gas", broadband: "e.g. Fibre broadband", mobile: "e.g. Glyn's phone", mortgage: "e.g. NatWest mortgage" }[f.kind] || "e.g. what it's for";
     return (
       <div onClick={close} onTouchStart={ev => ev.stopPropagation()} style={{ ...overlay, zIndex: 215 }}>
         <div onClick={ev => ev.stopPropagation()} style={sheet}>
           <SheetGrab onClose={close}/>
           <div style={{ fontSize: 15, color: "#e8eaf0", fontWeight: 800, marginBottom: 6 }}>{title}</div>
-          {e.mode === "doc" && <div style={{ ...small, marginBottom: 10, color: e.read ? SUBTEXT : "#ffb84a" }}>{e.read ? "Read from " + e.file.name + ". Check it all before saving." : e.why}</div>}
+          {e.mode === "doc" && <div style={{ ...small, marginBottom: 8, color: e.read ? SUBTEXT : "#ffb84a" }}>{e.read ? "Read from " + (e.files.length === 1 ? e.files[0].name : e.files.length + " documents") + ". Check it all before saving." : e.why}</div>}
+          {e.mode === "doc" && e.files.length > 1 && (
+            <div style={{ background: "#111520", border: "1px solid #1e2535", borderRadius: 10, padding: "6px 12px", marginBottom: 12 }}>
+              {e.files.map((x, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13 }}>
+                  <span>{/^image\//.test(x.mime) ? "🖼️" : "📄"}</span>
+                  <span style={{ flex: 1, minWidth: 0, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.name}</span>
+                  <span style={{ color: SUBTEXT, fontSize: 12.5, flexShrink: 0 }}>{POLICY_DOC_WORD[x.docType] || "Document"}</span>
+                </div>
+              ))}
+            </div>
+          )}
           {e.mode === "doc" && e.match && !e.fixed && (
             <div style={{ background: "#0e1726", border: "1px solid #2a5a8a", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
               <div style={{ fontSize: 13.5, color: "#e8eaf0", fontWeight: 700 }}>This looks like your {policyLabel(e.match)} policy.</div>
@@ -3254,6 +3591,12 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
           {changes.length > 0 && (
             <div style={{ background: "#111520", border: "1px solid #1e2535", borderRadius: 10, padding: "9px 12px", marginBottom: 12 }}>
               {changes.map(c => <div key={c.k} style={{ fontSize: 13.5, color: c.up ? "#ffb84a" : "#e8eaf0", fontWeight: 700, padding: "2px 0" }}>{c.t}</div>)}
+            </div>
+          )}
+          {budget && (
+            <div onClick={() => setEdit(x => ({ ...x, budget: !x.budget }))} style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "#111520", border: "1px solid " + (e.budget ? "#2a5a8a" : "#1e2535"), borderRadius: 10, padding: "10px 12px", marginBottom: 12, cursor: "pointer" }}>
+              {tick(e.budget)}
+              <div style={{ fontSize: 13.5, color: "#e8eaf0", lineHeight: 1.45 }}>{budgetText(budget)}</div>
             </div>
           )}
 
@@ -3304,7 +3647,12 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
           <button onClick={saveEdit} disabled={e.saving} style={{ ...bigBtn, width: "100%", padding: "15px", opacity: e.saving ? 0.7 : 1 }}>
             {e.saving ? "Saving…" : e.mode === "edit" ? "Save changes" : e.mode === "doc" && e.useMatch ? "Save to " + policyLabel(e.match) : "Save"}
           </button>
-          <button onClick={close} style={plainBtn}>Cancel</button>
+          {more ? (
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <button onClick={skip} style={{ ...plainBtn, flex: 1 }}>Skip this one</button>
+              <button onClick={stop} style={{ ...plainBtn, flex: 1 }}>Stop here</button>
+            </div>
+          ) : <button onClick={close} style={plainBtn}>{e.mode === "doc" && e.of > 1 ? "Skip this one" : "Cancel"}</button>}
         </div>
       </div>
     );
@@ -3319,8 +3667,8 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
         <div><div style={{ ...hdr, marginBottom: 0 }}>To act on</div><div style={{ fontSize: 18, fontWeight: 800, color: toAct ? "#ffb84a" : "#e8eaf0", marginTop: 2 }}>{toAct}</div></div>
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-        <button onClick={() => pick(null)} disabled={!!reading} style={{ ...bigBtn, flex: 1, opacity: reading ? 0.7 : 1 }}>{reading ? "Reading…" : "＋ Add a document"}</button>
-        <button onClick={() => { haptic(); setNote(null); setEdit({ mode: "new", form: policyEmptyForm(), base: null, saving: false, err: "" }); }}
+        <button onClick={() => pick(null)} disabled={!!reading} style={{ ...bigBtn, flex: 1, opacity: reading ? 0.7 : 1 }}>{reading ? "Reading…" : "＋ Add documents"}</button>
+        <button onClick={() => { haptic(); setNote(null); setEdit({ mode: "new", form: policyEmptyForm(), base: null, saving: false, err: "", budget: true }); }}
           style={{ background: "#161b28", border: "1px solid #2a3050", borderRadius: 10, color: SUBTEXT, fontSize: 13.5, fontWeight: 700, padding: "0 14px", cursor: "pointer" }}>By hand</button>
       </div>
       {reading && (
@@ -3328,7 +3676,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
           <div style={{ fontSize: 20 }}>⏳</div>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 14, color: "#8ec5ff", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{reading}</div>
-            <div style={small}>Claude's reading the details. This takes a few seconds.</div>
+            <div style={small}>Claude's reading the details. This takes a few seconds{/documents/.test(reading) ? ", a little longer for several" : ""}.</div>
           </div>
         </div>
       )}
@@ -3340,7 +3688,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
         <div style={{ ...card, textAlign: "center", padding: "22px 14px", lineHeight: 1.55 }}>
           <div style={{ fontSize: 28, marginBottom: 6 }}>🛡️</div>
           <div style={small}>Keep your policies and deals here: car and pet insurance, energy, broadband, the mortgage and the rest.</div>
-          <div style={{ ...small, marginTop: 6 }}>Tap <b style={{ color: "#e8eaf0" }}>Add a document</b> and pick a PDF or take a photo of the paperwork. Claude fills in the details for you to check.</div>
+          <div style={{ ...small, marginTop: 6 }}>Tap <b style={{ color: "#e8eaf0" }}>Add documents</b> and pick PDFs or take photos of the paperwork, several at once if you like. Claude sorts them into policies and fills in the details for you to check.</div>
         </div>
       )}
       {list.length > 0 && qn && shown.length === 0 && oldShown.length === 0 && <div style={{ ...small, textAlign: "center", padding: "12px 0" }}>Nothing matches “{q.trim()}”.</div>}
@@ -3355,6 +3703,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
         </>
       )}
       {open && policySheet()}
+      {picker && pickerSheet()}
       {edit && editSheet()}
     </div>
   );
@@ -3364,8 +3713,11 @@ export default function App() {
   const [tab,setTab]=useState("Dashboard");
   const [policyTick,setPolicyTick]=useState(0);        // pull-to-refresh reloads the Policies page too
   const [shareAsk,setShareAsk]=useState(null);         // shared PDFs not named like payslips: payslip or policy?
-  const [policyShare,setPolicyShare]=useState(null);   // a shared document for the Policies page
+  const [policyShare,setPolicyShare]=useState(null);   // documents shared in, for the Policies page
   const takePolicyShare=useCallback(()=>setPolicyShare(null),[]);
+  const [policyList,setPolicyList]=useState(null);     // Glyn's policies, so Budget can show which bills have one
+  const [policyOpenReq,setPolicyOpenReq]=useState(null);   // a policy to open on the Policies page (from a bill)
+  const takePolicyOpen=useCallback(()=>setPolicyOpenReq(null),[]);
   const [isOwner,setIsOwner]=useState(true);   // false = partner (Hollie): restricted view
   const [user,setUser]=useState(null);
   const [authLoading,setAuthLoading]=useState(true);
@@ -4983,6 +5335,14 @@ export default function App() {
     const keep=new Set(b.map(x=>x.id));
     for (const id of before.keys()) if (!keep.has(id)) trackSave(db.deleteGlynBill(user.id, id));
   };
+  // A policy's price into its Budget bill ("s:<id>" / "g:<id>") from month mk on: a regular bill
+  // keeps what it was before then, a bill that varies changes just that month.
+  const setBillFromPolicy=(ref,amount,mk)=>{
+    const m=/^([sg]):(.+)$/.exec(ref||"");
+    if(!m)return;
+    const apply=b=>String(b.id)!==m[2]?b:isVariable(b)?{...b,amounts:{...b.amounts,[mk]:amount}}:changeFromMonth(b,mk,amount);
+    if(m[1]==="s")updSB(sharedBills.map(apply));else updGB(glynBills.map(apply));
+  };
   // Categories and tags are saved as one blob. Always send every part, so saving
   // one piece (a category, a colour) can never wipe another (your personal tags).
   const saveCatsData=(patch)=>{
@@ -5225,6 +5585,14 @@ export default function App() {
       }catch(e){console.error("Share intake failed:",e);}
     })();
   },[user]);
+  // Glyn's policies, for the 🛡️ on Budget bills (the Policies page keeps this up to date too).
+  useEffect(()=>{
+    if(!user||!isOwner||mfa.level!=="aal2")return;
+    let gone=false;
+    jwtRetry(()=>supabase.from("policies").select("*").eq("user_id",user.id))
+      .then(({data,error})=>{if(!gone&&!error)setPolicyList(data||[]);}).catch(()=>{});
+    return()=>{gone=true;};
+  },[user,isOwner,mfa.level,policyTick]);
   // Hollie has no Policies page: anything she shares goes to payslips.
   useEffect(()=>{
     if(!shareAsk||isOwner)return;
@@ -6347,6 +6715,8 @@ const calcTimesheetTotals = days => {
           const themName=isOwner?"Hollie":"Glyn";
           const amt1=b=>amountOf(b,selKey);
           const res=b=>withAmount(b,selKey);
+          // Bills with a policy linked (Glyn's phone only: Hollie can't see policies).
+          const polRefs=new Set(isOwner&&policyList?policyList.filter(p=>p.bill_ref&&!p.archived).map(p=>p.bill_ref):[]);
           const mineOf=b=>isOwner?billShares(res(b)).glyn:billShares(res(b)).hollie;
           const themOf=b=>isOwner?billShares(res(b)).hollie:billShares(res(b)).glyn;
           const rate=selNet>0?Math.round(selSurplus/selNet*100):0;
@@ -6354,13 +6724,14 @@ const calcTimesheetTotals = days => {
 
 
           // One row, used for standing bills and for this month's scheduled ones.
-          const row=(key,{name,date,sub,amt,her,onName,onAmount,drag,tag,neg,first,tick})=>(
+          const row=(key,{name,date,sub,amt,her,onName,onAmount,drag,tag,neg,first,tick,shield})=>(
             <div key={key} draggable={!!drag} onDragStart={drag}
               style={{display:"flex",alignItems:"center",gap:10,padding:"11px 13px",borderTop:"1px solid #171d2b",
                 ...(first?{borderTop:"none"}:{})}}>
               <div onClick={onName} style={{flex:1,minWidth:0,cursor:onName?"pointer":"default"}}>
                 <div style={{display:"flex",alignItems:"baseline",gap:6,minWidth:0}}>
                   <span style={{fontSize:18,color:neg?"#4ad07a":SUBTEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{name}</span>
+                  {shield&&<span title="Has a policy" style={{flex:"0 0 auto",fontSize:13,alignSelf:"center"}}>🛡️</span>}
                   {tag&&<span style={{flex:"0 0 auto",display:"inline-block",fontSize:11.5,fontWeight:700,letterSpacing:.5,padding:"2px 6px",borderRadius:4,background:"#1d1608",color:"#ffb84a",alignSelf:"center"}}>{tag}</span>}
                   {date&&<span style={{flex:"0 0 auto",fontSize:15,color:SUBTEXT,whiteSpace:"nowrap"}}>· {date}</span>}
                 </div>
@@ -6399,6 +6770,7 @@ const calcTimesheetTotals = days => {
             name:b.name,
             date:dateFor(b),
             tick:tickFor(b),
+            shield:polRefs.has((isG?"g:":"s:")+b.id),
             amt:isG?amt1(b):mineOf(b),
             her:isG?null:themOf(b),
             onName:()=>{haptic();setMoveBill({id:b.id,isGlyn:isG});},
@@ -8355,7 +8727,9 @@ const calcTimesheetTotals = days => {
         {tab==="Policies"&&isOwner&&(
           <PoliciesPage user={user} mfa={mfa} reloadTick={policyTick}
             onEnterCode={()=>setMfa(m=>({...m,need:true,skipped:false}))}
-            shared={policyShare} onSharedTaken={takePolicyShare}/>
+            shared={policyShare} onSharedTaken={takePolicyShare}
+            bills={{shared:sharedBills,mine:glynBills}} onBillAmount={setBillFromPolicy}
+            onListChange={setPolicyList} openRequest={policyOpenReq} onOpenTaken={takePolicyOpen}/>
         )}
 
         {tab==="Settle Up"&&(()=>{
@@ -8878,11 +9252,10 @@ const calcTimesheetTotals = days => {
             <div style={{fontSize:13,color:SUBTEXT,marginTop:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{shareAsk.length===1?shareAsk[0].name:shareAsk.length+" files"}</div>
             <div style={{display:"flex",gap:8,marginTop:14}}>
               <button onClick={()=>{haptic();const f=shareAsk;setShareAsk(null);sharedToPayslips(f);}}
-                style={{flex:1,background:"#161b28",border:"1px solid #2a3050",borderRadius:10,color:"#e8eaf0",fontSize:15,fontWeight:700,padding:"16px 8px",cursor:"pointer"}}>📄 Payslip</button>
-              <button onClick={()=>{haptic();const f=shareAsk;setShareAsk(null);setPolicyShare(f[0]);setTab("Policies");window.scrollTo(0,0);}}
-                style={{flex:1,background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"16px 8px",cursor:"pointer"}}>🛡️ Policy</button>
+                style={{flex:1,background:"#161b28",border:"1px solid #2a3050",borderRadius:10,color:"#e8eaf0",fontSize:15,fontWeight:700,padding:"16px 8px",cursor:"pointer"}}>{shareAsk.length>1?"📄 Payslips":"📄 Payslip"}</button>
+              <button onClick={()=>{haptic();const f=shareAsk;setShareAsk(null);setPolicyShare(f);setTab("Policies");window.scrollTo(0,0);}}
+                style={{flex:1,background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"16px 8px",cursor:"pointer"}}>{shareAsk.length>1?"🛡️ Policies":"🛡️ Policy"}</button>
             </div>
-            {shareAsk.length>1&&<div style={{fontSize:12.5,color:SUBTEXT,marginTop:8,lineHeight:1.5}}>Policies take one document at a time, so only the first would be added.</div>}
             <button onClick={()=>setShareAsk(null)} style={{width:"100%",background:"transparent",border:"none",color:SUBTEXT,fontSize:13.5,fontWeight:600,padding:"12px",cursor:"pointer",marginTop:4}}>Cancel</button>
           </div>
         </div>
@@ -9126,6 +9499,26 @@ const calcTimesheetTotals = days => {
                       <button onClick={()=>{haptic();setLinkQuery("");setLinkPick({ref,name:bill.name,shared:!isG,pence:isVariable(bill)?null:Math.round(amountOf(bill,nowMk)*100)});}} style={miniBtn}>{on?"Change":"Link"}</button>
                     </div>
                     <div style={{fontSize:12.5,color:SUBTEXT,padding:"0 4px 14px",lineHeight:1.5}}>Ticks the bill off on the Budget tab once the payment goes out{isVariable(bill)?", and fills in a blank month's amount from it":""}.</div>
+                  </>
+                );
+              })()}
+              {bill&&isOwner&&policyList&&(()=>{
+                // The policy linked to this bill (linked from the Policies page).
+                const ref=(isG?"g:":"s:")+bill.id;
+                const pols=policyList.filter(p=>p.bill_ref===ref);
+                if(!pols.length)return null;
+                return (
+                  <>
+                    <div style={{fontSize:12,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",padding:"0 4px 8px"}}>{pols.length>1?"Policies":"Policy"}</div>
+                    {pols.map(pol=>(
+                      <div key={pol.id} style={{display:"flex",alignItems:"center",gap:10,padding:"0 4px 10px"}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:13.5,fontWeight:600,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>🛡️ {policyLabel(pol)}{pol.provider&&pol.name?" · "+pol.provider:""}</div>
+                          <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{[pol.policy_number,pol.end_date?policyEndWord(pol)+" "+policyDay(pol.end_date):null,pol.bill_part?"part of this bill":null].filter(Boolean).join(" · ")}</div>
+                        </div>
+                        <button onClick={()=>{haptic();setMoveBill(null);setPolicyOpenReq(pol.id);setTab("Policies");window.scrollTo(0,0);}} style={miniBtn}>Open</button>
+                      </div>
+                    ))}
                   </>
                 );
               })()}
