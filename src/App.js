@@ -791,6 +791,10 @@ const fixedAmountFor = (b, mk) => {
 const amountOf = (b, mk) => isVariable(b) ? (Number(b.amounts[mk]) || 0) : fixedAmountFor(b, mk);
 const withAmount = (b, mk) => isVariable(b) || (b && Array.isArray(b.history) && b.history.length) ? { ...b, total: amountOf(b, mk) } : b;
 const notSetFor = (b, mk) => isVariable(b) && !(mk in b.amounts);
+// A regular bill that has finished: £0 from this month on, after being more before (Barclays
+// Phone after its last payment in May 2027). Budget leaves it out of those months.
+const billEnded = (b, mk) => !!b && !isVariable(b) && !(Number(b.total) || 0) && Array.isArray(b.history)
+  && b.history.some(e => e && e.to < mk && Number(e.total) > 0) && fixedAmountFor(b, mk) === 0;
 // A regular bill changed to `n` from month `mk` on: the months before keep what they were.
 function changeFromMonth(b, mk, n) {
   const prev = shiftMonthKey(mk, -1);
@@ -824,11 +828,18 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.21.0";
+const APP_VERSION = "1.22.0";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.22.0", date: "1 Nov 2026", items: [
+    { b: "Energy", t: " — a new page (⚡ at the top of the Dashboard) for your Shelly smart plugs: what's on right now and how many watts, plus today's and this month's use in kWh and £ at your UW rate. Connect Shelly once with its cloud key, then name each plug." },
+    { b: "Whole house", t: " — connect your Bright account to see the house's electricity each day, and how much of it your plugs use." },
+    { b: "Damaged PDFs don't spoil the rest", t: " — if Claude can't open one file, the others are read one at a time and it tells you which file it couldn't open. PDFs with extra bits before the real file (like L&G's) now read properly." },
+    { b: "Tidier policies", t: " — new documents get short names, like \"Bill Nov 2026\" or \"Renewal letter 2027\", and application or health answers aren't copied into the details." },
+    { b: "Finished bills drop off", t: " — a regular bill that's ended (like Barclays Phone after May 2027) no longer shows on Budget in the months after." },
+  ] },
   { v: "1.21.0", date: "31 Oct 2026", items: [
     { b: "Several documents at once", t: " — pick or share up to 10 PDFs or photos. Claude works out which belong together (a schedule and its certificate become one policy) and you check each policy in turn, with Save or Skip." },
     { b: "Policies in Budget", t: " — link a policy to its Budget bill from the policy's page. If the prices don't match, one tap updates the bill from the right month, and a renewal letter offers to do it too. Bills with a policy show 🛡️ on Budget; tap the bill to open it." },
@@ -936,7 +947,7 @@ function verCmp(a, b) {
   return 0;
 }
 const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
-const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Policies","Diag"];   // shortcuts at the top of the Dashboard
+const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Policies","Energy","Diag"];   // shortcuts at the top of the Dashboard
 // Hollie's bar, and her shortcuts at the top of Home.
 const PARTNER_TABS = ["Home","Budget","Pay Calc","Move","Diag"];
 const PARTNER_SHORTCUTS = ["Settle Up","Gifts"];
@@ -2544,7 +2555,7 @@ function PotsCard({ pots }) {
   );
 }
 // Shortcuts to the pages that aren't on the bottom bar, at the top of the first page.
-const TAB_ICON = { "Payslips": "📄", "Timesheet": "⏱️", "Gifts": "🎁", "Move": "🏡", "Policies": "🛡️", "Diag": "🛠️", "Pay Info": "💷", "Tax Year": "📅", "Leave": "🌴", "Settle Up": "🤝" };
+const TAB_ICON = { "Payslips": "📄", "Timesheet": "⏱️", "Gifts": "🎁", "Move": "🏡", "Policies": "🛡️", "Energy": "⚡", "Diag": "🛠️", "Pay Info": "💷", "Tax Year": "📅", "Leave": "🌴", "Settle Up": "🤝" };
 function NavTiles({ tabs, onGo }) {
   if (!tabs || !tabs.length) return null;
   // Up to 5 in a row; more go in two even rows (6 = two rows of three).
@@ -2794,9 +2805,10 @@ function policyFillRead(a, b) {
 }
 function policyReadPrompt(n, onePolicy, known) {
   return `${n === 1 ? "This is a document" : `These are ${n} documents, numbered in order,`} about UK household policies or deals: insurance, boiler cover, energy, broadband, TV, mobile, a mortgage or finance agreement, an MOT, or similar. ${onePolicy ? "They're all for the same policy." : n === 1 ? "" : "They may be for one policy or several."} Pull out what someone would want to keep. Return ONLY valid JSON, no markdown, in exactly this shape:
-{"doc_types":[""],"policies":[{"files":[1],"kind":"","provider":"","name":"","policy_number":"","cover":"","start_date":"","end_date":"","price":0,"price_period":"","payment":"","auto_renew":null,"phone":"","website":"","details":[{"label":"","value":""}]}]}
+{"doc_types":[""],"doc_names":[""],"policies":[{"files":[1],"kind":"","provider":"","name":"","policy_number":"","cover":"","start_date":"","end_date":"","price":0,"price_period":"","payment":"","auto_renew":null,"phone":"","website":"","details":[{"label":"","value":""}]}]}
 
 doc_types: one per document, in order: policy (schedule, certificate, welcome letter), renewal (renewal notice or invitation), contract (contract summary or agreement made out to the customer), statement (a bill or statement), terms (general terms and conditions, policy wording, IPID or key facts, price lists or brochures that aren't made out to the customer), or other.
+doc_names: one per document, in order: a short plain name for finding it again, at most 25 characters, with the year or month it covers where there is one, e.g. "Policy schedule 2026–27", "Renewal letter 2027", "Bill Nov 2026", "Annual statement 2025–26", "Key facts (IPID)", "Policy booklet", "Direct Debit notice 2026", "Application answers 2023". No provider name, no file extension.
 policies: one per policy or deal${onePolicy ? " (here exactly one, holding every document)" : ""}. files lists the document numbers that belong to it, and every document goes in exactly one. A policy's schedule, certificate, wording and terms, and the pages of one letter, go together.
 kind: one of car, home, boiler, pet, energy, broadband, mobile, breakdown, travel, life, gadget, mortgage, finance, mot, cartax, tv, other. home = buildings and/or contents insurance only. boiler = boiler cover, home emergency or central heating cover. broadband includes landline, TV packages and TV streaming subscriptions such as Sky, Virgin TV or Netflix. tv = the TV licence only. finance = car finance or a loan. cartax = vehicle tax.
 provider: the company the customer deals with, e.g. "Admiral", "Octopus Energy", "BT". The brand name, not a parent company or underwriter.
@@ -2808,7 +2820,7 @@ price: what the customer pays now, as a number, from their own documents only. N
 payment: how it's paid, e.g. "Direct Debit, monthly" or "Paid in full by card".
 auto_renew: true if it says it renews automatically, false if it says it won't, null if it doesn't say.
 phone: the main customer services number (the claims number if that's the only one). website: their website, e.g. "admiral.com".
-details: up to 10 useful facts with short labels: the customer's own specifics first (Excess, Car reg, No-claims, Drivers, Pet, Vet fees limit, Rebuild sum, Contents sum, Tariff, Unit rate, Standing charge, Exit fee, Speed, Minimum term, Price rise, Interest rate, Balance, Last year's price, Mileage), then the most important limits or exclusions from the terms. Never two details about the same thing. Leave out regulatory and company boilerplate: FCA numbers, the ombudsman, governing law, company addresses, complaints procedures.${known ? `\nThe policy already has these details: ${known}. In details, give only facts that aren't there yet or have changed, using the same label for a changed one.` : ""}
+details: up to 10 useful facts with short labels: the customer's own specifics first (Excess, Car reg, No-claims, Drivers, Pet, Vet fees limit, Rebuild sum, Contents sum, Tariff, Unit rate, Standing charge, Exit fee, Speed, Minimum term, Price rise, Interest rate, Balance, Last year's price, Mileage), then the most important limits or exclusions from the terms. Never two details about the same thing. Leave out regulatory and company boilerplate: FCA numbers, the ombudsman, governing law, company addresses, complaints procedures. Never include the customer's application answers or anything about their health, anywhere: date of birth, height, weight, smoking, alcohol, medical conditions, family medical history, occupation or lifestyle questions.${known ? `\nThe policy already has these details: ${known}. In details, give only facts that aren't there yet or have changed, using the same label for a changed one.` : ""}
 Use "" for anything that isn't in the documents. Return the JSON only.`;
 }
 // One request to Claude for some documents (up to POLICY_READ_MAX between them).
@@ -2837,15 +2849,24 @@ async function readPolicyChunk(preps, onePolicy, known) {
   const j = JSON.parse(m[0]);
   const n = preps.length;
   const types = Array.from({ length: n }, (_, i) => { const t = String((Array.isArray(j.doc_types) ? j.doc_types : [])[i] || "").toLowerCase(); return POLICY_DOC_WORD[t] ? t : "other"; });
+  const names = Array.from({ length: n }, (_, i) => policyDocName((Array.isArray(j.doc_names) ? j.doc_names : [])[i]));
   const list = Array.isArray(j.policies) ? j.policies : (j.kind ? [{ ...j, files: preps.map((_, i) => i + 1) }] : []);
   const policies = list.map(p => ({ files: (Array.isArray(p.files) ? p.files : []).map(x => parseInt(x, 10) - 1).filter(x => x >= 0 && x < n), read: policyCleanRead(p) }));
-  return { types, policies };
+  return { types, names, policies };
 }
+// A document's name as Claude gave it, tidied (house style: short, no ".pdf"), or "" if none.
+function policyDocName(v) {
+  const s = String(v == null ? "" : v).replace(/\.(pdf|jpe?g|png|webp)$/i, "").replace(/\s+/g, " ").trim();
+  return s.length > 40 ? s.slice(0, 40).trim() : s;
+}
+// A file's own name without its extension, for when Claude didn't name it.
+const policyFileLabel = n => String(n || "Document").replace(/\.(pdf|jpe?g|png|webp|gif|bmp)$/i, "").trim() || "Document";
 // Reads documents and sorts them into policies: [{idx: [file indexes], read | null, why}], and the
 // type of each file. Read together where they fit in one request; anything too big, or a request
 // that fails, is left for filling in by hand (the files are still kept).
 async function readPolicyBatch(preps, onePolicy, known) {
   const types = preps.map(() => "other");
+  const names = preps.map(() => "");
   let groups = [];
   const big = [], fit = [];
   preps.forEach((p, i) => (p.mime === "application/pdf" && p.blob.size > POLICY_READ_MAX ? big : fit).push(i));
@@ -2857,20 +2878,40 @@ async function readPolicyBatch(preps, onePolicy, known) {
     cur.push(i); size += s;
   }
   if (cur.length) chunks.push(cur);
+  const take = (chunk, res) => {
+    res.types.forEach((t, j) => { types[chunk[j]] = t; });
+    (res.names || []).forEach((nm, j) => { names[chunk[j]] = nm; });
+    const placed = new Set();
+    res.policies.forEach(pol => {
+      const idx = pol.files.map(j => chunk[j]).filter(i => !placed.has(i));
+      idx.forEach(i => placed.add(i));
+      if (idx.length) groups.push({ idx, read: pol.read, why: "" });
+    });
+    chunk.forEach(i => { if (!placed.has(i)) groups.push({ idx: [i], read: null, why: "Claude couldn't tell what " + preps[i].name + " is for, so fill in the details yourself." }); });
+  };
+  // A file Claude won't open (damaged, locked or not really a PDF) makes the whole request fail
+  // with a 400, so then each file is read on its own and only the bad one is left to fill in.
+  const badFile = e => /^API 400\b/.test(String((e && e.message) || "")) || /pdf|document|image|media/i.test(String((e && e.message) || ""));
   for (const chunk of chunks) {
     try {
-      const res = await readPolicyChunk(chunk.map(i => preps[i]), onePolicy, known);
-      res.types.forEach((t, j) => { types[chunk[j]] = t; });
-      const placed = new Set();
-      res.policies.forEach(pol => {
-        const idx = pol.files.map(j => chunk[j]).filter(i => !placed.has(i));
-        idx.forEach(i => placed.add(i));
-        if (idx.length) groups.push({ idx, read: pol.read, why: "" });
-      });
-      chunk.forEach(i => { if (!placed.has(i)) groups.push({ idx: [i], read: null, why: "Claude couldn't tell what " + preps[i].name + " is for, so fill in the details yourself." }); });
+      take(chunk, await readPolicyChunk(chunk.map(i => preps[i]), onePolicy, known));
     } catch (e) {
       console.error("Policy read failed:", e);
-      const why = "Couldn't read it automatically (" + String((e && e.message) || e).slice(0, 90) + "), so fill in the details yourself. The file will still be kept.";
+      if (chunk.length > 1 && badFile(e)) {
+        for (const i of chunk) {
+          try { take([i], await readPolicyChunk([preps[i]], onePolicy, known)); }
+          catch (e2) {
+            console.error("Policy read failed for " + preps[i].name + ":", e2);
+            groups.push({ idx: [i], read: null, why: badFile(e2)
+              ? "Claude couldn't open " + preps[i].name + " (it may be damaged or password-protected), so fill in its details yourself. The file will still be kept."
+              : "Couldn't read " + preps[i].name + " automatically (" + String((e2 && e2.message) || e2).slice(0, 90) + "), so fill in the details yourself. The file will still be kept." });
+          }
+        }
+        continue;
+      }
+      const why = chunk.length === 1 && badFile(e)
+        ? "Claude couldn't open " + preps[chunk[0]].name + " (it may be damaged or password-protected), so fill in its details yourself. The file will still be kept."
+        : "Couldn't read it automatically (" + String((e && e.message) || e).slice(0, 90) + "), so fill in the details yourself. The file will still be kept.";
       chunk.forEach(i => groups.push({ idx: [i], read: null, why }));
     }
   }
@@ -2889,7 +2930,7 @@ async function readPolicyBatch(preps, onePolicy, known) {
     groups = [{ idx: groups.flatMap(g => g.idx), read, why: read ? "" : groups[0].why }];
   }
   groups.forEach(g => g.idx.sort((a, b) => a - b));
-  return { groups, types };
+  return { groups, types, names };
 }
 const blobToBase64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(blob); });
 // Photos are shrunk to 2000px on the long side (plenty to read a letter, and far smaller).
@@ -2906,10 +2947,25 @@ async function shrinkPhoto(file, max = 2000) {
     return blob;
   } finally { URL.revokeObjectURL(url); }
 }
+// Where a PDF really starts. Some providers' downloads have a wrapper before "%PDF-" (L&G's had
+// 881 bytes of XML): phones open them fine, but Claude rejects the whole request.
+async function pdfStart(blob) {
+  try {
+    const head = new Uint8Array(await blob.slice(0, 65536).arrayBuffer());
+    for (let i = 0; i + 4 < head.length; i++) {
+      if (head[i] === 0x25 && head[i + 1] === 0x50 && head[i + 2] === 0x44 && head[i + 3] === 0x46 && head[i + 4] === 0x2d) return i;
+    }
+  } catch (e) {}
+  return 0;
+}
 async function preparePolicyFile(file) {
   const name = file.name || "document";
   // The file's own type goes up with it, and some phones leave it blank: give it the right one.
-  if (file.type === "application/pdf" || /\.pdf$/i.test(name)) return { blob: file.type === "application/pdf" ? file : new Blob([file], { type: "application/pdf" }), mime: "application/pdf", name: /\.pdf$/i.test(name) ? name : name + ".pdf", ext: "pdf" };
+  if (file.type === "application/pdf" || /\.pdf$/i.test(name)) {
+    const at = await pdfStart(file);
+    const blob = at > 0 ? file.slice(at, file.size, "application/pdf") : file.type === "application/pdf" ? file : new Blob([file], { type: "application/pdf" });
+    return { blob, mime: "application/pdf", name: /\.pdf$/i.test(name) ? name : name + ".pdf", ext: "pdf" };
+  }
   if (/^image\//.test(file.type || "") || /\.(jpe?g|png|webp|gif|bmp)$/i.test(name)) {
     const blob = await shrinkPhoto(file);
     return { blob, mime: "image/jpeg", name: name.replace(/\.[^.]+$/, "") + ".jpg", ext: "jpg" };
@@ -3020,8 +3076,8 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
   const fileInput = useRef(null);
   const target = useRef(null);       // the policy they're being added to (null = work it out)
   const tapAt = useRef(0), gotAt = useRef(0), lastSig = useRef(null);
-  const reviewOf = (g, preps, types, fixed) => {
-    const files = g.idx.map(i => ({ ...preps[i], docType: types[i] || "other" }));
+  const reviewOf = (g, preps, types, fixed, names = []) => {
+    const files = g.idx.map(i => ({ ...preps[i], docType: types[i] || "other", label: names[i] || policyFileLabel(preps[i].name) }));
     const termsOnly = files.length > 0 && files.every(f => f.docType === "terms");
     const match = fixed || policyMatch(listRef.current, g.read);
     return {
@@ -3052,7 +3108,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
     let res;
     try { res = await readPolicyBatch(preps, !!fresh, known); }
     finally { setReading(null); }
-    const items = res.groups.map(g => reviewOf(g, preps, res.types, fresh));
+    const items = res.groups.map(g => reviewOf(g, preps, res.types, fresh, res.names));
     items.forEach((it, i) => { it.pos = i + 1; it.of = items.length; });
     if (problems.length) setNote({ ok: false, text: problems.join(" ") });
     batchSaved.current = 0;
@@ -3155,7 +3211,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
         return;
       }
       uploaded.push(path);
-      docs.push({ id: docId, path, name: file.name, mime: file.mime, size: file.blob.size, kind: file.docType || "other", added: today });
+      docs.push({ id: docId, path, name: file.label || policyFileLabel(file.name), mime: file.mime, size: file.blob.size, kind: file.docType || "other", added: today });
     }
     const period = price != null ? (f.price_period || "month") : null;
     const src = (e.files || []).find(x => x.docType !== "terms") || (e.files || [])[0];
@@ -3167,7 +3223,7 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
       start_date: f.start_date || null, end_date: f.end_date || null, price, price_period: period,
       payment: policyTrim(f.payment), auto_renew: f.auto_renew, phone: policyTrim(f.phone), website: policyTrim(f.website),
       details: f.details.map(d => ({ label: d.label.trim(), value: d.value.trim() })).filter(d => d.label || d.value),
-      prices: policyNextPrices(base && base.prices, price, period, priceDate, src ? src.name : null),
+      prices: policyNextPrices(base && base.prices, price, period, priceDate, src ? (src.label || policyFileLabel(src.name)) : null),
       docs, notes: policyTrim(f.notes), archived: !!f.archived, updated_at: new Date().toISOString(),
     };
     const { data, error } = await trackSave(supabase.from("policies").upsert(row, { onConflict: "id" }).select().single());
@@ -3566,13 +3622,13 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
         <div onClick={ev => ev.stopPropagation()} style={sheet}>
           <SheetGrab onClose={close}/>
           <div style={{ fontSize: 15, color: "#e8eaf0", fontWeight: 800, marginBottom: 6 }}>{title}</div>
-          {e.mode === "doc" && <div style={{ ...small, marginBottom: 8, color: e.read ? SUBTEXT : "#ffb84a" }}>{e.read ? "Read from " + (e.files.length === 1 ? e.files[0].name : e.files.length + " documents") + ". Check it all before saving." : e.why}</div>}
+          {e.mode === "doc" && <div style={{ ...small, marginBottom: 8, color: e.read ? SUBTEXT : "#ffb84a" }}>{e.read ? "Read from " + (e.files.length === 1 ? (e.files[0].label || e.files[0].name) : e.files.length + " documents") + ". Check it all before saving." : e.why}</div>}
           {e.mode === "doc" && e.files.length > 1 && (
             <div style={{ background: "#111520", border: "1px solid #1e2535", borderRadius: 10, padding: "6px 12px", marginBottom: 12 }}>
               {e.files.map((x, i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13 }}>
                   <span>{/^image\//.test(x.mime) ? "🖼️" : "📄"}</span>
-                  <span style={{ flex: 1, minWidth: 0, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.name}</span>
+                  <span style={{ flex: 1, minWidth: 0, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.label || x.name}</span>
                   <span style={{ color: SUBTEXT, fontSize: 12.5, flexShrink: 0 }}>{POLICY_DOC_WORD[x.docType] || "Document"}</span>
                 </div>
               ))}
@@ -3705,6 +3761,513 @@ function PoliciesPage({ user, mfa, onEnterCode, reloadTick, shared, onSharedTake
       {open && policySheet()}
       {picker && pickerSheet()}
       {edit && editSheet()}
+    </div>
+  );
+}
+
+// ── Energy: the smart plugs (Shelly) and the whole house (Bright) ──
+// The energy function reads the plugs every 15 minutes (and every minute while this page is open)
+// and Bright a few times a day; this page shows what's been kept, from a two-step session. Costs
+// use the electricity unit rate in the energy policy's details: the units used only, as the
+// standing charge doesn't change with use.
+const ENERGY_ICONS = [
+  { k: "computer", e: "🖥️", l: "Computer" },
+  { k: "treadmill", e: "🏃", l: "Treadmill" },
+  { k: "aircon", e: "❄️", l: "Air con" },
+  { k: "other", e: "🔌", l: "Other" },
+];
+const energyIcon = k => (ENERGY_ICONS.find(x => x.k === k) || ENERGY_ICONS[3]).e;
+const ENERGY_ERR = {
+  bad_server: "That doesn't look like the server from the Shelly app. It starts with shelly- and ends with shelly.cloud.",
+  bad_key: "Shelly didn't accept that key. Copy it again from the Shelly app.",
+  busy: "Shelly asked Vaulted to slow down. Try again in a few seconds.",
+  shelly_down: "Couldn't reach Shelly. Try again in a minute.",
+  not_linked: "Connect Shelly first.",
+  bad_id: "That isn't a Shelly Device ID. It's 12 letters and numbers, like b48a0a1cd978.",
+  not_found: "Shelly doesn't have that Device ID on your account.",
+  not_a_meter: "That Shelly device doesn't measure power.",
+  bad_user: "Enter the email you use for Bright.",
+  bad_password: "Enter your Bright password.",
+  bright_signin: "Bright didn't accept that email and password.",
+  bright_down: "Couldn't reach Bright. Try again in a minute.",
+  no_meter: "Bright hasn't found your smart meter yet. It can take a couple of days after you sign up; Vaulted keeps checking.",
+  two_step: "Enter your two-step code first.",
+  signin: "Please sign in again.",
+  network: "No connection. Try again when you're back online.",
+  server: "Something went wrong on the server. Try again in a minute.",
+};
+const energyErrText = e => ENERGY_ERR[e] || ENERGY_ERR.server;
+// Calls the energy function. Always resolves; failures come back as {error}.
+async function energyCall(action, extra = {}) {
+  try {
+    const { data, error } = await supabase.functions.invoke("energy", { body: { action, ...extra } });
+    if (error) {
+      let body = null;
+      try { if (error.context && typeof error.context.json === "function") body = await error.context.json(); } catch (e) {}
+      return { error: (body && body.error) || "network" };
+    }
+    return data || {};
+  } catch (e) { return { error: "network" }; }
+}
+const energyMissing = error => {
+  if (!error) return false;
+  const msg = String(error.message || error.details || "");
+  return error.code === "42P01" || error.code === "PGRST205" || (/energy_/.test(msg) && /could not find|does not exist|schema cache/i.test(msg));
+};
+// The electricity unit rate (pence per kWh) and its VAT, from an energy policy's details, e.g.
+// "Electricity unit rate: 26.282p per kWh" and "Electricity VAT: 0% from 1 October 2026".
+function energyRateOf(policies) {
+  for (const p of policies || []) {
+    const ds = (Array.isArray(p.details) ? p.details : []).filter(d => d && d.label && d.value);
+    const rateD = ds.find(d => /electric/i.test(d.label) && /unit/i.test(d.label))
+      || ds.find(d => /unit rate/i.test(d.label) && !/gas/i.test(d.label));
+    if (!rateD) continue;
+    const v = String(rateD.value);
+    const pm = v.match(/(\d+(?:\.\d+)?)\s*p\b/i), gm = v.match(/£\s*(\d+(?:\.\d+)?)/);
+    const pence = pm ? Number(pm[1]) : gm ? Number(gm[1]) * 100 : null;
+    if (!pence || !isFinite(pence) || pence <= 0 || pence > 200) continue;
+    const vatD = ds.find(d => /electric/i.test(d.label) && /vat/i.test(d.label));
+    const vm = vatD && String(vatD.value).match(/(\d+(?:\.\d+)?)\s*%/);
+    return { pence, vat: vm ? Number(vm[1]) : 0, from: p.provider || p.name || "your energy policy" };
+  }
+  return null;
+}
+const energyCost = (kwh, rate) => (rate ? kwh * rate.pence / 100 * (1 + rate.vat / 100) : null);
+const kwhText = kwh => (kwh >= 100 ? Math.round(kwh) : kwh >= 10 ? kwh.toFixed(1) : kwh.toFixed(2)) + " kWh";
+const wattsText = w => (w >= 1000 ? (w / 1000).toFixed(2) + " kW" : Math.round(w) + " W");
+const isoDayShift = (iso, n) => { const [y, m, d] = iso.split("-").map(Number); return localISO(new Date(y, m - 1, d + n)); };
+const energyMonthName = iso => { const [y, m] = iso.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long" }); };
+const energyDayLabel = iso => { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); };
+
+function EnergyPage({ user, mfa, onEnterCode }) {
+  const [state, setState] = useState("loading");    // loading | ready | locked | nofactor | missing | error
+  const [status, setStatus] = useState(null);       // from the energy function: what's linked
+  const [devices, setDevices] = useState([]);
+  const [days, setDays] = useState([]);             // the plugs' days: {device_id, day, wh}
+  const [house, setHouse] = useState([]);           // Bright's days: {day, kwh, halves}
+  const [rate, setRate] = useState(null);
+  const [liveAt, setLiveAt] = useState(null);
+  const [liveProblem, setLiveProblem] = useState(null);
+  const [busy, setBusy] = useState(null);           // what's being done, e.g. "shelly"
+  const [note, setNote] = useState(null);           // {ok, text, where}
+  const [shellyForm, setShellyForm] = useState({ server: "", key: "" });
+  const [brightForm, setBrightForm] = useState({ username: "", password: "" });
+  const [addId, setAddId] = useState(null);         // the "add a plug by Device ID" box, open when not null
+  const [editDev, setEditDev] = useState(null);     // {id, name, icon, hidden, saving, err}
+  const [sure, setSure] = useState(null);           // "shelly" / "bright": tapped Disconnect once
+  const today = localISO();
+  const monthStart = today.slice(0, 8) + "01";
+  const since = isoDayShift(today, -8) < monthStart ? isoDayShift(today, -8) : monthStart;
+
+  const readDays = useCallback(async () => {
+    const [d, h] = await Promise.all([
+      jwtRetry(() => supabase.from("energy_days").select("device_id,day,wh").eq("user_id", user.id).gte("day", since)),
+      jwtRetry(() => supabase.from("energy_house").select("day,kwh,halves").eq("user_id", user.id).gte("day", since)),
+    ]);
+    if (!d.error) setDays(d.data || []);
+    if (!h.error) setHouse((h.data || []).map(r => ({ day: r.day, kwh: Number(r.kwh) || 0, halves: Number(r.halves) || 0 })));
+    return d.error || h.error || null;
+  }, [user, since]);
+
+  const load = useCallback(async () => {
+    if (!user) return;
+    if (!mfa.hasFactor) { setState("nofactor"); return; }
+    if (mfa.level !== "aal2") { setState("locked"); return; }
+    const [st, dv, pol] = await Promise.all([
+      energyCall("status"),
+      jwtRetry(() => supabase.from("energy_devices").select("*").eq("user_id", user.id).order("sort", { ascending: true }).order("created_at", { ascending: true })),
+      jwtRetry(() => supabase.from("policies").select("provider,name,details,archived").eq("user_id", user.id).eq("kind", "energy").eq("archived", false)),
+    ]);
+    if (dv.error) {
+      if (energyMissing(dv.error)) { setState("missing"); return; }
+      reportDbError("getEnergy", dv.error);
+      setState(s => (s === "ready" ? "ready" : "error"));
+      return;
+    }
+    const dErr = await readDays();
+    if (dErr) reportDbError("getEnergy", dErr); else reportDbError("getEnergy", null);
+    setDevices(dv.data || []);
+    if (!pol.error) setRate(energyRateOf(pol.data || []));
+    if (!st.error) setStatus(st);
+    setState("ready");
+  }, [user, mfa.hasFactor, mfa.level, readDays]);
+  useEffect(() => { load(); }, [load]);
+
+  // While the page is open, the plugs are read about once a minute (Shelly allows one call a second).
+  const shellyLinked = !!(status && status.shelly && status.shelly.linked);
+  const live = useCallback(async () => {
+    const r = await energyCall("live");
+    if (r.error && !r.devices) { setLiveProblem(energyErrText(r.error)); return; }
+    if (Array.isArray(r.devices)) setDevices(r.devices);
+    setLiveProblem(r.problem || (r.error ? energyErrText(r.error) : null));
+    setLiveAt(r.checkedAt || new Date().toISOString());
+    await readDays();
+  }, [readDays]);
+  useEffect(() => {
+    if (state !== "ready" || !shellyLinked) return;
+    let gone = false, timer = null;
+    const tick = async () => {
+      if (gone) return;
+      if (typeof document === "undefined" || document.visibilityState === "visible") await live();
+      if (!gone) timer = setTimeout(tick, 60000);
+    };
+    tick();
+    return () => { gone = true; if (timer) clearTimeout(timer); };
+  }, [state, shellyLinked, live]);
+
+  // ── Actions ──
+  const say = (ok, text, where) => setNote({ ok, text, where });
+  const connectShelly = async () => {
+    if (busy) return;
+    haptic(); setNote(null); setBusy("shelly");
+    const r = await energyCall("shelly_link", { server: shellyForm.server.trim(), key: shellyForm.key.trim() });
+    setBusy(null);
+    if (r.error) { say(false, energyErrText(r.error), "shelly"); return; }
+    setShellyForm({ server: "", key: "" });
+    if (Array.isArray(r.devices)) setDevices(r.devices);
+    say(true, r.listed && r.found
+      ? `Connected. Found ${r.found} plug${r.found === 1 ? "" : "s"}: give ${r.found === 1 ? "it a name" : "each one a name"} below.`
+      : "Connected. Now add each plug by its Device ID: in the Shelly app, open the plug → Settings → Device information → Device ID.", "shelly");
+    if (!(r.listed && r.found)) setAddId("");
+    await load();
+  };
+  const addPlug = async () => {
+    if (busy || addId == null) return;
+    haptic(); setNote(null); setBusy("add");
+    const r = await energyCall("shelly_add", { id: addId });
+    setBusy(null);
+    if (r.error) { say(false, energyErrText(r.error), "add"); return; }
+    if (Array.isArray(r.devices)) setDevices(r.devices);
+    setAddId(null);
+    say(true, r.added ? "Added. Give it a name below." : "That plug's already here.", "plugs");
+  };
+  const disconnectShelly = async () => {
+    if (sure !== "shelly") { haptic(); setSure("shelly"); return; }
+    haptic(); setSure(null); setBusy("shelly");
+    const r = await energyCall("shelly_unlink");
+    setBusy(null);
+    if (r.error) { say(false, energyErrText(r.error), "shelly"); return; }
+    say(true, "Shelly disconnected. Your plugs' history is kept.", "shelly");
+    await load();
+  };
+  const connectBright = async () => {
+    if (busy) return;
+    haptic(); setNote(null); setBusy("bright");
+    const r = await energyCall("bright_link", { username: brightForm.username.trim(), password: brightForm.password });
+    setBusy(null);
+    if (r.error && !r.linked) { say(false, energyErrText(r.error), "bright"); return; }
+    setBrightForm({ username: "", password: "" });
+    say(true, !r.meter ? energyErrText("no_meter") : r.error ? "Connected, but the first read didn't work. Vaulted will try again soon." : "Connected. Your smart meter's last few weeks are in.", "bright");
+    await load();
+  };
+  const syncBright = async () => {
+    if (busy) return;
+    haptic(); setNote(null); setBusy("bright");
+    const r = await energyCall("bright_sync");
+    setBusy(null);
+    if (r.error && r.ok !== false) { say(false, energyErrText(r.error), "bright"); return; }
+    say(r.ok !== false, r.ok !== false ? "Checked Bright." : energyErrText(r.error), "bright");
+    await load();
+  };
+  const disconnectBright = async () => {
+    if (sure !== "bright") { haptic(); setSure("bright"); return; }
+    haptic(); setSure(null); setBusy("bright");
+    const r = await energyCall("bright_unlink");
+    setBusy(null);
+    if (r.error) { say(false, energyErrText(r.error), "bright"); return; }
+    say(true, "Bright disconnected. The days already in are kept.", "bright");
+    await load();
+  };
+  const saveDevice = async () => {
+    const e = editDev;
+    if (!e || e.saving) return;
+    const name = e.name.trim().slice(0, 40);
+    if (!name) { setEditDev(x => ({ ...x, err: "Give it a name." })); return; }
+    setEditDev(x => ({ ...x, saving: true, err: "" }));
+    const { error } = await trackSave(supabase.from("energy_devices").update({ name, icon: e.icon || null, hidden: !!e.hidden }).eq("id", e.id));
+    if (error) { reportDbError("saveEnergyDevice", error); setEditDev(x => x && ({ ...x, saving: false, err: "Couldn't save: " + error.message })); return; }
+    setDevices(list => list.map(d => (d.id === e.id ? { ...d, name, icon: e.icon || null, hidden: !!e.hidden } : d)));
+    setEditDev(null);
+  };
+
+  // ── Styles (as Policies) ──
+  const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 10 };
+  const hdr = { fontSize: 11.5, color: SUBTEXT, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 };
+  const small = { fontSize: 13, color: SUBTEXT, lineHeight: 1.5 };
+  const mini = { background: "#1e2535", border: "1px solid #2a3050", borderRadius: 7, color: "#8ec5ff", fontSize: 12.5, fontWeight: 700, padding: "7px 11px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 };
+  const bigBtn = { background: "#1a3a5a", border: "1px solid #2a5a8a", borderRadius: 10, color: "#8ec5ff", fontSize: 15, fontWeight: 700, padding: "13px", cursor: "pointer" };
+  const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #2a3050", borderRadius: 8, color: "#e8eaf0", fontSize: 15, padding: "12px 14px", marginBottom: 10, fontFamily: "inherit" };
+  const overlay = { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 210, background: "rgba(0,0,0,0.6)" };
+  const sheet = { position: "absolute", left: 0, right: 0, bottom: 0, background: "#141824", borderTop: "1px solid #2a3050", borderRadius: "16px 16px 0 0", padding: "8px 14px", paddingBottom: "calc(16px + env(safe-area-inset-bottom))", maxHeight: "90vh", overflowY: "auto" };
+  const plainBtn = { width: "100%", background: "transparent", border: "none", color: SUBTEXT, fontSize: 13.5, fontWeight: 600, padding: "10px", cursor: "pointer" };
+  const seg = on => ({ flex: 1, background: on ? "#1a3a5a" : "transparent", border: "1px solid " + (on ? "#2a5a8a" : "#2a3050"), borderRadius: 8, color: on ? "#8ec5ff" : SUBTEXT, fontSize: 13, fontWeight: 700, padding: "9px 4px", cursor: "pointer" });
+  const noteFor = where => note && note.where === where
+    ? <div style={{ fontSize: 13.5, color: note.ok ? "#00c88c" : "#ff6b8a", margin: "8px 0 2px", lineHeight: 1.5 }}>{note.text}</div> : null;
+
+  if (state !== "ready") {
+    const box = (body, extra) => <div style={{ ...card, textAlign: "center", padding: "22px 14px", lineHeight: 1.55 }}><div style={{ fontSize: 28, marginBottom: 6 }}>⚡</div>{body}{extra}</div>;
+    if (state === "loading") return box(<div style={small}>Loading…</div>);
+    if (state === "nofactor") return box(<div style={small}>Energy is kept behind two-step sign-in, like the Monzo details. Turn it on in Diag → Bank &amp; two-step.</div>);
+    if (state === "locked") return box(<div style={small}>Enter your two-step code to see your energy on this phone.</div>,
+      <button onClick={() => { haptic(); onEnterCode(); }} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>Enter code</button>);
+    if (state === "missing") return box(<div style={{ ...small, color: "#ffb84a" }}>Energy isn't set up in the database yet. Run the Energy setup SQL in Supabase (Claude sent it to you), then come back.</div>,
+      <button onClick={() => { haptic(); setState("loading"); load(); }} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>Check again</button>);
+    return box(<div style={{ ...small, color: "#ff6b8a" }}>Couldn't load your energy.</div>,
+      <button onClick={() => { haptic(); setState("loading"); load(); }} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>Try again</button>);
+  }
+
+  // ── The figures ──
+  const shown = devices.filter(d => !d.hidden);
+  const whOf = {};   // device id -> {day: Wh}
+  days.forEach(r => { (whOf[r.device_id] = whOf[r.device_id] || {})[r.day] = Number(r.wh) || 0; });
+  const kwhOn = (id, from, to = from) => Object.entries(whOf[id] || {}).reduce((a, [day, wh]) => a + (day >= from && day <= to ? wh : 0), 0) / 1000;
+  const plugsOn = (from, to = from) => shown.reduce((a, d) => a + kwhOn(d.id, from, to), 0);
+  const money = kwh => { const c = energyCost(kwh, rate); return c == null ? null : fmt(c); };
+  const nowWatts = shown.reduce((a, d) => a + (d.online !== false && d.is_on && d.watts ? Number(d.watts) : 0), 0);
+  const lastRead = shown.reduce((a, d) => (d.read_at && (!a || d.read_at > a) ? d.read_at : a), null);
+  const brightLinked = !!(status && status.bright && status.bright.linked);
+  const statusLost = !status;   // the energy function didn't answer: don't offer to connect again
+  // Bright: the latest whole day, and this month's days so far.
+  const fullDays = house.filter(h => h.halves >= 46).sort((a, b) => b.day.localeCompare(a.day));
+  const lastFull = fullDays[0] || null;
+  const monthHouse = house.filter(h => h.day >= monthStart);
+  const monthHouseKwh = monthHouse.reduce((a, h) => a + h.kwh, 0);
+  const monthHouseTo = monthHouse.reduce((a, h) => (h.day > a ? h.day : a), "");
+  const pct = (part, whole) => (whole > 0 ? Math.round(part / whole * 100) : null);
+
+  const usageRows = (from, to) => (
+    <>
+      {shown.map(d => {
+        const k = kwhOn(d.id, from, to);
+        return (
+          <div key={d.id} style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "7px 0", borderBottom: "1px solid #1a1f2e" }}>
+            <span style={{ fontSize: 15, flexShrink: 0 }}>{energyIcon(d.icon)}</span>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 14.5, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</span>
+            <span style={{ fontSize: 13.5, color: SUBTEXT, flexShrink: 0 }}>{kwhText(k)}</span>
+            {rate && <span style={{ fontSize: 15, fontWeight: 700, color: "#e8eaf0", width: 64, textAlign: "right", flexShrink: 0 }}>{money(k)}</span>}
+          </div>
+        );
+      })}
+      {shown.length > 1 && (() => {
+        const k = plugsOn(from, to);
+        return (
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "8px 0 0" }}>
+            <span style={{ flex: 1, fontSize: 13.5, color: SUBTEXT, fontWeight: 700 }}>Total</span>
+            <span style={{ fontSize: 13.5, color: SUBTEXT, flexShrink: 0 }}>{kwhText(k)}</span>
+            {rate && <span style={{ fontSize: 15.5, fontWeight: 800, color: "#e8eaf0", width: 64, textAlign: "right", flexShrink: 0 }}>{money(k)}</span>}
+          </div>
+        );
+      })()}
+    </>
+  );
+
+  const editSheet = () => {
+    const e = editDev, d = devices.find(x => x.id === e.id) || {};
+    const close = () => setEditDev(null);
+    return (
+      <div onClick={close} onTouchStart={ev => ev.stopPropagation()} style={overlay}>
+        <div onClick={ev => ev.stopPropagation()} style={sheet}>
+          <SheetGrab onClose={close}/>
+          <div style={{ fontSize: 15, color: "#e8eaf0", fontWeight: 800, marginBottom: 4 }}>Name this plug</div>
+          <div style={{ ...small, marginBottom: 10 }}>
+            {d.online === false ? "Offline right now." : d.is_on ? "Using " + wattsText(Number(d.watts) || 0) + " right now." : "Switched off right now."}
+            {" "}Not sure which is which? Switch the device on and watch which plug's watts go up.
+          </div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            {ENERGY_ICONS.map(x => (
+              <button key={x.k} onClick={() => { haptic(); setEditDev(v => ({ ...v, icon: x.k, name: !v.name.trim() || /^Plug( \d+)?$/.test(v.name.trim()) || ENERGY_ICONS.some(y => y.l === v.name.trim()) ? (x.k === "other" ? v.name : x.l) : v.name })); }} style={seg(e.icon === x.k)}>
+                <div style={{ fontSize: 18 }}>{x.e}</div><div style={{ marginTop: 2 }}>{x.l}</div>
+              </button>
+            ))}
+          </div>
+          <input value={e.name} onChange={ev => { const v = ev.target.value; setEditDev(x => ({ ...x, name: v })); }} placeholder="e.g. Computer" maxLength={40} style={inp}/>
+          <div onClick={() => { haptic(); setEditDev(x => ({ ...x, hidden: !x.hidden })); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 2px 12px", cursor: "pointer" }}>
+            <span style={{ width: 20, height: 20, borderRadius: 5, border: "2px solid " + (e.hidden ? "#4a9eff" : "#2a3050"), background: e.hidden ? "#4a9eff" : "transparent", color: "#000", fontSize: 14, fontWeight: 900, lineHeight: "16px", textAlign: "center" }}>{e.hidden ? "✓" : ""}</span>
+            <span style={{ fontSize: 14, color: "#e8eaf0" }}>Hide it (stops reading it)</span>
+          </div>
+          {d.shelly_id && <div style={{ ...small, marginBottom: 10 }}>Device ID {d.shelly_id}{d.model ? " · " + d.model : ""}</div>}
+          {e.err && <div style={{ fontSize: 13.5, color: "#ff6b8a", margin: "0 0 10px" }}>{e.err}</div>}
+          <button onClick={saveDevice} disabled={e.saving} style={{ ...bigBtn, width: "100%", opacity: e.saving ? 0.7 : 1 }}>{e.saving ? "Saving…" : "Save"}</button>
+          <button onClick={close} style={plainBtn}>Cancel</button>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {!statusLost && !shellyLinked && devices.length === 0 && !brightLinked && (
+        <div style={{ ...card, textAlign: "center", padding: "20px 14px", lineHeight: 1.55 }}>
+          <div style={{ fontSize: 28, marginBottom: 6 }}>⚡</div>
+          <div style={small}>See what your computer, treadmill and air con use, and what they cost, from your Shelly smart plugs. Connect Shelly below once the plugs are set up in the Shelly app.</div>
+        </div>
+      )}
+      {/* ── Right now ── */}
+      {shellyLinked && shown.length > 0 && (
+        <div style={card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div style={hdr}>Right now</div>
+            <div style={{ fontSize: 12.5, color: SUBTEXT }}>{lastRead || liveAt ? "updated " + agoText(lastRead || liveAt) : ""}</div>
+          </div>
+          {shown.map(d => {
+            const off = d.online === false, on = !off && d.is_on;
+            return (
+              <div key={d.id} onClick={() => { haptic(); setEditDev({ id: d.id, name: d.name || "", icon: d.icon || null, hidden: !!d.hidden, saving: false, err: "" }); }}
+                style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: "1px solid #1a1f2e", cursor: "pointer" }}>
+                <span style={{ fontSize: 20, flexShrink: 0 }}>{energyIcon(d.icon)}</span>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 15, color: "#e8eaf0", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</span>
+                <span style={{ fontSize: 15, fontWeight: 700, color: off ? "#ffb84a" : on ? "#00c88c" : SUBTEXT, flexShrink: 0 }}>
+                  {off ? "Offline" : on ? "On · " + wattsText(Number(d.watts) || 0) : d.watts > 0 ? wattsText(Number(d.watts)) : "Off"}
+                </span>
+              </div>
+            );
+          })}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingTop: 8 }}>
+            <span style={{ fontSize: 13.5, color: SUBTEXT, fontWeight: 700 }}>Using now</span>
+            <span style={{ fontSize: 17, fontWeight: 800, color: "#e8eaf0" }}>{wattsText(nowWatts)}</span>
+          </div>
+          {liveProblem && <div style={{ fontSize: 13, color: "#ffb84a", marginTop: 8, lineHeight: 1.5 }}>{liveProblem}</div>}
+        </div>
+      )}
+
+      {/* ── Today and this month ── */}
+      {shown.length > 0 && (
+        <>
+          <div style={card}>
+            <div style={hdr}>Today</div>
+            {usageRows(today, today)}
+          </div>
+          {monthStart !== today && (
+            <div style={card}>
+              <div style={hdr}>{energyMonthName(today)} so far</div>
+              {usageRows(monthStart, today)}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── The whole house, from Bright ── */}
+      {brightLinked && (
+        <div style={card}>
+          <div style={hdr}>Whole house</div>
+          {!lastFull && !monthHouse.length && <div style={small}>{(status.bright.problem) || "Nothing from your smart meter yet. Bright is usually a day behind."}</div>}
+          {lastFull && (() => {
+            const p = plugsOn(lastFull.day), share = pct(p, lastFull.kwh);
+            return (
+              <div style={{ padding: "4px 0 8px", borderBottom: monthHouse.length ? "1px solid #1a1f2e" : "none" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+                  <span style={{ fontSize: 14.5, color: "#e8eaf0" }}>{lastFull.day === isoDayShift(today, -1) ? "Yesterday" : energyDayLabel(lastFull.day)}</span>
+                  <span><span style={{ fontSize: 13.5, color: SUBTEXT }}>{kwhText(lastFull.kwh)}</span>{rate && <span style={{ fontSize: 15.5, fontWeight: 800, color: "#e8eaf0", marginLeft: 10 }}>{money(lastFull.kwh)}</span>}</span>
+                </div>
+                {shown.length > 0 && share != null && <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 3 }}>Your plugs: {kwhText(p)} ({share}%)</div>}
+              </div>
+            );
+          })()}
+          {monthHouse.length > 0 && (() => {
+            const p = monthHouse.reduce((a, h) => a + plugsOn(h.day), 0), share = pct(p, monthHouseKwh);
+            return (
+              <div style={{ paddingTop: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+                  <span style={{ fontSize: 14.5, color: "#e8eaf0" }}>{energyMonthName(today)} to {energyDayLabel(monthHouseTo).replace(/^\w+ /, "")}</span>
+                  <span><span style={{ fontSize: 13.5, color: SUBTEXT }}>{kwhText(monthHouseKwh)}</span>{rate && <span style={{ fontSize: 15.5, fontWeight: 800, color: "#e8eaf0", marginLeft: 10 }}>{money(monthHouseKwh)}</span>}</span>
+                </div>
+                {shown.length > 0 && share != null && <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 3 }}>Your plugs: {kwhText(p)} ({share}%)</div>}
+              </div>
+            );
+          })()}
+          <div style={{ ...small, marginTop: 10 }}>From your smart meter, through Bright, about a day behind.{rate ? " Costs are for the units used; the standing charge is on top." : ""}</div>
+          {status.bright.problem && (lastFull || monthHouse.length > 0) && <div style={{ fontSize: 13, color: "#ffb84a", marginTop: 6, lineHeight: 1.5 }}>{status.bright.problem}</div>}
+        </div>
+      )}
+
+      {/* ── The rate ── */}
+      {(shown.length > 0 || brightLinked) && (
+        <div style={{ ...small, margin: "0 4px 12px" }}>
+          {rate ? <>Costs use {rate.pence}p per kWh{rate.vat ? " plus " + rate.vat + "% VAT" : ""}, from your {rate.from} policy. Change it in Policies.</>
+            : <span style={{ color: "#ffb84a" }}>Add an "Electricity unit rate" detail (like 26.28p per kWh) to your energy policy in Policies to see costs.</span>}
+        </div>
+      )}
+
+      {/* ── Plugs: connect Shelly, name and add them ── */}
+      <div style={card}>
+        <div style={hdr}>Smart plugs (Shelly)</div>
+        {statusLost ? (
+          <div style={small}>Couldn't check the connection just now. <button onClick={() => { haptic(); load(); }} style={{ ...mini, marginLeft: 6 }}>Try again</button></div>
+        ) : !shellyLinked ? (
+          <>
+            <div style={{ ...small, marginBottom: 10 }}>
+              In the Shelly app, go to <b style={{ color: "#e8eaf0" }}>Settings → User settings → Authorization cloud key</b> (it may be under Access and permissions) and tap <b style={{ color: "#e8eaf0" }}>Get key</b>. Copy the server and the key into the boxes below.
+            </div>
+            <input value={shellyForm.server} onChange={e => { const v = e.target.value; setShellyForm(f => ({ ...f, server: v })); }} placeholder="Server, e.g. https://shelly-103-eu.shelly.cloud" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
+            <input value={shellyForm.key} onChange={e => { const v = e.target.value; setShellyForm(f => ({ ...f, key: v })); }} placeholder="Authorization cloud key" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
+            <button onClick={connectShelly} disabled={!!busy || !shellyForm.server.trim() || !shellyForm.key.trim()} style={{ ...bigBtn, width: "100%", opacity: busy === "shelly" || !shellyForm.server.trim() || !shellyForm.key.trim() ? 0.6 : 1 }}>{busy === "shelly" ? "Connecting…" : "Connect Shelly"}</button>
+            <div style={{ ...small, marginTop: 8 }}>The key lets Vaulted read your plugs. It's kept on Vaulted's server, not on this phone, and Vaulted never switches anything on or off.</div>
+          </>
+        ) : (
+          <>
+            {devices.length === 0 && <div style={{ ...small, marginBottom: 8 }}>No plugs yet. Add each one by its Device ID.</div>}
+            {devices.map(d => (
+              <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #1a1f2e" }}>
+                <span style={{ fontSize: 18, flexShrink: 0, opacity: d.hidden ? 0.5 : 1 }}>{energyIcon(d.icon)}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14.5, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}{d.hidden ? " (hidden)" : ""}</div>
+                  <div style={{ fontSize: 12.5, color: SUBTEXT }}>{d.hidden ? "Not being read" : d.online === false ? "Offline" : d.read_at ? "Read " + agoText(d.read_at) : "Waiting for its first reading"}</div>
+                </div>
+                <button onClick={() => { haptic(); setEditDev({ id: d.id, name: d.name || "", icon: d.icon || null, hidden: !!d.hidden, saving: false, err: "" }); }} style={mini}>Edit</button>
+              </div>
+            ))}
+            {noteFor("plugs")}
+            {addId == null
+              ? <button onClick={() => { haptic(); setNote(null); setAddId(""); }} style={{ ...mini, marginTop: 10 }}>＋ Add a plug by Device ID</button>
+              : (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ ...small, marginBottom: 6 }}>In the Shelly app, open the plug → Settings → Device information → <b style={{ color: "#e8eaf0" }}>Device ID</b>.</div>
+                  <input value={addId} onChange={e => setAddId(e.target.value)} placeholder="Device ID, e.g. b48a0a1cd978" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={addPlug} disabled={!!busy || !addId.trim()} style={{ ...bigBtn, flex: 1, padding: "11px", opacity: busy === "add" || !addId.trim() ? 0.6 : 1 }}>{busy === "add" ? "Adding…" : "Add plug"}</button>
+                    <button onClick={() => { setAddId(null); setNote(null); }} style={{ ...mini, padding: "0 14px" }}>Cancel</button>
+                  </div>
+                  {noteFor("add")}
+                </div>
+              )}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 12 }}>
+              <span style={{ ...small, minWidth: 0 }}>Connected{status.shelly.checkedAt ? " · checked " + agoText(status.shelly.checkedAt) : ""}</span>
+              <button onClick={disconnectShelly} disabled={!!busy} style={{ ...mini, color: "#ff6b8a" }}>{sure === "shelly" ? "Disconnect?" : "Disconnect"}</button>
+            </div>
+            {status.shelly.problem && !liveProblem && <div style={{ fontSize: 13, color: "#ffb84a", marginTop: 6, lineHeight: 1.5 }}>{status.shelly.problem}</div>}
+          </>
+        )}
+        {noteFor("shelly")}
+      </div>
+
+      {/* ── Bright ── */}
+      <div style={card}>
+        <div style={hdr}>Smart meter (Bright)</div>
+        {statusLost ? (
+          <div style={small}>Couldn't check the connection just now.</div>
+        ) : !brightLinked ? (
+          <>
+            <div style={{ ...small, marginBottom: 10 }}>See the whole house's electricity each day, and how much your plugs make up. Use the email and password you sign in to the Bright app with.</div>
+            <input value={brightForm.username} onChange={e => { const v = e.target.value; setBrightForm(f => ({ ...f, username: v })); }} type="email" placeholder="Bright email" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
+            <input value={brightForm.password} onChange={e => { const v = e.target.value; setBrightForm(f => ({ ...f, password: v })); }} type="password" placeholder="Bright password" autoComplete="off" style={inp}/>
+            <button onClick={connectBright} disabled={!!busy || !brightForm.username.trim() || !brightForm.password} style={{ ...bigBtn, width: "100%", opacity: busy === "bright" || !brightForm.username.trim() || !brightForm.password ? 0.6 : 1 }}>{busy === "bright" ? "Connecting…" : "Connect Bright"}</button>
+            <div style={{ ...small, marginTop: 8 }}>Your Bright login is kept on Vaulted's server so it can check each day. It's never shown in the app.</div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <span style={{ ...small, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{status.bright.user || "Connected"}{status.bright.checkedAt ? " · checked " + agoText(status.bright.checkedAt) : ""}</span>
+              <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button onClick={syncBright} disabled={!!busy} style={mini}>{busy === "bright" ? "Checking…" : "Check now"}</button>
+                <button onClick={disconnectBright} disabled={!!busy} style={{ ...mini, color: "#ff6b8a" }}>{sure === "bright" ? "Disconnect?" : "Disconnect"}</button>
+              </span>
+            </div>
+          </>
+        )}
+        {noteFor("bright")}
+      </div>
+
+      {editDev && editSheet()}
     </div>
   );
 }
@@ -6834,7 +7397,9 @@ const calcTimesheetTotals = days => {
             if(billSort==="date"){const at=b=>{const d=dueOf(b);return d?d.getTime():Infinity;};c.sort((a,b)=>(at(a)-at(b))||a.name.localeCompare(b.name,"en",{sensitivity:"base"}));}
             return c;
           };
-          const uncat=bills.filter(b=>!bmap[b.id]);
+          // Bills that have finished (£0 from here on, after being more) aren't listed in later months.
+          const listed=bills.filter(b=>!billEnded(b,selKey));
+          const uncat=listed.filter(b=>!bmap[b.id]);
 
           return (
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -6966,8 +7531,8 @@ const calcTimesheetTotals = days => {
                 }))}
               </>,false,"#00c88c")}
               {bcats.map((c,ci)=>section(c.name,
-                bills.filter(b=>bmap[b.id]===c.id).reduce((s,b)=>s+(isG?amt1(b):mineOf(b)),0),
-                bills.filter(b=>bmap[b.id]===c.id),c.id,catColor(c,ci)))}
+                listed.filter(b=>bmap[b.id]===c.id).reduce((s,b)=>s+(isG?amt1(b):mineOf(b)),0),
+                listed.filter(b=>bmap[b.id]===c.id),c.id,catColor(c,ci)))}
               {uncat.length>0&&section("Uncategorised",
                 uncat.reduce((s,b)=>s+(isG?amt1(b):mineOf(b)),0),uncat,null)}
               {bills.length===0&&groupCard("empty",<div style={{fontSize:13,color:SUBTEXT,textAlign:"center",padding:"18px 12px"}}>No bills yet — add your first below.</div>)}
@@ -8730,6 +9295,10 @@ const calcTimesheetTotals = days => {
             shared={policyShare} onSharedTaken={takePolicyShare}
             bills={{shared:sharedBills,mine:glynBills}} onBillAmount={setBillFromPolicy}
             onListChange={setPolicyList} openRequest={policyOpenReq} onOpenTaken={takePolicyOpen}/>
+        )}
+
+        {tab==="Energy"&&isOwner&&(
+          <EnergyPage user={user} mfa={mfa} onEnterCode={()=>setMfa(m=>({...m,need:true,skipped:false}))}/>
         )}
 
         {tab==="Settle Up"&&(()=>{
