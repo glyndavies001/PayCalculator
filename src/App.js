@@ -505,7 +505,12 @@ const db = {
     return data || [];
   },
   async upsertGift(g) {
-    const { error } = await supabase.from("gifts").upsert({ id: g.id, name: g.name, dob: g.dob, birthday_year: g.birthday_year, christmas_year: g.christmas_year, notes: g.notes, cost: g.cost }, { onConflict: "id" });
+    const row = { id: g.id, name: g.name, dob: g.dob, birthday_year: g.birthday_year, christmas_year: g.christmas_year, notes: g.notes, cost: g.cost, bought: g.bought || {} };
+    let { error } = await supabase.from("gifts").upsert(row, { onConflict: "id" });
+    if (error && missingColumn(error, "bought")) {   // the bought column's SQL hasn't run yet: save the rest
+      const { bought, ...rest } = row;
+      ({ error } = await supabase.from("gifts").upsert(rest, { onConflict: "id" }));
+    }
     reportDbError("upsertGift", error);
   },
   async deleteGift(id) {
@@ -810,6 +815,30 @@ const sameBill = (a, b) => a.name === b.name && Number(a.total) === Number(b.tot
 // Local calendar date as YYYY-MM-DD. toISOString() gives the UTC date, which is a
 // day early for anything made at local midnight during British Summer Time.
 const localISO = (d = new Date()) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+// Gifts: what was bought for each person, by year: bought = {"2026": {birthday: {what, cost},
+// christmas: {what, cost}}}. A new year's boxes start empty on 1 January (like the ticks), and
+// last year's shows in the person's sheet.
+const GIFT_PARTS = ["birthday", "christmas"];
+function giftOf(g, yr, which) {
+  const y = g && g.bought && typeof g.bought === "object" ? g.bought[String(yr)] : null;
+  const x = y && y[which];
+  if (!x) return null;
+  const what = String(x.what || "").trim(), cost = Math.round((Number(x.cost) || 0) * 100) / 100;
+  return what || cost ? { what, cost } : null;
+}
+const giftSpent = (g, yr) => GIFT_PARTS.reduce((a, w) => a + ((giftOf(g, yr, w) || {}).cost || 0), 0);
+// The form's boxes -> the person's bought, with this year's replaced (an empty year is dropped).
+function giftBoughtWith(bought, yr, parts) {
+  const out = { ...(bought && typeof bought === "object" ? bought : {}) };
+  const year = {};
+  for (const w of GIFT_PARTS) {
+    const p = parts[w] || {};
+    const what = String(p.what || "").trim(), cost = Math.round((parseFloat(p.cost) || 0) * 100) / 100;
+    if (what || cost) year[w] = { what, cost };
+  }
+  if (Object.keys(year).length) out[String(yr)] = year; else delete out[String(yr)];
+  return out;
+}
 // Payslip months must read "Mon YYYY"; also accept "Sept 2026" or "September 2026".
 function normaliseMonth(str) {
   const m = String(str || "").trim().match(/^([A-Za-z]{3,})\.?\s+(\d{4})$/);
@@ -824,11 +853,15 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.21.0";
+const APP_VERSION = "1.21.1";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.21.1", date: "1 Nov 2026", items: [
+    { b: "What you bought", t: " — on Gifts, each person has a 🎂 Birthday and a 🎄 Christmas section for what you bought and how much, instead of Notes. They start empty each new year, and last year's shows underneath so you can see what you got them before." },
+    { b: "Spent this year", t: " — the top of Gifts adds up this year's birthday and Christmas spending. This year's notes have moved into the new sections; two-line notes were split into Birthday and Christmas, so check the amounts on those." },
+  ] },
   { v: "1.21.0", date: "31 Oct 2026", items: [
     { b: "Several documents at once", t: " — pick or share up to 10 PDFs or photos. Claude works out which belong together (a schedule and its certificate become one policy) and you check each policy in turn, with Save or Skip." },
     { b: "Policies in Budget", t: " — link a policy to its Budget bill from the policy's page. If the prices don't match, one tap updates the bill from the right month, and a renewal letter offers to do it too. Bills with a policy show 🛡️ on Budget; tap the bill to open it." },
@@ -3763,7 +3796,7 @@ export default function App() {
   const [gifts,setGifts]=useState([]);                     // shared gift tracker
   const [giftSort,setGiftSort]=useState("bday");           // "bday" | "name"
   const [giftOpen,setGiftOpen]=useState(false);            // add/edit sheet
-  const [giftForm,setGiftForm]=useState({id:null,name:"",dob:"",notes:"",cost:""});
+  const [giftForm,setGiftForm]=useState({id:null,name:"",dob:"",bWhat:"",bCost:"",cWhat:"",cCost:""});
   const [movePlan,setMovePlan]=useState(null);             // shared Move Plan (null = not loaded)
   const [moveMissing,setMoveMissing]=useState(false);      // move_plan column not migrated yet
   const [moveCatsOpen,setMoveCatsOpen]=useState(false);    // assign categories to buckets sheet
@@ -5781,11 +5814,13 @@ export default function App() {
     if(!name)return;
     const existing=giftForm.id?gifts.find(g=>g.id===giftForm.id):null;
     const g={
+      ...(existing||{}),
       id:giftForm.id||Date.now(),
       name,
       dob:giftForm.dob||null,
-      notes:giftForm.notes.trim(),
-      cost:parseFloat(giftForm.cost)||0,
+      notes:existing?existing.notes:"",   // the old notes and cost are kept but no longer shown
+      cost:existing?existing.cost:0,
+      bought:giftBoughtWith(existing&&existing.bought,giftYear,{birthday:{what:giftForm.bWhat,cost:giftForm.bCost},christmas:{what:giftForm.cWhat,cost:giftForm.cCost}}),
       birthday_year:existing?existing.birthday_year:null,
       christmas_year:existing?existing.christmas_year:null,
     };
@@ -5793,7 +5828,7 @@ export default function App() {
     if(user)trackSave(db.upsertGift(g));
     haptic();
     setGiftOpen(false);
-    setGiftForm({id:null,name:"",dob:"",notes:"",cost:""});
+    setGiftForm({id:null,name:"",dob:"",bWhat:"",bCost:"",cWhat:"",cCost:""});
   };
   const toggleGift=(id,field)=>{   // field: "birthday_year" | "christmas_year"
     const g=gifts.find(x=>x.id===id);if(!g)return;
@@ -8654,7 +8689,7 @@ const calcTimesheetTotals = days => {
         })()}
 
         {tab==="Gifts"&&(()=>{
-          const totalCost=gifts.reduce((a,g)=>a+(Number(g.cost)||0),0);
+          const totalCost=gifts.reduce((a,g)=>a+giftSpent(g,giftYear),0);
           const bDone=gifts.filter(g=>g.birthday_year===giftYear).length;
           const cDone=gifts.filter(g=>g.christmas_year===giftYear).length;
           const sorted=[...gifts].sort((a,b)=>{
@@ -8674,13 +8709,13 @@ const calcTimesheetTotals = days => {
           return (
           <div>
             <div style={{...card,marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-around",textAlign:"center",padding:"14px 8px"}}>
-              <div><div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Total</div><div style={{fontSize:18,fontWeight:800,color:"#e8eaf0",marginTop:2}}>{fmt(totalCost)}</div></div>
+              <div><div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Spent {giftYear}</div><div style={{fontSize:18,fontWeight:800,color:"#e8eaf0",marginTop:2}}>{fmt(totalCost)}</div></div>
               <div><div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🎂 Sorted</div><div style={{fontSize:18,fontWeight:800,color:SUBTEXT,marginTop:2}}>{bDone}/{gifts.length}</div></div>
               <div><div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🎄 Sorted</div><div style={{fontSize:18,fontWeight:800,color:SUBTEXT,marginTop:2}}>{cDone}/{gifts.length}</div></div>
             </div>
 
             <div style={{display:"flex",gap:8,marginBottom:12}}>
-              <button onClick={()=>{haptic();setGiftForm({id:null,name:"",dob:"",notes:"",cost:""});setGiftOpen(true);}}
+              <button onClick={()=>{haptic();setGiftForm({id:null,name:"",dob:"",bWhat:"",bCost:"",cWhat:"",cCost:""});setGiftOpen(true);}}
                 style={{flex:1,background:"#1a3a5a",border:"1px solid #2a5a8a",borderRadius:10,color:"#8ec5ff",fontSize:15,fontWeight:700,padding:"13px",cursor:"pointer"}}>
                 ＋ Add person
               </button>
@@ -8698,7 +8733,7 @@ const calcTimesheetTotals = days => {
               const dobStr=g.dob?new Date(g.dob+"T00:00:00").toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}):"";
               const badge=bd?(bd.days===0?"🎂 today!":bd.days===1?"🎂 tomorrow":`🎂 in ${bd.days}d`):"";
               return (
-                <div key={g.id} onClick={()=>{haptic();setGiftForm({id:g.id,name:g.name,dob:g.dob||"",notes:g.notes||"",cost:g.cost!=null?String(g.cost):""});setGiftOpen(true);}}
+                <div key={g.id} onClick={()=>{haptic();const gb=giftOf(g,giftYear,"birthday"),gc=giftOf(g,giftYear,"christmas");setGiftForm({id:g.id,name:g.name,dob:g.dob||"",bWhat:gb?gb.what:"",bCost:gb&&gb.cost?gb.cost.toFixed(2):"",cWhat:gc?gc.what:"",cCost:gc&&gc.cost?gc.cost.toFixed(2):""});setGiftOpen(true);}}
                   style={{...card,marginBottom:8,cursor:"pointer"}}>
                   <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:10}}>
                     <div style={{minWidth:0,flex:1}}>
@@ -8707,16 +8742,21 @@ const calcTimesheetTotals = days => {
                     </div>
                     {badge&&<div style={{fontSize:12.5,fontWeight:700,color:bd&&bd.days<=14?"#ffb84a":SUBTEXT,whiteSpace:"nowrap",paddingTop:2}}>{badge}</div>}
                   </div>
-                  <div style={{display:"flex",gap:8,marginBottom:(g.notes||Number(g.cost))?10:0}}>
+                  <div style={{display:"flex",gap:8}}>
                     {chip(bDoneG,"🎂","Birthday",()=>toggleGift(g.id,"birthday_year"))}
                     {chip(cDoneG,"🎄","Christmas",()=>toggleGift(g.id,"christmas_year"))}
                   </div>
-                  {(g.notes||Number(g.cost)>0)&&(
-                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-                      <div style={{fontSize:13.5,color:SUBTEXT,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{g.notes||""}</div>
-                      {Number(g.cost)>0&&<div style={{fontSize:14,fontWeight:700,color:SUBTEXT,whiteSpace:"nowrap"}}>{fmt(g.cost)}</div>}
-                    </div>
-                  )}
+                  {[["birthday","🎂"],["christmas","🎄"]].map(([w,e])=>{
+                    const x=giftOf(g,giftYear,w);
+                    if(!x)return null;
+                    return (
+                      <div key={w} style={{display:"flex",alignItems:"baseline",gap:8,marginTop:8}}>
+                        <span style={{fontSize:14,flexShrink:0}}>{e}</span>
+                        <span style={{flex:1,minWidth:0,fontSize:14.5,color:"#e8eaf0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.what||"—"}</span>
+                        {x.cost>0&&<span style={{fontSize:14.5,fontWeight:700,color:"#e8eaf0",whiteSpace:"nowrap"}}>{fmt(x.cost)}</span>}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}
@@ -9823,13 +9863,21 @@ const calcTimesheetTotals = days => {
               <input type="date" value={giftForm.dob} onChange={e=>set({dob:e.target.value})}
                 style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,padding:"12px 14px",marginBottom:14}}/>
 
-              <div style={{...hdr,marginBottom:6}}>Notes</div>
-              <textarea value={giftForm.notes} onChange={e=>set({notes:e.target.value})} placeholder="Gift ideas, sizes, etc." rows={2}
-                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,padding:"12px 14px",marginBottom:14,resize:"vertical",fontFamily:"inherit"}}/>
-
-              <div style={{...hdr,marginBottom:6}}>Cost (£)</div>
-              <input value={giftForm.cost} onChange={e=>set({cost:e.target.value.replace(/[^0-9.]/g,"")})} inputMode="decimal" placeholder="0.00"
-                style={{width:"100%",boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,fontWeight:600,padding:"12px 14px",marginBottom:16}}/>
+              {[["birthday","🎂","Birthday","bWhat","bCost","e.g. Lego set"],["christmas","🎄","Christmas","cWhat","cCost","e.g. Football kit"]].map(([w,e,title,wk,ck,ph])=>{
+                const last=giftOf(gifts.find(x=>x.id===giftForm.id),giftYear-1,w);
+                const box={boxSizing:"border-box",background:"#0d1117",border:"1px solid #2a3050",borderRadius:8,color:"#e8eaf0",fontSize:15,padding:"12px 14px",fontFamily:"inherit"};
+                return (
+                  <div key={w} style={{background:"#111520",border:"1px solid #1e2535",borderRadius:10,padding:"12px",marginBottom:12}}>
+                    <div style={{...hdr,fontSize:12.5,marginBottom:8}}>{e} {title} {giftYear}</div>
+                    <div style={{display:"flex",gap:8}}>
+                      <input value={giftForm[wk]} onChange={ev=>set({[wk]:ev.target.value})} placeholder={ph} style={{...box,flex:1,minWidth:0}}/>
+                      <input value={giftForm[ck]} onChange={ev=>set({[ck]:ev.target.value.replace(/[^0-9.]/g,"")})} inputMode="decimal" placeholder="£0.00" style={{...box,width:96,textAlign:"right",fontWeight:600}}/>
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,color:SUBTEXT,marginTop:6,padding:"0 2px"}}><span>What you bought</span><span>How much</span></div>
+                    {last&&<div style={{fontSize:13,color:SUBTEXT,marginTop:8}}>Last year: <b style={{color:"#e8eaf0",fontWeight:600}}>{(last.what||"—")+(last.cost?" · "+fmt(last.cost):"")}</b></div>}
+                  </div>
+                );
+              })}
 
               <button onClick={saveGift} disabled={!valid}
                 style={{width:"100%",background:valid?"#1a3a5a":"#161b28",border:"1px solid "+(valid?"#2a5a8a":"#222a3d"),borderRadius:10,color:valid?"#8ec5ff":SUBTEXT,fontSize:15,fontWeight:700,padding:"15px",cursor:valid?"pointer":"default",marginBottom:editing?8:6}}>
