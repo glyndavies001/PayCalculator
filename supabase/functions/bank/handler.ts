@@ -78,7 +78,7 @@ async function forgetData(userId) {
 export async function config() {
   const rows = await db("GET", "bank_config?select=key,value") || [];
   const c = Object.fromEntries(rows.map(r => [r.key, r.value]));
-  return { id: c.monzo_client_id || "", secret: c.monzo_client_secret || "", hook: c.hook_secret || "", cronKey: c.cron_key || "", owner: c.owner_id || "", trolleyPot: c.trolley_pot || "" };
+  return { id: c.monzo_client_id || "", secret: c.monzo_client_secret || "", hook: c.hook_secret || "", cronKey: c.cron_key || "", owner: c.owner_id || "", trolleyPot: c.trolley_pot || "", trolleyPotAccount: c.trolley_pot_account || "" };
 }
 const ready = cfg => !!(cfg.id && cfg.secret);
 export const redirectUri = () => `${base()}/functions/v1/bank/callback`;
@@ -470,7 +470,8 @@ export async function hook(req, cfg, secret) {
 // A card payment straight from a pot never reaches the account's transactions or webhooks; only the
 // pot's balance drops. So Trolley asks for a reading at a shop's first tick ("start") and at Finish
 // ("finish"), and the scheduler keeps reading every minute for 30 minutes after a Finish with no
-// cost. A shop's cost is the drop from the balance in force just after its first tick to the latest
+// cost. Best: the pot's own card payments (its hidden account), which give the exact amount and the
+// shop. If that read fails, a shop's cost is the drop from the balance in force just after its first tick to the latest
 // reading before the next shop began, allowing for top-ups and withdrawals (those do reach the
 // account, with the pot's id). It's written into the trip only while the trip has no cost, so a
 // typed cost always stands. Trolley's login has no two-step, so this answers with that one cost and
@@ -479,6 +480,8 @@ const TRIP_WAIT = 30 * 60000;          // how long after Finish a payment is loo
 const TRIP_GRACE = 60000;              // the first-tick reading lands just after the tick
 const TRIP_LONGEST = 4 * 3600000;      // a shop never started more than this before its Finish
 const POT_EVERY = 20000;               // Monzo is read at most this often for it
+const TRIP_EARLY = 10 * 60000;         // a payment this long before the first tick still counts (ticked after paying)
+const TROLLEY_SHOPS = ["Aldi", "B&M", "Tesco", "Farm Foods", "Asda", "Lidl", "Home Bargains"];
 const msOf = v => { const t = Date.parse(v || ""); return isFinite(t) ? t : null; };
 const firstTick = items => {
   const t = (Array.isArray(items) ? items : []).map(i => msOf(i && i.collected_at)).filter(v => v != null);
@@ -502,6 +505,38 @@ export function tripCost(history, moves, start, cutoff) {
   const spent = Math.round(before.bal + moved - after.bal);
   return spent > 0 ? spent : null;
 }
+// Pence spent across a shop's payments (refunds come off) and the shop of the biggest; null if nothing.
+export function paymentsCost(list) {
+  const spent = Math.round(-(list || []).reduce((sum, t) => sum + (Number(t.amount) || 0), 0));
+  if (!(spent > 0)) return null;
+  const big = (list || []).filter(t => t.amount < 0).sort((a, b) => a.amount - b.amount)[0];
+  return { spent, shop: (big && big.shop) || null };
+}
+// The Food pot's own card payments, with the shop: read from the pot's own account (bank_config
+// trolley_pot_account, found in a top-up's metadata). Monzo doesn't document this, so any failure gives
+// null and the balance drop is used instead.
+async function potPayments(cfg, pot, from, to) {
+  if (!cfg.trolleyPotAccount || !(to > from)) return null;
+  try {
+    const r = await call(pot.link, cfg, "GET", "/transactions", [["account_id", cfg.trolleyPotAccount], ["since", iso(from)], ["before", iso(to + 1000)], ["expand[]", "merchant"]]);
+    if (!r.ok || !r.data || !Array.isArray(r.data.transactions)) return null;
+    return r.data.transactions
+      .filter(t => t && t.id && !t.decline_reason && t.scheme !== "uk_retail_pot" && Number(t.amount))
+      .map(t => ({ at: msOf(t.created), amount: Number(t.amount), shop: t.merchant && typeof t.merchant === "object" ? cut(t.merchant.name, 40) : null }))
+      .filter(t => t.at != null && t.at > from && t.at <= to);
+  } catch (e) { console.error("trip pot payments", hookProblem(e)); return null; }
+}
+// Monzo's name for a shop, spelt as on Trolley's list when it's the same one ("Farmfoods" → "Farm Foods").
+async function shopNameFor(name) {
+  const flat = v => String(v || "").toLowerCase().replace(/[^a-z0-9&]/g, "");
+  let names = TROLLEY_SHOPS;
+  try {
+    const rows = await db("GET", "app_state?key=eq.trip_shops&select=value") || [];
+    const list = rows[0] ? JSON.parse(rows[0].value) : null;
+    if (Array.isArray(list)) names = [...list.map(x => x && x.name).filter(Boolean), ...TROLLEY_SHOPS];
+  } catch (_) { /* the usual list */ }
+  return names.find(n => flat(n) === flat(name)) || name;
+}
 
 // The Food pot and a working link that can read it.
 async function trolleyPot(cfg) {
@@ -523,12 +558,27 @@ async function settleTrip(cfg, pot, trip, now = Date.now()) {
   const done = msOf(trip.completed_at);
   if (done == null) return null;
   const prev = await db("GET", `trips?completed_at=lt.${enc(trip.completed_at)}&select=completed_at&order=completed_at.desc&limit=1`) || [];
+  const prevDone = msOf(prev[0] && prev[0].completed_at);
   const tick = firstTick(trip.items);
-  const start = Math.max(tick == null ? done : Math.min(tick, done), msOf(prev[0] && prev[0].completed_at) ?? -Infinity, done - TRIP_LONGEST);
+  const first = tick == null ? done : Math.min(tick, done);
+  const start = Math.max(first, prevDone ?? -Infinity, done - TRIP_LONGEST);
   // When the next shop began: its first tick, finished or not.
   const later = await db("GET", `trips?completed_at=gt.${enc(trip.completed_at)}&select=items&order=completed_at.asc&limit=3`) || [];
   const open = await db("GET", `current_list?collected_at=gt.${enc(trip.completed_at)}&select=collected_at&order=collected_at.asc&limit=1`) || [];
   const next = [...later.map(t => firstTick(t.items)), ...open.map(o => msOf(o.collected_at))].filter(v => v != null && v > done);
+  // Exact: the pot's own payments, from a little before the first tick (never inside the last shop's
+  // half hour) to 30 minutes after Finish or the next shop's first tick.
+  const payFrom = Math.max(first - TRIP_EARLY, prevDone == null ? -Infinity : Math.min(prevDone + TRIP_WAIT, first), done - TRIP_LONGEST);
+  const paid = await potPayments(cfg, pot, payFrom, Math.min(now, done + TRIP_WAIT, ...next));
+  if (paid) {
+    const got = paymentsCost(paid);
+    if (!got) return null;
+    const patch = { total_cost: got.spent / 100 };
+    if (!trip.shop_name && got.shop) patch.shop_name = await shopNameFor(got.shop);
+    const saved = await db("PATCH", `trips?id=eq.${trip.id}&total_cost=is.null`, patch, "return=representation");
+    return Array.isArray(saved) && saved[0] ? Number(saved[0].total_cost) : null;
+  }
+  // Otherwise from the balance: the drop since the first tick, allowing for top-ups.
   const cutoff = Math.min(now, ...next.map(v => v + TRIP_GRACE));
   const history = await db("GET", `bank_pot_history?user_id=eq.${pot.user_id}&pot_id=eq.${enc(cfg.trolleyPot)}&first_seen=lte.${enc(iso(cutoff))}&select=balance,first_seen&order=first_seen.desc&limit=60`) || [];
   const moves = await db("GET", `bank_transactions?user_id=eq.${pot.user_id}&account_id=eq.${enc(pot.account_id)}&pot_id=eq.${enc(cfg.trolleyPot)}&created=gt.${enc(iso(start))}&created=lte.${enc(iso(cutoff))}&select=created,amount`) || [];
@@ -537,7 +587,7 @@ async function settleTrip(cfg, pot, trip, now = Date.now()) {
   const saved = await db("PATCH", `trips?id=eq.${trip.id}&total_cost=is.null`, { total_cost: spent / 100 }, "return=representation");
   return Array.isArray(saved) && saved[0] ? Number(saved[0].total_cost) : null;
 }
-const waitingTrips = () => db("GET", `trips?total_cost=is.null&completed_at=gt.${enc(iso(Date.now() - TRIP_WAIT))}&select=id,completed_at,total_cost,items&order=completed_at.asc`);
+const waitingTrips = () => db("GET", `trips?total_cost=is.null&completed_at=gt.${enc(iso(Date.now() - TRIP_WAIT))}&select=id,completed_at,total_cost,shop_name,items&order=completed_at.asc`);
 async function settleWaiting(cfg, pot, trips) {
   let settled = 0;
   for (const t of trips || []) if ((await settleTrip(cfg, pot, t)) != null) settled++;
@@ -553,7 +603,7 @@ async function tripPot(cfg, user, body) {
   if (body.stage !== "finish") { await settleWaiting(cfg, pot, await waitingTrips()); return { ok: true }; }
   const id = Number(body.trip_id);
   if (!Number.isSafeInteger(id) || id <= 0) return { error: "trip" };
-  const rows = await db("GET", `trips?id=eq.${id}&select=id,completed_at,total_cost,items`) || [];
+  const rows = await db("GET", `trips?id=eq.${id}&select=id,completed_at,total_cost,shop_name,items`) || [];
   const trip = rows[0];
   if (!trip) return { error: "trip" };
   if (trip.total_cost != null) return { done: true };
