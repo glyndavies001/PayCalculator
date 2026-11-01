@@ -814,21 +814,6 @@ const sameBill = (a, b) => a.name === b.name && Number(a.total) === Number(b.tot
 // Local calendar date as YYYY-MM-DD. toISOString() gives the UTC date, which is a
 // day early for anything made at local midnight during British Summer Time.
 const localISO = (d = new Date()) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-// Gifts: which birthday a 🎂 tick is for. The one just gone if it was in the last week (a late
-// gift still counts, and the tick shows for a week after), otherwise the next one (today counts).
-// A tick saves that birthday's year, so it clears a week after the birthday, not on 1 January.
-// No date of birth: the calendar year, as before.
-const GIFT_GRACE_DAYS = 7;
-function giftBirthdayYear(dob, now = new Date()) {
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const d = dob ? new Date(dob + "T00:00:00") : null;
-  if (!d || isNaN(d.getTime())) return today.getFullYear();
-  let next = new Date(today.getFullYear(), d.getMonth(), d.getDate());
-  if (next < today) next = new Date(today.getFullYear() + 1, d.getMonth(), d.getDate());
-  const last = new Date(next.getFullYear() - 1, d.getMonth(), d.getDate());
-  const since = Math.round((today - last) / 86400000);
-  return since >= 1 && since <= GIFT_GRACE_DAYS ? last.getFullYear() : next.getFullYear();
-}
 // Payslip months must read "Mon YYYY"; also accept "Sept 2026" or "September 2026".
 function normaliseMonth(str) {
   const m = String(str || "").trim().match(/^([A-Za-z]{3,})\.?\s+(\d{4})$/);
@@ -854,7 +839,6 @@ const WHATS_NEW = [
     { b: "Damaged PDFs don't spoil the rest", t: " — if Claude can't open one file, the others are read one at a time and it tells you which file it couldn't open. PDFs with extra bits before the real file (like L&G's) now read properly." },
     { b: "Tidier policies", t: " — new documents get short names, like \"Bill Nov 2026\" or \"Renewal letter 2027\", and application or health answers aren't copied into the details." },
     { b: "Finished bills drop off", t: " — a regular bill that's ended (like Barclays Phone after May 2027) no longer shows on Budget in the months after." },
-    { b: "Birthday ticks follow the birthday", t: " — on Gifts, 🎂 now counts for each person's next birthday and clears a week after it, not on 1 January, so a gift bought in December for a January birthday stays ticked. Anyone whose birthday has already been this year starts unticked for their next one. 🎄 still clears on 1 January." },
   ] },
   { v: "1.21.0", date: "31 Oct 2026", items: [
     { b: "Several documents at once", t: " — pick or share up to 10 PDFs or photos. Claude works out which belong together (a schedule and its certificate become one policy) and you check each policy in turn, with Save or Skip." },
@@ -6376,9 +6360,8 @@ export default function App() {
   };
   const toggleGift=(id,field)=>{   // field: "birthday_year" | "christmas_year"
     const g=gifts.find(x=>x.id===id);if(!g)return;
-    const yr=field==="birthday_year"?giftBirthdayYear(g.dob):giftYear;
-    const done=g[field]===yr;
-    const ng={...g,[field]:done?null:yr};
+    const done=g[field]===giftYear;
+    const ng={...g,[field]:done?null:giftYear};
     setGifts(gifts.map(x=>x.id===id?ng:x));
     if(user)trackSave(db.upsertGift(ng));
     haptic();
@@ -9237,7 +9220,7 @@ const calcTimesheetTotals = days => {
 
         {tab==="Gifts"&&(()=>{
           const totalCost=gifts.reduce((a,g)=>a+(Number(g.cost)||0),0);
-          const bDone=gifts.filter(g=>g.birthday_year===giftBirthdayYear(g.dob)).length;
+          const bDone=gifts.filter(g=>g.birthday_year===giftYear).length;
           const cDone=gifts.filter(g=>g.christmas_year===giftYear).length;
           const sorted=[...gifts].sort((a,b)=>{
             if(giftSort==="name")return (a.name||"").localeCompare(b.name||"");
@@ -9276,7 +9259,7 @@ const calcTimesheetTotals = days => {
 
             {sorted.map(g=>{
               const bd=nextBirthday(g.dob);
-              const bDoneG=g.birthday_year===giftBirthdayYear(g.dob), cDoneG=g.christmas_year===giftYear;
+              const bDoneG=g.birthday_year===giftYear, cDoneG=g.christmas_year===giftYear;
               const dobStr=g.dob?new Date(g.dob+"T00:00:00").toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}):"";
               const badge=bd?(bd.days===0?"🎂 today!":bd.days===1?"🎂 tomorrow":`🎂 in ${bd.days}d`):"";
               return (
