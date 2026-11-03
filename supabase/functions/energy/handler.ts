@@ -7,17 +7,19 @@
 // Bright: the Glowmarkt API with the person's Bright login: the house's electricity in kWh per
 // half-hour, from the smart meter via the DCC, normally a day behind.
 //
-// POST …/energy {action:"status"}                          what the Energy page shows about the links
+// POST …/energy {action:"status"}                          what the Energy page shows about the links, and the rate
 // POST …/energy {action:"shelly_link", server, key}        save the Shelly key, find the plugs (two-step)
 // POST …/energy {action:"shelly_add", id}                  add a plug by its Device ID (two-step)
 // POST …/energy {action:"shelly_unlink"}                   forget the Shelly key; plugs and history kept (two-step)
-// POST …/energy {action:"live"}                            read the plugs now (two-step)
+// POST …/energy {action:"live"}                            read the plugs now (anyone in the household)
 // POST …/energy {action:"bright_link", username, password} save the Bright login, read the last month (two-step)
 // POST …/energy {action:"bright_sync"}                     read the house's last fortnight now (two-step)
 // POST …/energy {action:"bright_unlink"}                   forget the Bright login; days kept (two-step)
 // POST …/energy {action:"cron"} + x-cron-key               from the database scheduler, every 15 minutes
 //
 // People calls need their Supabase login (Authorization: Bearer <jwt>), checked with the Auth API.
+// The energy is the owner's (Glyn's): anyone in the household (a profiles row) can see it with a normal
+// sign-in; only the owner can change the links, with two-step.
 // "Two-step" = the login's aal claim is aal2. The key and the login live in energy_links, which
 // the app can't read. Vaulted never switches a plug: the only Shelly calls are reads.
 
@@ -346,6 +348,29 @@ async function cron() {
 const publicDevice = d => ({ id: d.id, shelly_id: d.shelly_id, name: d.name, icon: d.icon, model: d.model, sort: d.sort, hidden: d.hidden,
   online: d.online, is_on: d.is_on, watts: d.watts, total_wh: d.total_wh, read_at: d.read_at });
 
+// The electricity unit rate (pence per kWh) and VAT from the owner's energy policy, worked out as the app
+// does, so everyone in the household sees costs without reading the policy itself.
+export function rateFrom(policies) {
+  for (const p of policies || []) {
+    const ds = (Array.isArray(p.details) ? p.details : []).filter(d => d && d.label && d.value);
+    const rateD = ds.find(d => /electric/i.test(d.label) && /unit/i.test(d.label)) || ds.find(d => /unit rate/i.test(d.label) && !/gas/i.test(d.label));
+    if (!rateD) continue;
+    const v = String(rateD.value);
+    const pm = v.match(/(\d+(?:\.\d+)?)\s*p\b/i), gm = v.match(/£\s*(\d+(?:\.\d+)?)/);
+    const pence = pm ? Number(pm[1]) : gm ? Number(gm[1]) * 100 : null;
+    if (!pence || !isFinite(pence) || pence <= 0 || pence > 200) continue;
+    const vatD = ds.find(d => /electric/i.test(d.label) && /vat/i.test(d.label));
+    const vm = vatD && String(vatD.value).match(/(\d+(?:\.\d+)?)\s*%/);
+    return { pence, vat: vm ? Number(vm[1]) : 0, from: p.provider || p.name || "the energy policy" };
+  }
+  return null;
+}
+async function rateOf(userId) {
+  if (!userId) return null;
+  const rows = await db("GET", `policies?user_id=eq.${userId}&kind=eq.energy&archived=eq.false&select=provider,name,details`).catch(() => null);
+  return rateFrom(rows || []);
+}
+
 export async function handler(req) {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ ok: true });
@@ -361,17 +386,39 @@ export async function handler(req) {
     const user = await caller(req);
     if (!user) return json({ error: "signin" }, 401);
 
+    // Whose energy this is: the owner's. Others in the household can look, not change anything.
+    const me = (await db("GET", `profiles?id=eq.${user.id}&select=id,role`)) || [];
+    if (!me.length) return json({ error: "forbidden" }, 403);
+    const isOwner = me[0].role === "owner";
+    const ownerId = isOwner ? user.id : ((((await db("GET", "profiles?role=eq.owner&select=id&limit=1")) || [])[0]) || {}).id || null;
+
     if (body.action === "status") {   // no readings and no secrets here
-      const link = await getLink(user.id);
+      const link = ownerId ? await getLink(ownerId) : null;
       return json({
-        twoStep: user.aal === "aal2",
+        twoStep: user.aal === "aal2", owner: ownerId, canManage: isOwner, rate: await rateOf(ownerId),
         shelly: { linked: !!(link && link.shelly_key), server: link && link.shelly_key ? link.shelly_server : null,
           checkedAt: (link && link.shelly_checked_at) || null, problem: (link && link.shelly_key && link.shelly_error) || null },
-        bright: { linked: !!(link && link.bright_user), user: link && link.bright_user ? link.bright_user : null,
+        bright: { linked: !!(link && link.bright_user), user: isOwner && link && link.bright_user ? link.bright_user : null,
           checkedAt: (link && link.bright_checked_at) || null, problem: (link && link.bright_user && link.bright_error) || null },
       });
     }
 
+    if (body.action === "live") {
+      if (!ownerId) return json({ linked: false, devices: [] });
+      const link = await getLink(ownerId);
+      if (!link || !link.shelly_key) return json({ linked: false, devices: ((await devicesOf(ownerId)) || []).map(publicDevice) });
+      const last = link.shelly_checked_at ? Date.parse(link.shelly_checked_at) : 0;
+      let rows;
+      if (Date.now() - last < LIVE_GAP_MS) rows = await devicesOf(ownerId);
+      else {
+        try { rows = await readPlugs(ownerId, link); }
+        catch (e) { return json({ error: e.code || "shelly", problem: shellyProblem(e), devices: ((await devicesOf(ownerId)) || []).map(publicDevice) }); }
+      }
+      const fresh = await getLink(ownerId);
+      return json({ linked: true, checkedAt: fresh && fresh.shelly_checked_at, problem: (fresh && fresh.shelly_error) || null, devices: (rows || []).map(publicDevice) });
+    }
+
+    if (!isOwner) return json({ error: "owner_only" }, 403);
     if (user.aal !== "aal2") return json({ error: "two_step" }, 403);
 
     if (body.action === "shelly_link") {
@@ -413,20 +460,6 @@ export async function handler(req) {
     if (body.action === "shelly_unlink") {
       await patchLink(user.id, { shelly_server: null, shelly_key: null, shelly_linked_at: null, shelly_checked_at: null, shelly_error: null });
       return json({ linked: false });
-    }
-
-    if (body.action === "live") {
-      const link = await getLink(user.id);
-      if (!link || !link.shelly_key) return json({ linked: false, devices: ((await devicesOf(user.id)) || []).map(publicDevice) });
-      const last = link.shelly_checked_at ? Date.parse(link.shelly_checked_at) : 0;
-      let rows;
-      if (Date.now() - last < LIVE_GAP_MS) rows = await devicesOf(user.id);
-      else {
-        try { rows = await readPlugs(user.id, link); }
-        catch (e) { return json({ error: e.code || "shelly", problem: shellyProblem(e), devices: ((await devicesOf(user.id)) || []).map(publicDevice) }); }
-      }
-      const fresh = await getLink(user.id);
-      return json({ linked: true, checkedAt: fresh && fresh.shelly_checked_at, problem: (fresh && fresh.shelly_error) || null, devices: (rows || []).map(publicDevice) });
     }
 
     if (body.action === "bright_link") {

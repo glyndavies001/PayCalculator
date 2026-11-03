@@ -857,11 +857,15 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.22.2";
+const APP_VERSION = "1.23.0";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.23.0", date: "3 Nov 2026", items: [
+    { b: "Energy for both of you", t: " — Hollie can see the ⚡ Energy page too: what's on, today, this month and the last 30 days. Only Glyn can connect or rename the plugs." },
+    { b: "No code just to look", t: " — Energy only asks for the two-step code to connect, rename or change things." },
+  ] },
   { v: "1.22.2", date: "3 Nov 2026", items: [
     { b: "Energy fix", t: " — a plug's own page now fits the screen instead of running off the right-hand side." },
   ] },
@@ -992,7 +996,7 @@ const PRIMARY_TABS = ["Dashboard","Budget","Pay Calc","Settle Up"];
 const SECONDARY_TABS = ["Payslips","Timesheet","Gifts","Move","Policies","Energy","Diag"];   // shortcuts at the top of the Dashboard
 // Hollie's bar, and her shortcuts at the top of Home.
 const PARTNER_TABS = ["Home","Budget","Pay Calc","Move","Diag"];
-const PARTNER_SHORTCUTS = ["Settle Up","Gifts"];
+const PARTNER_SHORTCUTS = ["Settle Up","Gifts","Energy"];
 // Rarely used - out of the menus unless "Show hidden tabs" is on in Diag. Code and data kept.
 const HIDDEN_TABS = ["Pay Info","Tax Year","Leave"];
 
@@ -3834,6 +3838,7 @@ const ENERGY_ERR = {
   bright_down: "Couldn't reach Bright. Try again in a minute.",
   no_meter: "Bright hasn't found your smart meter yet. It can take a couple of days after you sign up; Vaulted keeps checking.",
   two_step: "Enter your two-step code first.",
+  owner_only: "Only the account owner can change this.",
   signin: "Please sign in again.",
   network: "No connection. Try again when you're back online.",
   server: "Something went wrong on the server. Try again in a minute.",
@@ -3908,7 +3913,7 @@ function energyHours(readings, day) {
   return out;
 }
 const energyHourLabel = h => (h % 12 || 12) + (h < 12 ? "am" : "pm");
-function EnergyPage({ user, mfa, onEnterCode }) {
+function EnergyPage({ user, mfa, onEnterCode, isOwner }) {
   const [state, setState] = useState("loading");    // loading | ready | locked | nofactor | missing | error
   const [status, setStatus] = useState(null);       // from the energy function: what's linked
   const [devices, setDevices] = useState([]);
@@ -3937,7 +3942,7 @@ function EnergyPage({ user, mfa, onEnterCode }) {
     const readToday = async () => {
       const all = [];
       for (let page = 0; page < 10; page++) {
-        const r = await jwtRetry(() => supabase.from("energy_readings").select("device_id,at,watts,total_wh").eq("user_id", user.id).gte("at", from).order("at", { ascending: true }).range(page * 1000, page * 1000 + 999));
+        const r = await jwtRetry(() => supabase.from("energy_readings").select("device_id,at,watts,total_wh").gte("at", from).order("at", { ascending: true }).range(page * 1000, page * 1000 + 999));
         if (r.error) return { error: r.error };
         all.push(...(r.data || []));
         if ((r.data || []).length < 1000) break;
@@ -3945,8 +3950,8 @@ function EnergyPage({ user, mfa, onEnterCode }) {
       return { data: all };
     };
     const [d, h, r] = await Promise.all([
-      jwtRetry(() => supabase.from("energy_days").select("device_id,day,wh").eq("user_id", user.id).gte("day", since)),
-      jwtRetry(() => supabase.from("energy_house").select("day,kwh,halves").eq("user_id", user.id).gte("day", since)),
+      jwtRetry(() => supabase.from("energy_days").select("device_id,day,wh").gte("day", since)),
+      jwtRetry(() => supabase.from("energy_house").select("day,kwh,halves").gte("day", since)),
       readToday(),
     ]);
     if (!d.error) setDays(d.data || []);
@@ -3955,14 +3960,17 @@ function EnergyPage({ user, mfa, onEnterCode }) {
     return d.error || h.error || r.error || null;
   }, [user, since]);
 
+  // Anyone in the household can look with a normal sign-in; the owner changes things with two-step.
+  // The rate comes from the energy function (it reads the owner's energy policy), or the owner's own read.
+  const twoStep = mfa.level === "aal2";
   const load = useCallback(async () => {
     if (!user) return;
-    if (!mfa.hasFactor) { setState("nofactor"); return; }
-    if (mfa.level !== "aal2") { setState("locked"); return; }
     const [st, dv, pol] = await Promise.all([
       energyCall("status"),
-      jwtRetry(() => supabase.from("energy_devices").select("*").eq("user_id", user.id).order("sort", { ascending: true }).order("created_at", { ascending: true })),
-      jwtRetry(() => supabase.from("policies").select("provider,name,details,archived").eq("user_id", user.id).eq("kind", "energy").eq("archived", false)),
+      jwtRetry(() => supabase.from("energy_devices").select("*").order("sort", { ascending: true }).order("created_at", { ascending: true })),
+      isOwner && mfa.level === "aal2"
+        ? jwtRetry(() => supabase.from("policies").select("provider,name,details,archived").eq("user_id", user.id).eq("kind", "energy").eq("archived", false))
+        : Promise.resolve({ data: null, error: null }),
     ]);
     if (dv.error) {
       if (energyMissing(dv.error)) { setState("missing"); return; }
@@ -3973,10 +3981,10 @@ function EnergyPage({ user, mfa, onEnterCode }) {
     const dErr = await readHistory();
     if (dErr) reportDbError("getEnergy", dErr); else reportDbError("getEnergy", null);
     setDevices(dv.data || []);
-    if (!pol.error) setRate(energyRateOf(pol.data || []));
+    setRate((!st.error && st.rate) || (!pol.error && pol.data ? energyRateOf(pol.data) : null));
     if (!st.error) setStatus(st);
     setState("ready");
-  }, [user, mfa.hasFactor, mfa.level, readHistory]);
+  }, [user, isOwner, mfa.level, readHistory]);
   useEffect(() => { load(); }, [load]);
 
   // While the page is on screen the plugs are read every 5 seconds (Shelly allows one call a second; the
@@ -4332,7 +4340,9 @@ function EnergyPage({ user, mfa, onEnterCode }) {
             {energyMonthName(today)} so far: <b style={{ color: "#e8eaf0" }}>{kwhText(monthK)}</b>{rate ? <> · <b style={{ color: "#e8eaf0" }}>{money(monthK)}</b></> : null}
             {head != null ? <> · heading for about {rate ? money(head) : kwhText(head)}</> : null}
           </div>
-          <button onClick={() => { haptic(); setPick(null); openEdit(d); }} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>Rename or hide</button>
+          {isOwner && (twoStep
+            ? <button onClick={() => { haptic(); setPick(null); openEdit(d); }} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>Rename or hide</button>
+            : <button onClick={() => { haptic(); setPick(null); onEnterCode(); }} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>Enter code to rename</button>)}
           <button onClick={close} style={plainBtn}>Close</button>
         </div>
       </div>
@@ -4347,7 +4357,7 @@ function EnergyPage({ user, mfa, onEnterCode }) {
       {!statusLost && !shellyLinked && devices.length === 0 && !brightLinked && (
         <div style={{ ...card, textAlign: "center", padding: "20px 14px", lineHeight: 1.55 }}>
           <div style={{ fontSize: 28, marginBottom: 6 }}>⚡</div>
-          <div style={small}>See what your computer, treadmill and air con use, and what they cost, from your Shelly smart plugs. Connect Shelly below once the plugs are set up in the Shelly app.</div>
+          <div style={small}>{isOwner ? "See what your computer, treadmill and air con use, and what they cost, from your Shelly smart plugs. Connect Shelly below once the plugs are set up in the Shelly app." : "Nothing's connected yet."}</div>
         </div>
       )}
       {/* ── Right now, and the last 10 minutes ── */}
@@ -4446,13 +4456,23 @@ function EnergyPage({ user, mfa, onEnterCode }) {
       {/* ── The rate ── */}
       {(shown.length > 0 || brightLinked) && (
         <div style={{ ...small, margin: "0 4px 12px" }}>
-          {rate ? <>Costs use {rate.pence}p per kWh{rate.vat ? " plus " + rate.vat + "% VAT" : ""}, from your {rate.from} policy. Change it in Policies.</>
-            : <span style={{ color: "#ffb84a" }}>Add an "Electricity unit rate" detail (like 26.28p per kWh) to your energy policy in Policies to see costs.</span>}
+          {rate ? <>Costs use {rate.pence}p per kWh{rate.vat ? " plus " + rate.vat + "% VAT" : ""}, from {isOwner ? "your" : "the"} {rate.from} policy.{isOwner ? " Change it in Policies." : ""}</>
+            : <span style={{ color: "#ffb84a" }}>{isOwner ? "Add an \"Electricity unit rate\" detail (like 26.28p per kWh) to your energy policy in Policies to see costs." : "Costs show once the electricity rate is added to the energy policy."}</span>}
         </div>
       )}
 
-      {/* ── Connections: folded away once Shelly and Bright are both connected ── */}
-      {folded ? (
+      {/* ── Connections: the owner's, folded away once Shelly and Bright are both connected ── */}
+      {!isOwner ? null : !twoStep ? (
+        <div style={card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ ...hdr, marginBottom: 3 }}>Connections</div>
+              <div style={small}>{shellyLinked || brightLinked ? [shellyLinked && "Shelly", brightLinked && "Bright"].filter(Boolean).join(" and ") + " connected. " : ""}Enter your two-step code to connect, rename or change these.</div>
+            </div>
+            <button onClick={() => { haptic(); onEnterCode(); }} style={mini}>Enter code</button>
+          </div>
+        </div>
+      ) : folded ? (
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
             <div style={{ minWidth: 0 }}>
@@ -9585,8 +9605,8 @@ const calcTimesheetTotals = days => {
             onListChange={setPolicyList} openRequest={policyOpenReq} onOpenTaken={takePolicyOpen}/>
         )}
 
-        {tab==="Energy"&&isOwner&&(
-          <EnergyPage user={user} mfa={mfa} onEnterCode={()=>setMfa(m=>({...m,need:true,skipped:false}))}/>
+        {tab==="Energy"&&(
+          <EnergyPage user={user} mfa={mfa} isOwner={isOwner} onEnterCode={()=>setMfa(m=>({...m,need:true,skipped:false}))}/>
         )}
 
         {tab==="Settle Up"&&(()=>{
