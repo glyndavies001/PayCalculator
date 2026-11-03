@@ -857,11 +857,17 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.22.0";
+const APP_VERSION = "1.22.1";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.22.1", date: "3 Nov 2026", items: [
+    { b: "Energy, live", t: " — while the Energy page is open, the plugs update every 5 seconds, with a graph of the last 10 minutes." },
+    { b: "More graphs", t: " — today hour by hour, and the last 30 days with the rest of the house from your smart meter." },
+    { b: "Where the month's heading", t: " — what your plugs and the whole house are on track to cost this month." },
+    { b: "Each plug's own page", t: " — tap a plug for its own graphs and costs. Shelly and Bright fold away under Connections once they're set up." },
+  ] },
   { v: "1.22.0", date: "1 Nov 2026", items: [
     { b: "Energy", t: " — a new page (⚡ at the top of the Dashboard) for your Shelly smart plugs: what's on right now and how many watts, plus today's and this month's use in kWh and £ at your UW rate. Connect Shelly once with its cloud key, then name each plug." },
     { b: "Whole house", t: " — connect your Bright account to see the house's electricity each day, and how much of it your plugs use." },
@@ -3872,12 +3878,41 @@ const isoDayShift = (iso, n) => { const [y, m, d] = iso.split("-").map(Number); 
 const energyMonthName = iso => { const [y, m] = iso.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long" }); };
 const energyDayLabel = iso => { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); };
 
+// ── Energy graphs (v1.22.1) ──
+const ENERGY_COLOURS = ["#4a9eff", "#00c88c", "#ffb84a", "#c084fc", "#ff6b8a", "#5ee6e6"];
+const ENERGY_REST = "#3a4560";          // the rest of the house, on the 30-day graph
+const ENERGY_LIVE_MS = 5000;            // the page reads the plugs this often while it's on screen
+const ENERGY_TRAIL_MS = 10 * 60000;     // the live graph shows the last 10 minutes
+const ENERGY_HISTORY_MS = 60000;        // today's readings and the days are read again this often
+// A day's use by the hour (Wh in 24 slots) from one plug's readings ({at, total_wh}, oldest first): the rise in
+// its running total between readings, spread over the hours by time. A drop is a restart (counts from 0) and
+// more than 4 kW's worth is a glitch, as on the server.
+function energyHours(readings, day) {
+  const [y, m, d] = day.split("-").map(Number);
+  const edge = h => new Date(y, m - 1, d, h).getTime();
+  const out = Array(24).fill(0);
+  for (let i = 1; i < readings.length; i++) {
+    const ta = Date.parse(readings[i - 1].at), tb = Date.parse(readings[i].at);
+    if (!(tb > ta)) continue;
+    let used = Number(readings[i].total_wh) - Number(readings[i - 1].total_wh);
+    if (used < -0.5) used = Number(readings[i].total_wh); else if (used < 0) used = 0;
+    if (!(used > 0) || used > 4000 * (tb - ta) / 3600000) continue;
+    for (let h = 0; h < 24; h++) {
+      const over = Math.min(tb, edge(h + 1)) - Math.max(ta, edge(h));
+      if (over > 0) out[h] += used * over / (tb - ta);
+    }
+  }
+  return out;
+}
+const energyHourLabel = h => (h % 12 || 12) + (h < 12 ? "am" : "pm");
 function EnergyPage({ user, mfa, onEnterCode }) {
   const [state, setState] = useState("loading");    // loading | ready | locked | nofactor | missing | error
   const [status, setStatus] = useState(null);       // from the energy function: what's linked
   const [devices, setDevices] = useState([]);
   const [days, setDays] = useState([]);             // the plugs' days: {device_id, day, wh}
   const [house, setHouse] = useState([]);           // Bright's days: {day, kwh, halves}
+  const [readings, setReadings] = useState([]);     // today's plug readings (at most one a minute): {device_id, at, watts, total_wh}
+  const [trail, setTrail] = useState([]);           // what's come in since the page opened: {t, w: {device id: watts}}
   const [rate, setRate] = useState(null);
   const [liveAt, setLiveAt] = useState(null);
   const [liveProblem, setLiveProblem] = useState(null);
@@ -3887,19 +3922,34 @@ function EnergyPage({ user, mfa, onEnterCode }) {
   const [brightForm, setBrightForm] = useState({ username: "", password: "" });
   const [addId, setAddId] = useState(null);         // the "add a plug by Device ID" box, open when not null
   const [editDev, setEditDev] = useState(null);     // {id, name, icon, hidden, saving, err}
+  const [pick, setPick] = useState(null);           // the plug whose own graphs are open
+  const [manage, setManage] = useState(false);      // Shelly and Bright fold away once both are connected
   const [sure, setSure] = useState(null);           // "shelly" / "bright": tapped Disconnect once
   const today = localISO();
   const monthStart = today.slice(0, 8) + "01";
-  const since = isoDayShift(today, -8) < monthStart ? isoDayShift(today, -8) : monthStart;
+  const since = isoDayShift(today, -30);
 
-  const readDays = useCallback(async () => {
-    const [d, h] = await Promise.all([
+  const readHistory = useCallback(async () => {
+    const from = new Date(new Date().setHours(0, 0, 0, 0) - 30 * 60000).toISOString();
+    const readToday = async () => {
+      const all = [];
+      for (let page = 0; page < 10; page++) {
+        const r = await jwtRetry(() => supabase.from("energy_readings").select("device_id,at,watts,total_wh").eq("user_id", user.id).gte("at", from).order("at", { ascending: true }).range(page * 1000, page * 1000 + 999));
+        if (r.error) return { error: r.error };
+        all.push(...(r.data || []));
+        if ((r.data || []).length < 1000) break;
+      }
+      return { data: all };
+    };
+    const [d, h, r] = await Promise.all([
       jwtRetry(() => supabase.from("energy_days").select("device_id,day,wh").eq("user_id", user.id).gte("day", since)),
       jwtRetry(() => supabase.from("energy_house").select("day,kwh,halves").eq("user_id", user.id).gte("day", since)),
+      readToday(),
     ]);
     if (!d.error) setDays(d.data || []);
-    if (!h.error) setHouse((h.data || []).map(r => ({ day: r.day, kwh: Number(r.kwh) || 0, halves: Number(r.halves) || 0 })));
-    return d.error || h.error || null;
+    if (!h.error) setHouse((h.data || []).map(x => ({ day: x.day, kwh: Number(x.kwh) || 0, halves: Number(x.halves) || 0 })));
+    if (!r.error) setReadings(r.data);
+    return d.error || h.error || r.error || null;
   }, [user, since]);
 
   const load = useCallback(async () => {
@@ -3917,36 +3967,54 @@ function EnergyPage({ user, mfa, onEnterCode }) {
       setState(s => (s === "ready" ? "ready" : "error"));
       return;
     }
-    const dErr = await readDays();
+    const dErr = await readHistory();
     if (dErr) reportDbError("getEnergy", dErr); else reportDbError("getEnergy", null);
     setDevices(dv.data || []);
     if (!pol.error) setRate(energyRateOf(pol.data || []));
     if (!st.error) setStatus(st);
     setState("ready");
-  }, [user, mfa.hasFactor, mfa.level, readDays]);
+  }, [user, mfa.hasFactor, mfa.level, readHistory]);
   useEffect(() => { load(); }, [load]);
 
-  // While the page is open, the plugs are read about once a minute (Shelly allows one call a second).
+  // While the page is on screen the plugs are read every 5 seconds (Shelly allows one call a second; the
+  // server keeps one reading a minute), and today's readings and the days every minute. Leaving the page or
+  // locking the phone stops it; it starts again when the page is back on screen.
   const shellyLinked = !!(status && status.shelly && status.shelly.linked);
   const live = useCallback(async () => {
     const r = await energyCall("live");
     if (r.error && !r.devices) { setLiveProblem(energyErrText(r.error)); return; }
-    if (Array.isArray(r.devices)) setDevices(r.devices);
+    if (Array.isArray(r.devices)) {
+      setDevices(r.devices);
+      const t = Date.parse(r.checkedAt || "") || Date.now();
+      setTrail(tr => {
+        if (tr.length && tr[tr.length - 1].t >= t) return tr;
+        const w = {};
+        r.devices.forEach(d => { if (d.online !== false && !d.hidden) w[d.id] = d.is_on ? Number(d.watts) || 0 : 0; });
+        return [...tr.filter(p => p.t > t - ENERGY_TRAIL_MS), { t, w }];
+      });
+    }
     setLiveProblem(r.problem || (r.error ? energyErrText(r.error) : null));
     setLiveAt(r.checkedAt || new Date().toISOString());
-    await readDays();
-  }, [readDays]);
+  }, []);
   useEffect(() => {
     if (state !== "ready" || !shellyLinked) return;
-    let gone = false, timer = null;
+    let gone = false, timer = null, running = false, history = Date.now();
     const tick = async () => {
-      if (gone) return;
-      if (typeof document === "undefined" || document.visibilityState === "visible") await live();
-      if (!gone) timer = setTimeout(tick, 60000);
+      if (gone || running) return;
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      running = true;
+      try {
+        await live();
+        if (Date.now() - history >= ENERGY_HISTORY_MS) { history = Date.now(); await readHistory(); }
+      } finally { running = false; }
+      if (!gone) timer = setTimeout(tick, ENERGY_LIVE_MS);
     };
+    const onShow = () => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onShow);
     tick();
-    return () => { gone = true; if (timer) clearTimeout(timer); };
-  }, [state, shellyLinked, live]);
+    return () => { gone = true; if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", onShow); };
+  }, [state, shellyLinked, live, readHistory]);
 
   // ── Actions ──
   const say = (ok, text, where) => setNote({ ok, text, where });
@@ -4022,6 +4090,7 @@ function EnergyPage({ user, mfa, onEnterCode }) {
     setDevices(list => list.map(d => (d.id === e.id ? { ...d, name, icon: e.icon || null, hidden: !!e.hidden } : d)));
     setEditDev(null);
   };
+  const openEdit = d => setEditDev({ id: d.id, name: d.name || "", icon: d.icon || null, hidden: !!d.hidden, saving: false, err: "" });
 
   // ── Styles (as Policies) ──
   const card = { background: "#141824", borderRadius: 12, border: "1px solid #1e2535", padding: "13px 14px", marginBottom: 10 };
@@ -4051,6 +4120,7 @@ function EnergyPage({ user, mfa, onEnterCode }) {
 
   // ── The figures ──
   const shown = devices.filter(d => !d.hidden);
+  const ids = shown.map(d => d.id);
   const whOf = {};   // device id -> {day: Wh}
   days.forEach(r => { (whOf[r.device_id] = whOf[r.device_id] || {})[r.day] = Number(r.wh) || 0; });
   const kwhOn = (id, from, to = from) => Object.entries(whOf[id] || {}).reduce((a, [day, wh]) => a + (day >= from && day <= to ? wh : 0), 0) / 1000;
@@ -4067,6 +4137,108 @@ function EnergyPage({ user, mfa, onEnterCode }) {
   const monthHouseKwh = monthHouse.reduce((a, h) => a + h.kwh, 0);
   const monthHouseTo = monthHouse.reduce((a, h) => (h.day > a ? h.day : a), "");
   const pct = (part, whole) => (whole > 0 ? Math.round(part / whole * 100) : null);
+  // Where the month's heading: the use so far over the time covered, for the whole month (shown after a day).
+  const nowMs = Date.now();
+  const [yy, mm] = today.split("-").map(Number);
+  const monthMs = new Date(yy, mm - 1, 1).getTime(), monthDays = new Date(yy, mm, 0).getDate();
+  const startOf = list => Math.max(monthMs, list.reduce((a, d) => Math.min(a, Date.parse(d.created_at || "") || Infinity), Infinity));
+  const heading = (kwh, from) => { const n = (nowMs - from) / 86400000; return n >= 1 ? kwh / n * monthDays : null; };
+  const houseFull = monthHouse.filter(h => h.halves >= 46);
+  const houseHeading = houseFull.length >= 2 ? houseFull.reduce((a, h) => a + h.kwh, 0) / houseFull.length * monthDays : null;
+  const headingLine = k => k == null ? null : (
+    <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 8, lineHeight: 1.5 }}>
+      Heading for about <b style={{ color: "#e8eaf0" }}>{rate ? money(k) : kwhText(k)}</b>{rate ? " (" + kwhText(k) + ")" : ""} by the end of {energyMonthName(today)}.
+    </div>
+  );
+
+  // ── Graphs ──
+  const colourOf = id => ENERGY_COLOURS[Math.max(0, ids.indexOf(id)) % ENERGY_COLOURS.length];
+  const nameOf = id => (id === "rest" ? "Rest of house" : (devices.find(d => d.id === id) || {}).name || "Plug");
+  // The last 10 minutes: the stored readings, then what's come in since the page opened.
+  const livePoints = (() => {
+    const byT = new Map();
+    readings.forEach(r => {
+      const t = Date.parse(r.at);
+      if (t > nowMs - ENERGY_TRAIL_MS) { const p = byT.get(t) || { t }; p[r.device_id] = Number(r.watts) || 0; byT.set(t, p); }
+    });
+    trail.forEach(p => { if (p.t > nowMs - ENERGY_TRAIL_MS) byT.set(p.t, { ...(byT.get(p.t) || {}), t: p.t, ...p.w }); });
+    return [...byT.values()].sort((a, b) => a.t - b.t);
+  })();
+  // Today by the hour (kWh), from the readings plus each plug's latest.
+  const hourly = {};
+  shown.forEach(d => {
+    const rs = readings.filter(r => r.device_id === d.id).map(r => ({ at: r.at, total_wh: r.total_wh }));
+    const last = rs.length ? Date.parse(rs[rs.length - 1].at) : 0;
+    if (d.read_at && d.total_wh != null && Date.parse(d.read_at) > last) rs.push({ at: d.read_at, total_wh: d.total_wh });
+    hourly[d.id] = energyHours(rs, today);
+  });
+  const hourData = Array.from({ length: 24 }, (_, h) => {
+    const row = { label: energyHourLabel(h) };
+    ids.forEach(id => { row[id] = hourly[id][h] / 1000; });
+    return row;
+  });
+  // The last 30 days (kWh): each plug, and the rest of the house where Bright has the whole day.
+  const houseOn = Object.fromEntries(house.map(h => [h.day, h]));
+  const dayData = Array.from({ length: 30 }, (_, i) => {
+    const day = isoDayShift(today, i - 29), row = { day, label: String(Number(day.slice(8))) };
+    let plugs = 0;
+    ids.forEach(id => { const k = kwhOn(id, day); row[id] = k; plugs += k; });
+    const h = houseOn[day];
+    if (brightLinked && h && h.halves >= 46) row.rest = Math.max(0, h.kwh - plugs);
+    return row;
+  });
+  const tip = {
+    contentStyle: { background: "#141824", border: "1px solid #2a3050", borderRadius: 8, fontSize: 12.5 },
+    labelStyle: { color: "#e8eaf0", fontWeight: 700 }, itemStyle: { padding: 0 },
+  };
+  const axis = { stroke: SUBTEXT, fontSize: 11, tickLine: false, axisLine: false };
+  const kTick = k => (k >= 10 ? Math.round(k) : k >= 1 ? k.toFixed(1) : k > 0 ? k.toFixed(2) : "0");
+  const legend = (list, rest) => (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", marginTop: 6 }}>
+      {[...list, ...(rest ? ["rest"] : [])].map(id => (
+        <span key={id} style={{ fontSize: 12, color: SUBTEXT, display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 9, height: 9, borderRadius: 2, background: id === "rest" ? ENERGY_REST : colourOf(id) }}/>{nameOf(id)}
+        </span>
+      ))}
+    </div>
+  );
+  const liveChart = (list, height) => livePoints.length < 2
+    ? <div style={{ ...small, padding: "6px 0" }}>The live graph fills in while this page is open.</div>
+    : (
+      <ResponsiveContainer width="100%" height={height}>
+        <LineChart data={livePoints} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
+          <CartesianGrid stroke="#1e2535" vertical={false}/>
+          <XAxis dataKey="t" type="number" domain={[nowMs - ENERGY_TRAIL_MS, nowMs]} ticks={[nowMs - ENERGY_TRAIL_MS, nowMs - ENERGY_TRAIL_MS / 2, nowMs]}
+            tickFormatter={t => (nowMs - t < 30000 ? "now" : Math.round((nowMs - t) / 60000) + " min ago")} {...axis}/>
+          <YAxis tickFormatter={w => (w >= 1000 ? (w / 1000).toFixed(1) + "k" : Math.round(w))} width={40} {...axis}/>
+          <Tooltip {...tip} cursor={{ stroke: "#2a3050" }} labelFormatter={t => new Date(t).toLocaleTimeString("en-GB")} formatter={(v, id) => [wattsText(Number(v) || 0), nameOf(id)]}/>
+          {list.map(id => <Line key={id} dataKey={id} stroke={colourOf(id)} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls/>)}
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  const hourChart = (list, height) => (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={hourData} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
+        <CartesianGrid stroke="#1e2535" vertical={false}/>
+        <XAxis dataKey="label" interval={5} {...axis}/>
+        <YAxis tickFormatter={kTick} width={40} {...axis}/>
+        <Tooltip {...tip} cursor={{ fill: "rgba(74,158,255,0.08)" }} formatter={(v, id) => [kwhText(Number(v) || 0), nameOf(id)]}/>
+        {list.map(id => <Bar key={id} dataKey={id} stackId="a" fill={colourOf(id)} isAnimationActive={false}/>)}
+      </BarChart>
+    </ResponsiveContainer>
+  );
+  const daysChart = (list, rest, height) => (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={dayData} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
+        <CartesianGrid stroke="#1e2535" vertical={false}/>
+        <XAxis dataKey="label" interval={6} {...axis}/>
+        <YAxis tickFormatter={kTick} width={40} {...axis}/>
+        <Tooltip {...tip} cursor={{ fill: "rgba(74,158,255,0.08)" }} labelFormatter={(l, p) => (p && p[0] ? energyDayLabel(p[0].payload.day) : l)} formatter={(v, id) => [kwhText(Number(v) || 0), nameOf(id)]}/>
+        {list.map(id => <Bar key={id} dataKey={id} stackId="a" fill={colourOf(id)} isAnimationActive={false}/>)}
+        {rest && <Bar dataKey="rest" stackId="a" fill={ENERGY_REST} isAnimationActive={false}/>}
+      </BarChart>
+    </ResponsiveContainer>
+  );
 
   const usageRows = (from, to) => (
     <>
@@ -4127,6 +4299,44 @@ function EnergyPage({ user, mfa, onEnterCode }) {
     );
   };
 
+  // One plug's own graphs and costs.
+  const plugSheet = () => {
+    const d = devices.find(x => x.id === pick);
+    if (!d) return null;
+    const close = () => setPick(null);
+    const off = d.online === false, on = !off && d.is_on;
+    const todayK = kwhOn(d.id, today), monthK = kwhOn(d.id, monthStart, today);
+    const head = heading(monthK, startOf([d]));
+    return (
+      <div onClick={close} onTouchStart={ev => ev.stopPropagation()} style={overlay}>
+        <div onClick={ev => ev.stopPropagation()} style={sheet}>
+          <SheetGrab onClose={close}/>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+            <span style={{ fontSize: 26, flexShrink: 0 }}>{energyIcon(d.icon)}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 17, color: "#e8eaf0", fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
+              <div style={{ fontSize: 13, color: off ? "#ffb84a" : on ? "#00c88c" : SUBTEXT }}>{off ? "Offline" : on ? "On" : "Off"}{d.read_at ? " · updated " + agoText(d.read_at) : ""}</div>
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: "#e8eaf0", flexShrink: 0 }}>{off ? "–" : wattsText(on ? Number(d.watts) || 0 : 0)}</div>
+          </div>
+          <div style={hdr}>Last 10 minutes</div>
+          {liveChart([d.id], 120)}
+          <div style={{ ...hdr, marginTop: 12 }}>Today · {kwhText(todayK)}{rate ? " · " + money(todayK) : ""}</div>
+          {hourChart([d.id], 120)}
+          <div style={{ ...hdr, marginTop: 12 }}>Last 30 days</div>
+          {daysChart([d.id], false, 130)}
+          <div style={{ ...small, marginTop: 10 }}>
+            {energyMonthName(today)} so far: <b style={{ color: "#e8eaf0" }}>{kwhText(monthK)}</b>{rate ? <> · <b style={{ color: "#e8eaf0" }}>{money(monthK)}</b></> : null}
+            {head != null ? <> · heading for about {rate ? money(head) : kwhText(head)}</> : null}
+          </div>
+          <button onClick={() => { haptic(); setPick(null); openEdit(d); }} style={{ ...bigBtn, width: "100%", marginTop: 12 }}>Rename or hide</button>
+          <button onClick={close} style={plainBtn}>Close</button>
+        </div>
+      </div>
+    );
+  };
+
+  const folded = shellyLinked && brightLinked && !manage && !statusLost;
   return (
     <div>
       {!statusLost && !shellyLinked && devices.length === 0 && !brightLinked && (
@@ -4135,48 +4345,62 @@ function EnergyPage({ user, mfa, onEnterCode }) {
           <div style={small}>See what your computer, treadmill and air con use, and what they cost, from your Shelly smart plugs. Connect Shelly below once the plugs are set up in the Shelly app.</div>
         </div>
       )}
-      {/* ── Right now ── */}
+      {/* ── Right now, and the last 10 minutes ── */}
       {shellyLinked && shown.length > 0 && (
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
             <div style={hdr}>Right now</div>
             <div style={{ fontSize: 12.5, color: SUBTEXT }}>{lastRead || liveAt ? "updated " + agoText(lastRead || liveAt) : ""}</div>
           </div>
+          <div style={{ fontSize: 30, fontWeight: 800, color: "#e8eaf0", lineHeight: 1.15 }}>{wattsText(nowWatts)}</div>
+          <div style={{ fontSize: 13, color: SUBTEXT, marginBottom: 6 }}>{rate && nowWatts > 0 ? "About " + money(nowWatts / 1000) + " an hour at this rate" : "Using now"}</div>
           {shown.map(d => {
             const off = d.online === false, on = !off && d.is_on;
             return (
-              <div key={d.id} onClick={() => { haptic(); setEditDev({ id: d.id, name: d.name || "", icon: d.icon || null, hidden: !!d.hidden, saving: false, err: "" }); }}
+              <div key={d.id} onClick={() => { haptic(); setPick(d.id); }}
                 style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: "1px solid #1a1f2e", cursor: "pointer" }}>
+                <span style={{ width: 4, alignSelf: "stretch", borderRadius: 2, background: colourOf(d.id), flexShrink: 0 }}/>
                 <span style={{ fontSize: 20, flexShrink: 0 }}>{energyIcon(d.icon)}</span>
                 <span style={{ flex: 1, minWidth: 0, fontSize: 15, color: "#e8eaf0", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</span>
                 <span style={{ fontSize: 15, fontWeight: 700, color: off ? "#ffb84a" : on ? "#00c88c" : SUBTEXT, flexShrink: 0 }}>
-                  {off ? "Offline" : on ? "On · " + wattsText(Number(d.watts) || 0) : d.watts > 0 ? wattsText(Number(d.watts)) : "Off"}
+                  {off ? "Offline" : on ? wattsText(Number(d.watts) || 0) : d.watts > 0 ? wattsText(Number(d.watts)) : "Off"}
                 </span>
+                <span style={{ fontSize: 17, color: SUBTEXT, flexShrink: 0 }}>›</span>
               </div>
             );
           })}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingTop: 8 }}>
-            <span style={{ fontSize: 13.5, color: SUBTEXT, fontWeight: 700 }}>Using now</span>
-            <span style={{ fontSize: 17, fontWeight: 800, color: "#e8eaf0" }}>{wattsText(nowWatts)}</span>
-          </div>
+          <div style={{ ...hdr, marginTop: 12 }}>Last 10 minutes</div>
+          {liveChart(ids, 150)}
+          {livePoints.length > 1 && legend(ids, false)}
           {liveProblem && <div style={{ fontSize: 13, color: "#ffb84a", marginTop: 8, lineHeight: 1.5 }}>{liveProblem}</div>}
         </div>
       )}
 
-      {/* ── Today and this month ── */}
+      {/* ── Today, this month and the last 30 days ── */}
       {shown.length > 0 && (
         <>
           <div style={card}>
             <div style={hdr}>Today</div>
-            {usageRows(today, today)}
+            {hourChart(ids, 140)}
+            {legend(ids, false)}
+            <div style={{ marginTop: 6 }}>{usageRows(today, today)}</div>
           </div>
           {monthStart !== today && (
             <div style={card}>
               <div style={hdr}>{energyMonthName(today)} so far</div>
               {usageRows(monthStart, today)}
+              {headingLine(heading(plugsOn(monthStart, today), startOf(shown)))}
             </div>
           )}
         </>
+      )}
+      {(shown.length > 0 || brightLinked) && (
+        <div style={card}>
+          <div style={hdr}>Last 30 days</div>
+          {daysChart(ids, brightLinked, 170)}
+          {legend(ids, brightLinked)}
+          {brightLinked && <div style={{ ...small, marginTop: 6 }}>Rest of house is the smart meter's total less your plugs. It's a day or so behind.</div>}
+        </div>
       )}
 
       {/* ── The whole house, from Bright ── */}
@@ -4192,7 +4416,7 @@ function EnergyPage({ user, mfa, onEnterCode }) {
                   <span style={{ fontSize: 14.5, color: "#e8eaf0" }}>{lastFull.day === isoDayShift(today, -1) ? "Yesterday" : energyDayLabel(lastFull.day)}</span>
                   <span><span style={{ fontSize: 13.5, color: SUBTEXT }}>{kwhText(lastFull.kwh)}</span>{rate && <span style={{ fontSize: 15.5, fontWeight: 800, color: "#e8eaf0", marginLeft: 10 }}>{money(lastFull.kwh)}</span>}</span>
                 </div>
-                {shown.length > 0 && share != null && <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 3 }}>Your plugs: {kwhText(p)} ({share}%)</div>}
+                {shown.length > 0 && share != null && p > 0 && <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 3 }}>Your plugs: {kwhText(p)} ({share}%)</div>}
               </div>
             );
           })()}
@@ -4204,10 +4428,11 @@ function EnergyPage({ user, mfa, onEnterCode }) {
                   <span style={{ fontSize: 14.5, color: "#e8eaf0" }}>{energyMonthName(today)} to {energyDayLabel(monthHouseTo).replace(/^\w+ /, "")}</span>
                   <span><span style={{ fontSize: 13.5, color: SUBTEXT }}>{kwhText(monthHouseKwh)}</span>{rate && <span style={{ fontSize: 15.5, fontWeight: 800, color: "#e8eaf0", marginLeft: 10 }}>{money(monthHouseKwh)}</span>}</span>
                 </div>
-                {shown.length > 0 && share != null && <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 3 }}>Your plugs: {kwhText(p)} ({share}%)</div>}
+                {shown.length > 0 && share != null && p > 0 && <div style={{ fontSize: 13, color: SUBTEXT, marginTop: 3 }}>Your plugs: {kwhText(p)} ({share}%)</div>}
               </div>
             );
           })()}
+          {headingLine(houseHeading)}
           <div style={{ ...small, marginTop: 10 }}>From your smart meter, through Bright, about a day behind.{rate ? " Costs are for the units used; the standing charge is on top." : ""}</div>
           {status.bright.problem && (lastFull || monthHouse.length > 0) && <div style={{ fontSize: 13, color: "#ffb84a", marginTop: 6, lineHeight: 1.5 }}>{status.bright.problem}</div>}
         </div>
@@ -4221,85 +4446,103 @@ function EnergyPage({ user, mfa, onEnterCode }) {
         </div>
       )}
 
-      {/* ── Plugs: connect Shelly, name and add them ── */}
-      <div style={card}>
-        <div style={hdr}>Smart plugs (Shelly)</div>
-        {statusLost ? (
-          <div style={small}>Couldn't check the connection just now. <button onClick={() => { haptic(); load(); }} style={{ ...mini, marginLeft: 6 }}>Try again</button></div>
-        ) : !shellyLinked ? (
-          <>
-            <div style={{ ...small, marginBottom: 10 }}>
-              In the Shelly app, go to <b style={{ color: "#e8eaf0" }}>Settings → User settings → Authorization cloud key</b> (it may be under Access and permissions) and tap <b style={{ color: "#e8eaf0" }}>Get key</b>. Copy the server and the key into the boxes below.
+      {/* ── Connections: folded away once Shelly and Bright are both connected ── */}
+      {folded ? (
+        <div style={card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ ...hdr, marginBottom: 3 }}>Connections</div>
+              <div style={small}>Shelly · {devices.length} plug{devices.length === 1 ? "" : "s"} · Bright{status.bright.checkedAt ? " checked " + agoText(status.bright.checkedAt) : ""}</div>
             </div>
-            <input value={shellyForm.server} onChange={e => { const v = e.target.value; setShellyForm(f => ({ ...f, server: v })); }} placeholder="Server, e.g. https://shelly-103-eu.shelly.cloud" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
-            <input value={shellyForm.key} onChange={e => { const v = e.target.value; setShellyForm(f => ({ ...f, key: v })); }} placeholder="Authorization cloud key" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
-            <button onClick={connectShelly} disabled={!!busy || !shellyForm.server.trim() || !shellyForm.key.trim()} style={{ ...bigBtn, width: "100%", opacity: busy === "shelly" || !shellyForm.server.trim() || !shellyForm.key.trim() ? 0.6 : 1 }}>{busy === "shelly" ? "Connecting…" : "Connect Shelly"}</button>
-            <div style={{ ...small, marginTop: 8 }}>The key lets Vaulted read your plugs. It's kept on Vaulted's server, not on this phone, and Vaulted never switches anything on or off.</div>
-          </>
-        ) : (
-          <>
-            {devices.length === 0 && <div style={{ ...small, marginBottom: 8 }}>No plugs yet. Add each one by its Device ID.</div>}
-            {devices.map(d => (
-              <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #1a1f2e" }}>
-                <span style={{ fontSize: 18, flexShrink: 0, opacity: d.hidden ? 0.5 : 1 }}>{energyIcon(d.icon)}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14.5, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}{d.hidden ? " (hidden)" : ""}</div>
-                  <div style={{ fontSize: 12.5, color: SUBTEXT }}>{d.hidden ? "Not being read" : d.online === false ? "Offline" : d.read_at ? "Read " + agoText(d.read_at) : "Waiting for its first reading"}</div>
+            <button onClick={() => { haptic(); setManage(true); }} style={mini}>Manage</button>
+          </div>
+          {(status.shelly.problem || status.bright.problem) && <div style={{ fontSize: 13, color: "#ffb84a", marginTop: 6, lineHeight: 1.5 }}>{status.shelly.problem || status.bright.problem}</div>}
+        </div>
+      ) : (
+        <>
+          {/* ── Plugs: connect Shelly, name and add them ── */}
+          <div style={card}>
+            <div style={hdr}>Smart plugs (Shelly)</div>
+            {statusLost ? (
+              <div style={small}>Couldn't check the connection just now. <button onClick={() => { haptic(); load(); }} style={{ ...mini, marginLeft: 6 }}>Try again</button></div>
+            ) : !shellyLinked ? (
+              <>
+                <div style={{ ...small, marginBottom: 10 }}>
+                  In the Shelly app, go to <b style={{ color: "#e8eaf0" }}>Settings → User settings → Authorization cloud key</b> (it may be under Access and permissions) and tap <b style={{ color: "#e8eaf0" }}>Get key</b>. Copy the server and the key into the boxes below.
                 </div>
-                <button onClick={() => { haptic(); setEditDev({ id: d.id, name: d.name || "", icon: d.icon || null, hidden: !!d.hidden, saving: false, err: "" }); }} style={mini}>Edit</button>
-              </div>
-            ))}
-            {noteFor("plugs")}
-            {addId == null
-              ? <button onClick={() => { haptic(); setNote(null); setAddId(""); }} style={{ ...mini, marginTop: 10 }}>＋ Add a plug by Device ID</button>
-              : (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ ...small, marginBottom: 6 }}>In the Shelly app, open the plug → Settings → Device information → <b style={{ color: "#e8eaf0" }}>Device ID</b>.</div>
-                  <input value={addId} onChange={e => setAddId(e.target.value)} placeholder="Device ID, e.g. b48a0a1cd978" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={addPlug} disabled={!!busy || !addId.trim()} style={{ ...bigBtn, flex: 1, padding: "11px", opacity: busy === "add" || !addId.trim() ? 0.6 : 1 }}>{busy === "add" ? "Adding…" : "Add plug"}</button>
-                    <button onClick={() => { setAddId(null); setNote(null); }} style={{ ...mini, padding: "0 14px" }}>Cancel</button>
+                <input value={shellyForm.server} onChange={e => { const v = e.target.value; setShellyForm(f => ({ ...f, server: v })); }} placeholder="Server, e.g. https://shelly-103-eu.shelly.cloud" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
+                <input value={shellyForm.key} onChange={e => { const v = e.target.value; setShellyForm(f => ({ ...f, key: v })); }} placeholder="Authorization cloud key" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
+                <button onClick={connectShelly} disabled={!!busy || !shellyForm.server.trim() || !shellyForm.key.trim()} style={{ ...bigBtn, width: "100%", opacity: busy === "shelly" || !shellyForm.server.trim() || !shellyForm.key.trim() ? 0.6 : 1 }}>{busy === "shelly" ? "Connecting…" : "Connect Shelly"}</button>
+                <div style={{ ...small, marginTop: 8 }}>The key lets Vaulted read your plugs. It's kept on Vaulted's server, not on this phone, and Vaulted never switches anything on or off.</div>
+              </>
+            ) : (
+              <>
+                {devices.length === 0 && <div style={{ ...small, marginBottom: 8 }}>No plugs yet. Add each one by its Device ID.</div>}
+                {devices.map(d => (
+                  <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #1a1f2e" }}>
+                    <span style={{ fontSize: 18, flexShrink: 0, opacity: d.hidden ? 0.5 : 1 }}>{energyIcon(d.icon)}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14.5, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}{d.hidden ? " (hidden)" : ""}</div>
+                      <div style={{ fontSize: 12.5, color: SUBTEXT }}>{d.hidden ? "Not being read" : d.online === false ? "Offline" : d.read_at ? "Read " + agoText(d.read_at) : "Waiting for its first reading"}</div>
+                    </div>
+                    <button onClick={() => { haptic(); openEdit(d); }} style={mini}>Edit</button>
                   </div>
-                  {noteFor("add")}
+                ))}
+                {noteFor("plugs")}
+                {addId == null
+                  ? <button onClick={() => { haptic(); setNote(null); setAddId(""); }} style={{ ...mini, marginTop: 10 }}>＋ Add a plug by Device ID</button>
+                  : (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ ...small, marginBottom: 6 }}>In the Shelly app, open the plug → Settings → Device information → <b style={{ color: "#e8eaf0" }}>Device ID</b>.</div>
+                      <input value={addId} onChange={e => setAddId(e.target.value)} placeholder="Device ID, e.g. b48a0a1cd978" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={addPlug} disabled={!!busy || !addId.trim()} style={{ ...bigBtn, flex: 1, padding: "11px", opacity: busy === "add" || !addId.trim() ? 0.6 : 1 }}>{busy === "add" ? "Adding…" : "Add plug"}</button>
+                        <button onClick={() => { setAddId(null); setNote(null); }} style={{ ...mini, padding: "0 14px" }}>Cancel</button>
+                      </div>
+                      {noteFor("add")}
+                    </div>
+                  )}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 12 }}>
+                  <span style={{ ...small, minWidth: 0 }}>Connected{status.shelly.checkedAt ? " · checked " + agoText(status.shelly.checkedAt) : ""}</span>
+                  <button onClick={disconnectShelly} disabled={!!busy} style={{ ...mini, color: "#ff6b8a" }}>{sure === "shelly" ? "Disconnect?" : "Disconnect"}</button>
                 </div>
-              )}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 12 }}>
-              <span style={{ ...small, minWidth: 0 }}>Connected{status.shelly.checkedAt ? " · checked " + agoText(status.shelly.checkedAt) : ""}</span>
-              <button onClick={disconnectShelly} disabled={!!busy} style={{ ...mini, color: "#ff6b8a" }}>{sure === "shelly" ? "Disconnect?" : "Disconnect"}</button>
-            </div>
-            {status.shelly.problem && !liveProblem && <div style={{ fontSize: 13, color: "#ffb84a", marginTop: 6, lineHeight: 1.5 }}>{status.shelly.problem}</div>}
-          </>
-        )}
-        {noteFor("shelly")}
-      </div>
+                {status.shelly.problem && !liveProblem && <div style={{ fontSize: 13, color: "#ffb84a", marginTop: 6, lineHeight: 1.5 }}>{status.shelly.problem}</div>}
+              </>
+            )}
+            {noteFor("shelly")}
+          </div>
 
-      {/* ── Bright ── */}
-      <div style={card}>
-        <div style={hdr}>Smart meter (Bright)</div>
-        {statusLost ? (
-          <div style={small}>Couldn't check the connection just now.</div>
-        ) : !brightLinked ? (
-          <>
-            <div style={{ ...small, marginBottom: 10 }}>See the whole house's electricity each day, and how much your plugs make up. Use the email and password you sign in to the Bright app with.</div>
-            <input value={brightForm.username} onChange={e => { const v = e.target.value; setBrightForm(f => ({ ...f, username: v })); }} type="email" placeholder="Bright email" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
-            <input value={brightForm.password} onChange={e => { const v = e.target.value; setBrightForm(f => ({ ...f, password: v })); }} type="password" placeholder="Bright password" autoComplete="off" style={inp}/>
-            <button onClick={connectBright} disabled={!!busy || !brightForm.username.trim() || !brightForm.password} style={{ ...bigBtn, width: "100%", opacity: busy === "bright" || !brightForm.username.trim() || !brightForm.password ? 0.6 : 1 }}>{busy === "bright" ? "Connecting…" : "Connect Bright"}</button>
-            <div style={{ ...small, marginTop: 8 }}>Your Bright login is kept on Vaulted's server so it can check each day. It's never shown in the app.</div>
-          </>
-        ) : (
-          <>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-              <span style={{ ...small, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{status.bright.user || "Connected"}{status.bright.checkedAt ? " · checked " + agoText(status.bright.checkedAt) : ""}</span>
-              <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={syncBright} disabled={!!busy} style={mini}>{busy === "bright" ? "Checking…" : "Check now"}</button>
-                <button onClick={disconnectBright} disabled={!!busy} style={{ ...mini, color: "#ff6b8a" }}>{sure === "bright" ? "Disconnect?" : "Disconnect"}</button>
-              </span>
-            </div>
-          </>
-        )}
-        {noteFor("bright")}
-      </div>
+          {/* ── Bright ── */}
+          <div style={card}>
+            <div style={hdr}>Smart meter (Bright)</div>
+            {statusLost ? (
+              <div style={small}>Couldn't check the connection just now.</div>
+            ) : !brightLinked ? (
+              <>
+                <div style={{ ...small, marginBottom: 10 }}>See the whole house's electricity each day, and how much your plugs make up. Use the email and password you sign in to the Bright app with.</div>
+                <input value={brightForm.username} onChange={e => { const v = e.target.value; setBrightForm(f => ({ ...f, username: v })); }} type="email" placeholder="Bright email" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={inp}/>
+                <input value={brightForm.password} onChange={e => { const v = e.target.value; setBrightForm(f => ({ ...f, password: v })); }} type="password" placeholder="Bright password" autoComplete="off" style={inp}/>
+                <button onClick={connectBright} disabled={!!busy || !brightForm.username.trim() || !brightForm.password} style={{ ...bigBtn, width: "100%", opacity: busy === "bright" || !brightForm.username.trim() || !brightForm.password ? 0.6 : 1 }}>{busy === "bright" ? "Connecting…" : "Connect Bright"}</button>
+                <div style={{ ...small, marginTop: 8 }}>Your Bright login is kept on Vaulted's server so it can check each day. It's never shown in the app.</div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <span style={{ ...small, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{status.bright.user || "Connected"}{status.bright.checkedAt ? " · checked " + agoText(status.bright.checkedAt) : ""}</span>
+                  <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button onClick={syncBright} disabled={!!busy} style={mini}>{busy === "bright" ? "Checking…" : "Check now"}</button>
+                    <button onClick={disconnectBright} disabled={!!busy} style={{ ...mini, color: "#ff6b8a" }}>{sure === "bright" ? "Disconnect?" : "Disconnect"}</button>
+                  </span>
+                </div>
+              </>
+            )}
+            {noteFor("bright")}
+          </div>
+          {manage && shellyLinked && brightLinked && <button onClick={() => { haptic(); setManage(false); }} style={plainBtn}>Fold away</button>}
+        </>
+      )}
 
+      {pick && plugSheet()}
       {editDev && editSheet()}
     </div>
   );
