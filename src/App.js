@@ -857,11 +857,14 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.22.1";
+const APP_VERSION = "1.22.2";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
 const WHATS_NEW = [
+  { v: "1.22.2", date: "3 Nov 2026", items: [
+    { b: "Energy fix", t: " — a plug's own page now fits the screen instead of running off the right-hand side." },
+  ] },
   { v: "1.22.1", date: "3 Nov 2026", items: [
     { b: "Energy, live", t: " — while the Energy page is open, the plugs update every 5 seconds, with a graph of the last 10 minutes." },
     { b: "More graphs", t: " — today hour by hour, and the last 30 days with the rest of the house from your smart meter." },
@@ -4100,7 +4103,7 @@ function EnergyPage({ user, mfa, onEnterCode }) {
   const bigBtn = { background: "#1a3a5a", border: "1px solid #2a5a8a", borderRadius: 10, color: "#8ec5ff", fontSize: 15, fontWeight: 700, padding: "13px", cursor: "pointer" };
   const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #2a3050", borderRadius: 8, color: "#e8eaf0", fontSize: 15, padding: "12px 14px", marginBottom: 10, fontFamily: "inherit" };
   const overlay = { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 210, background: "rgba(0,0,0,0.6)" };
-  const sheet = { position: "absolute", left: 0, right: 0, bottom: 0, background: "#141824", borderTop: "1px solid #2a3050", borderRadius: "16px 16px 0 0", padding: "8px 14px", paddingBottom: "calc(16px + env(safe-area-inset-bottom))", maxHeight: "90vh", overflowY: "auto" };
+  const sheet = { position: "absolute", left: 0, right: 0, bottom: 0, background: "#141824", borderTop: "1px solid #2a3050", borderRadius: "16px 16px 0 0", padding: "8px 14px", paddingBottom: "calc(16px + env(safe-area-inset-bottom))", maxHeight: "90vh", overflowY: "auto", overflowX: "hidden" };
   const plainBtn = { width: "100%", background: "transparent", border: "none", color: SUBTEXT, fontSize: 13.5, fontWeight: 600, padding: "10px", cursor: "pointer" };
   const seg = on => ({ flex: 1, background: on ? "#1a3a5a" : "transparent", border: "1px solid " + (on ? "#2a5a8a" : "#2a3050"), borderRadius: 8, color: on ? "#8ec5ff" : SUBTEXT, fontSize: 13, fontWeight: 700, padding: "9px 4px", cursor: "pointer" });
   const noteFor = where => note && note.where === where
@@ -4337,8 +4340,10 @@ function EnergyPage({ user, mfa, onEnterCode }) {
   };
 
   const folded = shellyLinked && brightLinked && !manage && !statusLost;
+  // overflowX: a graph's tooltip near the edge mustn't make the page wider than the phone (on iPhones that
+  // also makes the sheets wider than the screen).
   return (
-    <div>
+    <div style={{ overflowX: "hidden" }}>
       {!statusLost && !shellyLinked && devices.length === 0 && !brightLinked && (
         <div style={{ ...card, textAlign: "center", padding: "20px 14px", lineHeight: 1.55 }}>
           <div style={{ fontSize: 28, marginBottom: 6 }}>⚡</div>
