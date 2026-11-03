@@ -36,6 +36,14 @@ const SUBTEXT = "#a8e0ff";   // ice blue
 
 // API calls routed through Vercel serverless proxy
 const API_PROXY = "/api/claude";
+// Claude models. Payslips and timesheets: Sonnet 5.5 as a straight read (between_tools is its
+// lowest thinking setting, so no thinking without tools). Policy documents: Opus 5.5, which always
+// thinks first (slower, more careful). /api/claude falls back to Sonnet 4.6 if a model turns a
+// request down for something only it checks.
+const AI_READ = { model: "claude-sonnet-5-5", thinking: { type: "between_tools" } };
+const AI_POLICY = { model: "claude-opus-5-5", output_config: { effort: "medium" } };
+const AI_MODEL_NAMES = { "claude-sonnet-5-5": "Sonnet 5.5", "claude-opus-5-5": "Opus 5.5", "claude-sonnet-4-6": "Sonnet 4.6" };
+const AI_BILLING_URL = "https://platform.claude.com/settings/billing";
 
 // Supabase client -- real connection
 const SUPABASE_URL = "https://yfbarahnwcrwewtpithb.supabase.co";
@@ -51,6 +59,34 @@ async function authHeaders() {
     if (session && session.access_token) h.Authorization = "Bearer " + session.access_token;
   } catch (e) {}
   return h;
+}
+
+// One request to Claude through /api/claude. source says what it's for (payslip, timesheet, policy,
+// check) so its cost is logged against it. Returns { data, model } (model = the one that answered),
+// or throws a readable error.
+async function askClaude(body, source) {
+  const resp = await fetch(API_PROXY, {
+    method: "POST",
+    headers: { ...(await authHeaders()), "x-vaulted-source": source },
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await resp.json(); } catch (e) {}
+  try { window.dispatchEvent(new Event("vaulted-ai-used")); } catch (e) {}
+  const err = data && data.error;
+  const msg = err ? String(err.message || (typeof err === "string" ? err : JSON.stringify(err))) : "";
+  if (/credit balance/i.test(msg)) throw new Error("Claude credit has run out. Top it up on the Anthropic Billing page (Diag → Claude credit), then try again.");
+  if (!resp.ok || !data || err) throw new Error("API " + resp.status + (msg ? ": " + msg.slice(0, 160) : ""));
+  if (data.stop_reason === "max_tokens") throw new Error("Claude's answer was cut short");
+  return { data, model: resp.headers.get("x-vaulted-model") || body.model };
+}
+// The text of Claude's answer: its text blocks (thinking blocks come first and have no text).
+const aiText = data => (data && Array.isArray(data.content) ? data.content : [])
+  .filter(b => b && b.type === "text").map(b => b.text || "").join("").replace(/```json|```/g, "").trim();
+// The JSON object (or array) in Claude's answer, even with a few words around it.
+function aiJson(text, kind) {
+  const m = kind === "array" ? text.match(/\[[\s\S]*\]/) : text.match(/\{[\s\S]*\}/);
+  return JSON.parse(m ? m[0] : text);
 }
 
 // Contracted hours for the pay period ENDING on the 28th of the given month
@@ -289,6 +325,7 @@ const SK = {
   loadCount:    "vaulted_load_count",    // app load counter (picker-death diagnostics)
   paySeen:      "vaulted_pay_seen",      // the wage payment whose payday card was dismissed
   seenVersion:  "vaulted_seen_version",  // the version whose What's new this phone has seen
+  aiNotice:     "vaulted_ai_notice",     // the Claude credit reminder hidden on this phone, and until when
   // Below kept for backward compat - falls back to defaults if missing
   collapsed:    "vaulted_cat_collapsed", // which category cards are folded (device-local)
   billSort:     "vaulted_bill_sort",      // how bills are ordered inside a category
@@ -603,6 +640,38 @@ const db = {
     const { error } = await supabase.from("app_settings").upsert({ user_id: userId, ...settings, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
     reportDbError("saveAppSettings", error);
   },
+  // Claude credit: the balance and expiry date copied from the Anthropic Billing page (owner only).
+  async getAiCredit(userId) {
+    const { data, error } = await jwtRetry(() => supabase.from("ai_credit").select("*").eq("user_id", userId).maybeSingle());
+    reportDbError("getAiCredit", error);
+    return data || null;
+  },
+  async saveAiCredit(userId, balanceUsd, expiresOn) {
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("ai_credit").upsert({ user_id: userId, balance_usd: balanceUsd, balance_at: now, expires_on: expiresOn || null, updated_at: now }, { onConflict: "user_id" });
+    reportDbError("saveAiCredit", error);
+    if (error) throw error;
+  },
+  // What Claude reads have cost since a time (all of the household's, newest first).
+  async getAiUsageSince(sinceIso) {
+    const { data, error } = await jwtRetry(() => supabase.from("ai_usage").select("at,source,model,cost_usd,error").gte("at", sinceIso).order("at", { ascending: false }).limit(2000));
+    reportDbError("getAiUsageSince", error);
+    return data || [];
+  },
+  async getAiUsageLatest() {
+    const { data, error } = await jwtRetry(() => supabase.from("ai_usage").select("at,error").order("at", { ascending: false }).limit(1));
+    reportDbError("getAiUsageLatest", error);
+    return (data && data[0]) || null;
+  },
+  // A read the server did (a timesheet email): logged by the app, once per ref.
+  async logAiUsage(userId, usage, source, ref) {
+    const { error } = await supabase.from("ai_usage").upsert({
+      user_id: userId, source, model: usage.model, asked_model: usage.model,
+      input_tokens: usage.input_tokens || 0, output_tokens: usage.output_tokens || 0,
+      cost_usd: usage.cost_usd || 0, ref,
+    }, { onConflict: "ref", ignoreDuplicates: true });
+    reportDbError("logAiUsage", error);
+  },
   async getAccumulator(userId) {
     const { data, error } = await jwtRetry(() => supabase.from("timesheet_accumulator").select("*").eq("user_id", userId).single());
     if (error && error.code !== "PGRST116") reportDbError("getAccumulator", error);
@@ -857,11 +926,21 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.23.0";
+const APP_VERSION = "1.24.0";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
+// Points marked owner: true only show on Glyn's phone.
+const newsFor = (notes, isOwner) => notes
+  .map(n => ({ ...n, items: n.items.filter(it => !it.owner || isOwner) }))
+  .filter(n => n.items.length);
 const WHATS_NEW = [
+  { v: "1.24.0", date: "3 Nov 2026", items: [
+    { b: "Newer Claude", t: " — payslips and timesheets are now read by Claude Sonnet 5.5, and policy documents by Claude Opus 5.5, which takes a little longer but reads them more carefully.", owner: true },
+    { b: "Claude credit reminder", t: " — in Diag → 🤖 Claude credit, copy your balance and expiry date from the Anthropic Billing page once. Vaulted then counts what each read costs, and the Dashboard tells you when it's under $2, 30 days before it expires, or if it runs out.", owner: true },
+    { b: "Payslip fix", t: " — payslips Vaulted picks up after the file picker plays up now save properly.", owner: true },
+    { b: "Tighter security", t: " — behind-the-scenes tidying of who can change what, and a faster database." },
+  ] },
   { v: "1.23.0", date: "3 Nov 2026", items: [
     { b: "Energy for both of you", t: " — Hollie can see the ⚡ Energy page too: what's on, today, this month and the last 30 days. Only Glyn can connect or rename the plugs." },
     { b: "No code just to look", t: " — Energy only asks for the two-step code to connect, rename or change things." },
@@ -2881,15 +2960,9 @@ async function readPolicyChunk(preps, onePolicy, known) {
       : { type: "image", source: { type: "base64", media_type: p.mime, data: p.b64 } });
   }
   content.push({ type: "text", text: policyReadPrompt(preps.length, onePolicy, known) });
-  const resp = await fetch(API_PROXY, {
-    method: "POST",
-    headers: await authHeaders(),
-    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: Math.min(4000, 1400 + 700 * preps.length), messages: [{ role: "user", content }] }),
-  });
-  if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error("API " + resp.status + (t ? ": " + t.slice(0, 120) : "")); }
-  const data = await resp.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error).slice(0, 120));
-  const raw = (data.content || []).map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
+  // Opus 5.5 always thinks first, and max_tokens covers the thinking as well as the answer.
+  const { data } = await askClaude({ ...AI_POLICY, max_tokens: 16000, messages: [{ role: "user", content }] }, "policy");
+  const raw = aiText(data);
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) throw new Error("no details came back");
   const j = JSON.parse(m[0]);
@@ -3913,6 +3986,150 @@ function energyHours(readings, day) {
   return out;
 }
 const energyHourLabel = h => (h % 12 || 12) + (h < 12 ? "am" : "pm");
+// -- Claude credit ------------------------------------------------------------------------------
+const usd = n => "$" + (Math.round((Number(n) || 0) * 100) / 100).toFixed(2);
+const usd3 = n => "$" + (Number(n) || 0).toFixed(3);
+const daysUntilIso = iso => {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  const t = new Date();
+  return Math.round((new Date(y, m - 1, d) - new Date(t.getFullYear(), t.getMonth(), t.getDate())) / 86400000);
+};
+const AI_SOURCE_NAMES = { payslip: "Payslip", timesheet: "Timesheet", policy: "Policy", check: "Check", other: "Other" };
+// What's left of the Claude credit (the balance from the Billing page less every read since), and
+// the reminder to show, if any: run out (a read was refused), expired, used up, under $2, or
+// 30 days before it expires.
+function aiCreditSummary(s) {
+  if (!s) return null;
+  const { credit, rows, latest, monthStart } = s;
+  const monthT = new Date(monthStart).getTime();
+  const fromT = credit ? new Date(credit.balance_at).getTime() : Infinity;
+  let spent = 0, reads = 0, month = 0;
+  (rows || []).forEach(r => {
+    if (r.error) return;
+    const t = new Date(r.at).getTime(), c = Number(r.cost_usd) || 0;
+    if (t >= fromT) { spent += c; reads++; }
+    if (t >= monthT) month += c;
+  });
+  const left = credit ? Number(credit.balance_usd) - spent : null;
+  const days = credit && credit.expires_on ? daysUntilIso(credit.expires_on) : null;
+  const ranOut = !!latest && latest.error === "credit" && (!credit || new Date(latest.at).getTime() > fromT);
+  let notice = null;
+  if (ranOut) notice = { key: "out:" + latest.at, level: "out", title: "Claude credit has run out", text: "Payslips, timesheets and policies can't be read until you top up. Tap for the details." };
+  else if (credit && days != null && days < 0) notice = { key: "expired:" + credit.expires_on, level: "out", title: "Claude credit expired on " + policyDay(credit.expires_on), text: "Top up so Vaulted can keep reading payslips, timesheets and policies. Tap to update the details." };
+  else if (credit && left <= 0) notice = { key: "zero:" + credit.balance_at, level: "out", title: "Claude credit has probably run out", text: "Vaulted's count says it's all been used. Top up, then update the balance." };
+  else if (credit && left < 2) notice = { key: "low:" + credit.balance_at, level: "low", title: "Claude credit is low", text: "About " + usd(left) + " left. Top up soon so reading keeps working." };
+  else if (credit && days != null && days <= 30) notice = { key: "expiring:" + credit.expires_on, level: "low", title: "Claude credit expires " + (days === 0 ? "today" : days === 1 ? "tomorrow" : "on " + policyDay(credit.expires_on, false)), text: "About " + usd(left) + " will go unused then. Buy a small top-up before then so reading keeps working." };
+  return { credit, left, days, spent, reads, month, notice, recent: (rows || []).slice(0, 5) };
+}
+
+// Diag → Claude credit (Glyn only): the balance and expiry date copied from the Anthropic Billing
+// page, what reads have cost since, the last few reads, and a check that both models answer.
+function AiCreditCard({ user, summary, onChanged }) {
+  const credit = summary && summary.credit;
+  const [editing, setEditing] = useState(false);
+  const [bal, setBal] = useState("");
+  const [exp, setExp] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [checks, setChecks] = useState(null);
+  const small = { fontSize: 12.5, color: SUBTEXT, lineHeight: 1.5 };
+  const label = { fontSize: 12, color: SUBTEXT, fontWeight: 700, margin: "10px 0 4px" };
+  const field = { width: "100%", boxSizing: "border-box", background: "#0d1018", border: "1px solid #2a3050", borderRadius: 8, color: "#e8eaf0", fontSize: 15, padding: "10px 12px" };
+  const btn = primary => ({ flex: 1, background: primary ? "#4a9eff" : "#1e2535", border: primary ? "none" : "1px solid #2a3050", borderRadius: 8, color: primary ? "#000" : "#a0c0ff", fontSize: 13.5, fontWeight: 700, padding: "11px 12px", cursor: "pointer", textAlign: "center", textDecoration: "none" });
+  const level = summary && summary.notice ? summary.notice.level : null;
+  const colour = level === "out" ? "#ff6b8a" : level === "low" ? "#ffb84a" : "#00c88c";
+  const key = summary && summary.notice ? summary.notice.key : "";
+  const gone = key.startsWith("out:") ? "Run out" : key.startsWith("expired:") ? "Expired" : "";
+  const startEdit = () => { haptic(); setBal(""); setExp(credit && credit.expires_on ? credit.expires_on : ""); setMsg(""); setEditing(true); };
+  const save = async () => {
+    const b = parseFloat(String(bal).replace(/[$,\s]/g, ""));
+    if (!isFinite(b) || b < 0) { setMsg("Enter the balance in dollars, like 15.62"); return; }
+    if (exp && !/^\d{4}-\d{2}-\d{2}$/.test(exp)) { setMsg("Pick the expiry date"); return; }
+    haptic("medium");
+    setSaving(true); setMsg("");
+    try { await db.saveAiCredit(user.id, Math.round(b * 100) / 100, exp || null); setEditing(false); onChanged(); }
+    catch (e) { setMsg("Couldn't save that: " + ((e && e.message) || "try again")); }
+    setSaving(false);
+  };
+  const runCheck = async () => {
+    haptic();
+    const tests = [
+      { label: "Payslips & timesheets", body: { ...AI_READ, max_tokens: 50 } },
+      { label: "Policies", body: { ...AI_POLICY, max_tokens: 2000 } },
+    ];
+    setChecks(tests.map(t => ({ label: t.label, state: "run", text: "Checking…" })));
+    const out = await Promise.all(tests.map(async t => {
+      const t0 = Date.now();
+      try {
+        const { model } = await askClaude({ ...t.body, messages: [{ role: "user", content: "Reply with the single word OK." }] }, "check");
+        const secs = ((Date.now() - t0) / 1000).toFixed(1);
+        const name = AI_MODEL_NAMES[model] || model;
+        return model === t.body.model
+          ? { label: t.label, state: "ok", text: "✓ " + name + " answered in " + secs + " s" }
+          : { label: t.label, state: "warn", text: "⚠ " + AI_MODEL_NAMES[t.body.model] + " didn't take it, so the backup (" + name + ") answered in " + secs + " s" };
+      } catch (e) {
+        return { label: t.label, state: "bad", text: "✗ " + ((e && e.message) || "didn't answer") };
+      }
+    }));
+    setChecks(out);
+  };
+  return (
+    <div>
+      {credit && !editing && (
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: colour }}>{gone ? gone : "About " + usd(Math.max(0, summary.left)) + " left"}</div>
+          <div style={small}>{credit.expires_on ? <>Expires {policyDay(credit.expires_on)}{summary.days >= 0 ? " · in " + summary.days + (summary.days === 1 ? " day" : " days") : ""}</> : "No expiry date set"}</div>
+          <div style={{ ...small, marginTop: 6 }}>Since you set it on {new Date(credit.balance_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}: {usd(summary.spent)} over {summary.reads} {summary.reads === 1 ? "read" : "reads"}. This month: {usd(summary.month)}.</div>
+        </div>
+      )}
+      {!credit && !editing && (
+        <div style={small}>Copy your Claude credit balance and when it expires from the Anthropic Billing page. Vaulted then counts what each read costs and reminds you on the Dashboard when it's under $2, 30 days before it expires, or if it runs out. Only you see this.</div>
+      )}
+      {summary && summary.notice && !editing && (
+        <div style={{ ...small, color: colour, fontWeight: 700, marginTop: 8 }}>{level === "out" ? "Top up on the Billing page, then tap Update balance." : summary.notice.title}</div>
+      )}
+      {editing ? (
+        <div>
+          <div style={label}>Credit balance (US dollars)</div>
+          <input type="number" inputMode="decimal" step="0.01" min="0" placeholder="e.g. 15.62" value={bal} onChange={e => setBal(e.target.value)} style={field} />
+          <div style={label}>Expires on</div>
+          <input type="date" value={exp} onChange={e => setExp(e.target.value)} style={field} />
+          <div style={{ ...small, marginTop: 6 }}>Both are on the Billing page. Credit expires a year after you bought it; with more than one top-up, use the earliest date.</div>
+          {msg && <div style={{ ...small, color: "#ff6b8a", marginTop: 6 }}>{msg}</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={() => { haptic(); setEditing(false); }} style={btn(false)}>Cancel</button>
+            <button onClick={save} disabled={saving} style={btn(true)}>{saving ? "Saving…" : "Save"}</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <button onClick={startEdit} style={btn(!credit)}>{credit ? "Update balance" : "Set it up"}</button>
+          <a href={AI_BILLING_URL} target="_blank" rel="noopener noreferrer" onClick={() => haptic()} style={btn(false)}>Billing page ↗</a>
+        </div>
+      )}
+      {summary && summary.recent.length > 0 && !editing && (
+        <div style={{ marginTop: 14 }}>
+          <div style={label}>Latest reads</div>
+          {summary.recent.map((r, i) => (
+            <div key={i} style={{ ...small, display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <span>{AI_SOURCE_NAMES[r.source] || "Other"} · {AI_MODEL_NAMES[r.model] || r.model} · {new Date(r.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+              <span style={{ color: r.error ? "#ff6b8a" : "#e8eaf0", whiteSpace: "nowrap" }}>{r.error ? "refused: no credit" : usd3(r.cost_usd)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {!editing && (
+        <div style={{ marginTop: 14 }}>
+          <button onClick={runCheck} disabled={!!checks && checks.some(c => c.state === "run")} style={{ ...btn(false), width: "100%" }}>Check Claude is answering</button>
+          {checks && checks.map((c, i) => (
+            <div key={i} style={{ ...small, marginTop: 6, color: c.state === "bad" ? "#ff6b8a" : c.state === "warn" ? "#ffb84a" : c.state === "ok" ? "#00c88c" : SUBTEXT }}><b>{c.label}:</b> {c.text}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EnergyPage({ user, mfa, onEnterCode, isOwner }) {
   const [state, setState] = useState("loading");    // loading | ready | locked | nofactor | missing | error
   const [status, setStatus] = useState(null);       // from the energy function: what's linked
@@ -4865,10 +5082,10 @@ export default function App() {
     let seen="";try{seen=localStorage.getItem(SK.seenVersion)||"";}catch(e){}
     if(seen===APP_VERSION)return;
     if(!seen&&!bootSignedIn.current){markNewsSeen();return;}   // a new install: nothing has changed for them
-    const notes=WHATS_NEW.filter(n=>verCmp(n.v,seen||NEWS_FROM)>0&&verCmp(n.v,APP_VERSION)<=0);
+    const notes=newsFor(WHATS_NEW.filter(n=>verCmp(n.v,seen||NEWS_FROM)>0&&verCmp(n.v,APP_VERSION)<=0),isOwner);
     if(!notes.length){markNewsSeen();return;}
     setNews(notes);
-  },[user,mfa.checked,mfa.need,dataLoading]);
+  },[user,mfa.checked,mfa.need,dataLoading,isOwner]);
   // Back from Monzo's sign-in (?bank=…): tidy the address, then act on it once signed in.
   React.useEffect(()=>{
     if(!bankReturn)return;
@@ -5432,11 +5649,11 @@ export default function App() {
     const secret = loadText(SK.tsSecret);
     if (!secret || !user || queueBusy.current) return 0;
     queueBusy.current = true;
-    const q = `/api/timesheet?token=${encodeURIComponent(secret)}`;
+    const headers = { "x-timesheet-token": secret };   // in a header, so it isn't in Vercel's logs
     let processed = 0;
     try {
       for (let i = 0; i < 20; i++) {
-        const res = await fetch(q);
+        const res = await fetch("/api/timesheet", { headers });
         if (!res.ok) break;
         const data = await res.json();
         if (data.status !== "pending" || !data.data) break;
@@ -5445,7 +5662,9 @@ export default function App() {
           applyTsRef.current(days || [], emailId || null, data.data.meta || null);
           processed++;
         }
-        const del = await fetch(`${q}&emailId=${encodeURIComponent(emailId || "")}`, { method: "DELETE" });
+        // What Claude's read of the email cost (once per email, however many times it's taken).
+        if (data.data.usage && emailId) await db.logAiUsage(user.id, data.data.usage, "timesheet", "email:" + emailId).catch(() => {});
+        const del = await fetch(`/api/timesheet?emailId=${encodeURIComponent(emailId || "")}`, { method: "DELETE", headers });
         if (!del.ok) break;
       }
     } catch (e) { /* offline or server hiccup: try again next time */ }
@@ -6283,24 +6502,13 @@ export default function App() {
         setUploadProgress(`Reading ${i+1} of ${files.length}...`);
         try {
           const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
-          const resp=await fetch(API_PROXY,{
-            method:"POST",
-            headers:await authHeaders(),
-            body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:[
+          const {data}=await askClaude({...AI_READ,max_tokens:2000,messages:[{role:"user",content:[
               {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},
               {type:"text",text:'Extract payslip data. Return ONLY valid JSON with this exact shape:\n{"month":"Mon YYYY","date":"DD/MM/YYYY","gross":0.00,"net":0.00,"tax":0.00,"ni":0.00,"nest":0.00,"sl":0.00,"bonus":0.00,"ot":0.00,"weekendOt":0.00,"holidayPay":0.00,"hourlyAllowance":0.00,"regularPay":0.00}\n\nField definitions:\n- month: payment month/year (e.g. "May 2026")\n- date: payment date as DD/MM/YYYY\n- gross: TOTAL gross pay (sum of all earnings)\n- net: net pay (gross minus all deductions)\n- tax: PAYE total\n- ni: Employee National Insurance Contribution\n- nest: NEST pension contribution\n- sl: Student Loan deduction\n- bonus: Performance Bonus line only\n- ot: Overtime line ONLY (not weekend hours, not holiday pay)\n- weekendOt: Weekend Hours line (£ amount)\n- holidayPay: SUM of all "Holiday" earning lines (could be multiple, may include "Holiday (Contracted Staff YYYY)")\n- hourlyAllowance: SUM of all "Hourly Allowance" lines including any with brackets like "Hourly Allowance (Hols)"\n- regularPay: Regular Hours line (£ amount only)\nAmounts printed as negative (reversals or adjustments) stay negative.\nIf a field is not present, use 0.00. Return JSON only, no markdown, no explanation.'}
-            ]}]})
-          });
-          if (!resp.ok) {
-            const text = await resp.text();
-            throw new Error("API " + resp.status + ": " + text.slice(0, 200));
-          }
-          const data=await resp.json();
-          if(data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-          if(!data.content) throw new Error("No content in API response: " + JSON.stringify(data).slice(0, 200));
-          const rawText = data.content.map(i=>i.text||"").join("").replace(/```json|```/g,"").trim();
+            ]}]},"payslip");
+          const rawText = aiText(data);
           let parsed;
-          try { parsed = JSON.parse(rawText); }
+          try { parsed = aiJson(rawText, "object"); }
           catch(jsonErr) { throw new Error("Could not parse JSON: " + rawText.slice(0, 200)); }
           const month=normaliseMonth(parsed.month);
           if(!month) throw new Error("Couldn't read the payslip month ("+String(parsed.month||"blank")+")");
@@ -6383,6 +6591,10 @@ export default function App() {
     try { await processPayslipFiles(files); }
     finally { if(input)input.value=""; }
   };
+  // The latest intake, for the rescue below (a useCallback with no dependencies, so it must not
+  // hold on to the first render's copy, where the user wasn't signed in yet and nothing saved).
+  const intakePayslipRef=useRef(intakePayslipFiles);
+  intakePayslipRef.current=intakePayslipFiles;
   const handleUpload=async e=>{
     await intakePayslipFiles(Array.from(e.target.files||[]),e.target);
   };
@@ -6397,7 +6609,7 @@ export default function App() {
     if(evt>=tap)return;                       // the change event already handled it
     const files=Array.from(el.files||[]);
     if(!files.length)return;
-    await intakePayslipFiles(files,el,{silent:true});
+    await intakePayslipRef.current(files,el,{silent:true});
   },[]);
 
   // Re-check the input every time the app comes back to the foreground.
@@ -6853,21 +7065,14 @@ const calcTimesheetTotals = days => {
         const contentBlock = isPdf
           ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
           : { type: "image", source: { type: "base64", media_type: mediaType, data: b64 } };
-        const resp = await fetch(API_PROXY, {
-          method: "POST",
-          headers: await authHeaders(),
-          body: JSON.stringify({
-            model: "claude-sonnet-4-6", max_tokens: 1000,
+        const { data } = await askClaude({
+            ...AI_READ, max_tokens: 2000,
             messages: [{ role: "user", content: [
               contentBlock,
               { type: "text", text: 'This is a JLI work timesheet email. Extract each row as a JSON array. Return ONLY a JSON array, no other text:\n[{"date":"DD/MM","day":"Mon","hours":"8h 15m","holiday":""},{"date":"DD/MM","day":"Mon","hours":"0h 00m","holiday":"Full Day"}]\nRules:\n- Include ALL rows including weekends, holidays, and zero-hour days\n- "holiday" field: copy the EXACT text from the Holiday column. If the column is empty or shows "-", use "" (empty string). Do NOT normalise or reword it -- preserve whatever text JLI put there (e.g. "Full Day", "Half Day", "Annual Leave", "AL", "H", "0.5" etc)\n- Holiday rows typically have "-" for In/Out and "0h 00m" for hours\n- Use the hours column value exactly as shown' }
             ]}]
-          })
-        });
-        const data = await resp.json();
-        if (data.error) throw new Error(data.error.message);
-        const text = data.content.map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
-        const days = JSON.parse(text);
+          }, "timesheet");
+        const days = aiJson(aiText(data), "array");
         allDays.push(...days);
         setTsResults(prev => [...prev, { ok: true, file: file.name, days }]);
       } catch (err) {
@@ -7219,6 +7424,39 @@ const calcTimesheetTotals = days => {
       slipNet:slip?Number(slip.net):null,est};
   },[isOwner,bank.txns,bank.accounts,nowTick,paySeen,history,monthlyTs,accumulated.days,ci.bonus,effectiveAllowance]);
 
+  // -- Claude credit (Glyn only): what's left of the balance he copied from the Anthropic Billing
+  // page, less what every read since has cost, and a Dashboard reminder before it runs out.
+  const [aiCredit,setAiCredit]=useState(null);   // {credit, rows, latest} once loaded
+  const [aiHidden,setAiHidden]=useState(()=>{try{return JSON.parse(localStorage.getItem(SK.aiNotice)||"null");}catch(e){return null;}});
+  const loadAiCredit=useCallback(async()=>{
+    if(!user||!isOwner)return;
+    try{
+      const credit=await db.getAiCredit(user.id);
+      const d=new Date(),monthStart=new Date(d.getFullYear(),d.getMonth(),1).toISOString();
+      const since=credit&&new Date(credit.balance_at)<new Date(monthStart)?credit.balance_at:monthStart;
+      const rows=await db.getAiUsageSince(since);
+      const latest=rows[0]||await db.getAiUsageLatest();
+      setAiCredit({credit,rows,latest,monthStart});
+    }catch(e){}
+  },[user,isOwner]);
+  useEffect(()=>{
+    if(!user||!isOwner||dataLoading)return;
+    loadAiCredit();
+    let t=null;
+    const onUsed=()=>{clearTimeout(t);t=setTimeout(loadAiCredit,800);};
+    window.addEventListener("vaulted-ai-used",onUsed);
+    return()=>{clearTimeout(t);window.removeEventListener("vaulted-ai-used",onUsed);};
+  },[user,isOwner,dataLoading,loadAiCredit]);
+  const aiSummary=useMemo(()=>aiCreditSummary(aiCredit),[aiCredit,nowTick]);
+  const aiNotice=isOwner&&aiSummary?aiSummary.notice:null;
+  const aiNoticeShown=!!aiNotice&&!(aiHidden&&aiHidden.key===aiNotice.key&&Date.now()<aiHidden.until);
+  const hideAiNotice=()=>{
+    if(!aiNotice)return;
+    const v={key:aiNotice.key,until:Date.now()+7*24*3600*1000};   // back in a week if it still applies
+    setAiHidden(v);try{localStorage.setItem(SK.aiNotice,JSON.stringify(v));}catch(e){}
+  };
+  const [showDiagAi,setShowDiagAi]=useState(false);
+
   const slProgress=useMemo(()=>{
     const elapsed=new Date().getFullYear()-SL_START_YEAR;
     const total=SL_WRITEOFF_YEAR-SL_START_YEAR;
@@ -7387,6 +7625,17 @@ const calcTimesheetTotals = days => {
                   <div style={{fontSize:13.5,fontWeight:700,color:"#ffb84a"}}>Timesheet due</div>
                   <div style={{fontSize:13,color:SUBTEXT,marginTop:2}}>{tsDue==="monthly"?"Monthly - ":"Weekly - "}{tsLastReceived?`Last uploaded ${Math.floor((new Date()-new Date(tsLastReceived))/(1000*60*60*24))} days ago`:"No timesheet uploaded yet"} - Tap to upload</div>
                 </div>
+              </div>
+            )}
+            {/* Claude credit (Glyn only): low, about to expire, or run out */}
+            {aiNoticeShown&&(
+              <div onClick={()=>{haptic();setShowDiagAi(true);setTab("Diag");window.scrollTo(0,0);}} style={{background:aiNotice.level==="out"?"#2a0f15":"#1a1500",border:"1px solid "+(aiNotice.level==="out"?"#ff6b8a":"#ffb84a"),borderRadius:12,padding:"13px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                <span style={{fontSize:20}}>🤖</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13.5,fontWeight:700,color:aiNotice.level==="out"?"#ff6b8a":"#ffb84a"}}>{aiNotice.title}</div>
+                  <div style={{fontSize:12.5,color:SUBTEXT,marginTop:2}}>{aiNotice.text}</div>
+                </div>
+                <button aria-label="Hide for a week" onClick={e=>{e.stopPropagation();haptic();hideAiNotice();}} style={{background:"none",border:"none",color:SUBTEXT,fontSize:16,cursor:"pointer",padding:"2px 4px"}}>✕</button>
               </div>
             )}
             {/* Monzo notices stay at the top; its cards sit under the pay and budget figures */}
@@ -9682,7 +9931,7 @@ const calcTimesheetTotals = days => {
                   return(
                     <>
                       <div style={row}><span style={{color:SUBTEXT}}>Version</span><span style={{display:"flex",alignItems:"center",gap:8}}><span style={{color:SUBTEXT,fontWeight:700}}>v{APP_VERSION}</span>
-                        <button onClick={()=>{haptic();setNews(WHATS_NEW);}} style={{background:"#1e2535",border:"1px solid #2a3050",borderRadius:6,color:"#a0c0ff",fontSize:12.5,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>What's new</button></span></div>
+                        <button onClick={()=>{haptic();setNews(newsFor(WHATS_NEW,isOwner));}} style={{background:"#1e2535",border:"1px solid #2a3050",borderRadius:6,color:"#a0c0ff",fontSize:12.5,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>What's new</button></span></div>
                       {isOwner&&<div style={row}><span style={{color:SUBTEXT}}>Show hidden tabs <span style={{color:SUBTEXT}}>(Pay Info, Tax Year, Leave)</span></span>
                         <button onClick={()=>{haptic();const v=!showHiddenTabs;setShowHiddenTabs(v);try{localStorage.setItem("vaulted_show_hidden_tabs",v?"1":"0");}catch(e){}}}
                           style={{background:showHiddenTabs?"#1a3a2a":"#1e2535",border:"1px solid "+(showHiddenTabs?"#00c88c":"#2a3050"),borderRadius:6,color:showHiddenTabs?"#00c88c":SUBTEXT,fontSize:12.5,fontWeight:700,padding:"4px 10px",cursor:"pointer"}}>{showHiddenTabs?"On":"Off"}</button></div>}
@@ -9871,7 +10120,7 @@ const calcTimesheetTotals = days => {
                         <button onClick={async()=>{
                           haptic("medium");
                           try{
-                            const r=await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`);
+                            const r=await fetch("/api/timesheet",{headers:{"x-timesheet-token":tsSecret}});
                             const d=await r.json();
                             const cnt=d.remaining||(d.status==="pending"?1:0);
                             setTsMsg(`Queue: ${cnt} item${cnt!==1?"s":""} waiting`);
@@ -9883,7 +10132,7 @@ const calcTimesheetTotals = days => {
                           if(!window.confirm("Clear ALL queued timesheets? This deletes them from the server queue."))return;
                           let cleared=0;
                           for(let i=0;i<50;i++){
-                            const r=await fetch(`/api/timesheet?token=${encodeURIComponent(tsSecret)}`,{method:"DELETE"});
+                            const r=await fetch("/api/timesheet",{method:"DELETE",headers:{"x-timesheet-token":tsSecret}});
                             const d=await r.json();
                             cleared++;
                             if((d.remaining||0)===0)break;
@@ -10078,6 +10327,21 @@ const calcTimesheetTotals = days => {
                   onUnlinked={clearBankSummary}/>
               </div>)}
             </div>
+
+            {/* ── 7. CLAUDE CREDIT (Glyn only) ── */}
+            {isOwner&&(
+            <div style={{...card,marginBottom:12,padding:0}}>
+              <div onClick={()=>{haptic();if(!showDiagAi)loadAiCredit();setShowDiagAi(v=>!v);}} style={{padding:"14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+                <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>🤖 Claude credit</div>
+                <span style={{display:"flex",alignItems:"center",gap:8}}>
+                  {aiSummary&&(aiSummary.credit||aiNotice)&&<span style={{fontSize:12.5,fontWeight:700,color:aiNotice?(aiNotice.level==="out"?"#ff6b8a":"#ffb84a"):"#00c88c"}}>{aiNotice&&aiNotice.key.startsWith("out:")?"Run out":aiNotice&&aiNotice.key.startsWith("expired:")?"Expired":usd(Math.max(0,aiSummary.left))+" left"}</span>}
+                  <span style={{color:SUBTEXT,fontSize:14}}>{showDiagAi?"⌃":"⌄"}</span>
+                </span>
+              </div>
+              {showDiagAi&&(<div style={{padding:"0 14px 14px"}}>
+                <AiCreditCard user={user} summary={aiSummary||aiCreditSummary({credit:null,rows:[],latest:null,monthStart:new Date().toISOString()})} onChanged={loadAiCredit}/>
+              </div>)}
+            </div>)}
 
           </div>
         )}

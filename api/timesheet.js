@@ -8,6 +8,38 @@ import { Redis } from '@upstash/redis';
 const redis = Redis.fromEnv();
 const QUEUE_KEY = 'vaulted_ts_queue';
 
+// Claude reads the email on Sonnet 5.5 as a straight read (no thinking, its lowest setting). If it
+// turns the request down for something only it checks, Sonnet 4.6 tries once more. The queued item
+// carries what the read cost; the app logs it in ai_usage when it takes the item.
+const MODEL = "claude-sonnet-5-5";
+const FALLBACK = "claude-sonnet-4-6";
+const PRICES = { "claude-sonnet-5-5": [2, 10], "claude-sonnet-4-6": [3, 15] };   // US$ per million tokens [in, out]
+const errText = data => String((data && data.error && (data.error.message || data.error)) || "");
+const worthFallback = (status, data) => !/credit balance/i.test(errText(data)) &&
+  (status === 404 || status === 529 || (status === 400 && /model|thinking|effort|output_config|between_tools/i.test(errText(data))));
+async function callClaude(body) {
+  const upstream = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(body),
+  });
+  let data;
+  try { data = await upstream.json(); } catch (e) { data = { error: { message: "Claude sent back something unreadable (" + upstream.status + ")" } }; }
+  return { status: upstream.status, data };
+}
+function usageOf(model, u) {
+  if (!u) return null;
+  const p = PRICES[model] || [0, 0];
+  const cost = ((u.input_tokens || 0) * p[0] + (u.output_tokens || 0) * p[1]) / 1e6;
+  return { model, input_tokens: u.input_tokens || 0, output_tokens: u.output_tokens || 0, cost_usd: Math.round(cost * 1e6) / 1e6 };
+}
+// The app sends the secret in a header; ?token= still works for phones on an older Vaulted.
+const tokenOf = req => String(req.headers["x-timesheet-token"] || (req.query && req.query.token) || "");
+
 function inferPayMonth(periodStr) {
   const match = periodStr.match(/to (\d{4})-(\d{2})-(\d{2})/);
   if (!match) return null;
@@ -54,17 +86,7 @@ export default async function handler(req, res) {
     const payMonth  = period ? inferPayMonth(period) : null;
 
     try {
-      const upstream = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": process.env.ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 2000,
-          messages: [{ role: "user", content:
+      const messages = [{ role: "user", content:
 `This is a JLI timesheet email. Extract every day row as a JSON array.
 Return ONLY a JSON array, no other text:
 [{"date":"DD/MM","day":"Mon","hours":"8h 15m","holiday":""}]
@@ -77,14 +99,20 @@ Rules:
 - Use the hours column value exactly as shown
 
 Email body:
-${emailBody}` }],
-        }),
-      });
+${emailBody}` }];
 
-      const claudeData = await upstream.json();
-      if (claudeData.error) throw new Error(claudeData.error.message);
-      const text = claudeData.content.map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
-      const days = JSON.parse(text);
+      let used = MODEL;
+      let { status, data: claudeData } = await callClaude({ model: MODEL, max_tokens: 4000, thinking: { type: "between_tools" }, messages });
+      if (worthFallback(status, claudeData)) {
+        console.warn("timesheet: " + MODEL + " turned the request down (" + status + ": " + errText(claudeData).slice(0, 200) + "), trying " + FALLBACK);
+        used = FALLBACK;
+        ({ status, data: claudeData } = await callClaude({ model: FALLBACK, max_tokens: 4000, messages }));
+      }
+      if (claudeData.error) throw new Error(errText(claudeData) || "Claude error " + status);
+      // The answer's text blocks (any thinking blocks come first and have no text).
+      const text = (claudeData.content || []).filter(b => b && b.type === "text").map(b => b.text || "").join("").replace(/```json|```/g, "").trim();
+      const arr = text.match(/\[[\s\S]*\]/);
+      const days = JSON.parse(arr ? arr[0] : text);
 
       const entry = {
         emailId,
@@ -92,6 +120,7 @@ ${emailBody}` }],
         processedAt: new Date().toISOString(),
         days,
         meta: { isMonthly, period: period||"", payMonth: payMonth||"", totalHrs: totalHrs||"", subject: emailSubject||"" },
+        usage: usageOf(used, claudeData.usage),
       };
 
       await redis.rpush(QUEUE_KEY, JSON.stringify(entry));
@@ -105,8 +134,7 @@ ${emailBody}` }],
 
   // GET — return oldest item in queue
   if (req.method === "GET") {
-    const { token } = req.query;
-    if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
+    if (!secret || tokenOf(req) !== secret) return res.status(401).json({ error: "Unauthorised" });
     const item = await redis.lindex(QUEUE_KEY, 0);
     if (!item) return res.status(200).json({ status: "none" });
     const data = typeof item === 'string' ? JSON.parse(item) : item;
@@ -118,8 +146,8 @@ ${emailBody}` }],
   // still that email, so two devices (or two checks) can't remove one they
   // haven't applied. Without emailId it just removes the oldest (Clear Queue).
   if (req.method === "DELETE") {
-    const { token, emailId } = req.query;
-    if (!secret || token !== secret) return res.status(401).json({ error: "Unauthorised" });
+    const { emailId } = req.query;
+    if (!secret || tokenOf(req) !== secret) return res.status(401).json({ error: "Unauthorised" });
     if (emailId) {
       const head = await redis.lindex(QUEUE_KEY, 0);
       const h = head && (typeof head === 'string' ? JSON.parse(head) : head);
