@@ -672,14 +672,17 @@ const db = {
     }, { onConflict: "ref", ignoreDuplicates: true });
     reportDbError("logAiUsage", error);
   },
+  // The saved timesheet hours: { data, lastUpload }, null when none are saved yet,
+  // undefined when they couldn't be read (so nothing is ever merged into a blank).
   async getAccumulator(userId) {
     const { data, error } = await jwtRetry(() => supabase.from("timesheet_accumulator").select("*").eq("user_id", userId).single());
-    if (error && error.code !== "PGRST116") reportDbError("getAccumulator", error);
+    if (error && error.code !== "PGRST116") { reportDbError("getAccumulator", error); return undefined; }
     return data ? { data: data.data, lastUpload: data.last_upload } : null;
   },
   async saveAccumulator(userId, accumulator, lastUpload) {
     const { error } = await supabase.from("timesheet_accumulator").upsert({ user_id: userId, data: accumulator, last_upload: lastUpload, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
     reportDbError("saveAccumulator", error);
+    return !error;   // false = not saved
   },
   // Categories -- part of shared app_settings (bills are shared, so categorisations are too)
   async saveCats(userId, cats) {
@@ -926,7 +929,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.24.0";
+const APP_VERSION = "1.24.1";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
@@ -935,6 +938,11 @@ const newsFor = (notes, isOwner) => notes
   .map(n => ({ ...n, items: n.items.filter(it => !it.owner || isOwner) }))
   .filter(n => n.items.length);
 const WHATS_NEW = [
+  { v: "1.24.1", date: "9 Nov 2026", items: [
+    { b: "No more lost days", t: " — a timesheet that arrives just as you open Vaulted now adds to your saved hours instead of replacing them. 29 Oct – 1 Nov, which went missing on 9 Nov, are back.", owner: true },
+    { b: "Overtime after short days", t: " — Weekday OT now takes off any time you were short, like payroll and the Pay Calc do. Short days show in red in the list (e.g. −2.28h).", owner: true },
+    { b: "Hours to work back", t: " — if you're short, the Timesheet page shows how much to work back by the 28th to keep all your overtime. It updates with each weekly timesheet.", owner: true },
+  ] },
   { v: "1.24.0", date: "3 Nov 2026", items: [
     { b: "Newer Claude", t: " — payslips and timesheets are now read by Claude Sonnet 5.5, and policy documents by Claude Opus 5.5, which takes a little longer but reads them more carefully.", owner: true },
     { b: "Claude credit reminder", t: " — in Diag → 🤖 Claude credit, copy your balance and expiry date from the Anthropic Billing page once. Vaulted then counts what each read costs, and the Dashboard tells you when it's under $2, 30 days before it expires, or if it runs out.", owner: true },
@@ -1341,6 +1349,60 @@ function currentPeriodTotals(days) {
     return s;
   }, 0) * 100) / 100;
   return { otHrs, weekendOtHrs, holidayHrs, days: inPeriod };
+}
+
+// -- Short days and working them back ------------------------------------------
+// Payroll pays the month's contracted hours: time a weekday falls short of the standard day (leave
+// days aside, part-day leave counted) comes off weekday overtime first, then weekend overtime, then
+// standard hours. The Timesheet page shows the same figures the Pay Calc uses.
+const roundHrs = n => Math.round(n * 100) / 100;
+function dayShortHrs(d) {
+  if (!d || d.isHoliday || /^(sat|sun)/i.test(d.day || "")) return 0;
+  return roundHrs(Math.max(0, STD_DAY_HRS - ((d.hrs || 0) + (d.holHrs || 0))));
+}
+// Timesheet days in date order (dayDateOf handles the Dec -> Jan wrap).
+function sortTsDays(days, now = new Date()) {
+  const at = d => { const dt = dayDateOf(d && d.date, now); return dt ? +dt : 0; };
+  return [...(days || [])].sort((a, b) => at(a) - at(b));
+}
+// This period's overtime once short time is taken off. owed = short time left after all the
+// overtime is used up (that comes off standard hours).
+function netOvertime(days) {
+  const t = currentPeriodTotals(days);
+  const short = roundHrs(t.days.reduce((s, d) => s + dayShortHrs(d), 0));
+  let rem = short;
+  const otHrs = Math.max(0, t.otHrs - rem); rem = Math.max(0, rem - t.otHrs);
+  const weekendOtHrs = Math.max(0, t.weekendOtHrs - rem); rem = Math.max(0, rem - t.weekendOtHrs);
+  return { otHrs: roundHrs(otHrs), weekendOtHrs: roundHrs(weekendOtHrs), short, owed: roundHrs(rem) };
+}
+// Working short time back, in whole minutes (timesheet hours are whole minutes; the 2dp hours
+// round back to them exactly), so it never shows a stray "0h 01m" from rounding.
+const toMins = h => Math.round((h || 0) * 60);
+const STD_DAY_MINS = toMins(STD_DAY_HRS);   // 495
+function dayShortMins(d) {
+  if (!d || d.isHoliday || /^(sat|sun)/i.test(d.day || "")) return 0;
+  return Math.max(0, STD_DAY_MINS - (toMins(d.hrs) + toMins(d.holHrs)));
+}
+function dayExtraMins(d) {
+  if (!d || d.isHoliday) return 0;
+  if (/^(sat|sun)/i.test(d.day || "")) return toMins(d.hrs);
+  return Math.max(0, toMins(d.hrs) + toMins(d.holHrs) - STD_DAY_MINS);
+}
+// Time to work back to keep all your overtime: in date order, a short weekday adds what it was
+// short, and extra time after it (over the standard day, or weekend hours) works it back.
+// owedMins = the part that would come off basic pay (short time beyond all the overtime).
+function workBack(days, now = new Date()) {
+  let mins = 0, short = 0, extra = 0;
+  for (const d of sortTsDays((days || []).filter(x => inCurrentPeriod(x, now)), now)) {
+    const s = dayShortMins(d), x = dayExtraMins(d);
+    short += s; extra += x;
+    mins = s > 0 ? mins + s : Math.max(0, mins - x);
+  }
+  return { mins, owedMins: Math.max(0, short - extra) };
+}
+// 360 -> "6h 00m", 137 -> "2h 17m"
+function fmtMins(m) {
+  return Math.floor(m / 60) + "h " + String(m % 60).padStart(2, "0") + "m";
 }
 
 function effectiveEntitlementDays(baseEntitlement, serviceDays) {
@@ -5194,12 +5256,20 @@ export default function App() {
   };
 
   // One loader for the first load and every refresh, fetching everything at once.
+  // Timesheet hours: accReady turns on once the saved hours have loaded on this phone, and
+  // timesheets only import after that. accWrites counts this phone's saves, so a load that
+  // started before one can't put older hours back on screen.
+  const [accReady, setAccReady] = useState(false);
+  const accReadyRef = useRef(false);
+  const accWrites = useRef(0);
+
   // The first load shows the loading screen; refreshes (pull down, or coming back
   // to the app) update in place without it.
   const loadAllData = async ({ silent = false } = {}) => {
     if (!user) return;
     if (!silent) setDataLoading(true);
     try {
+      const accSeq = accWrites.current;
       const [payslips, sBills, gBills, lLogs, lSettings, mTs, discs, scens, appSettings, role, ss, st, gf, sc, accData] = await Promise.all([
         db.getPayslips(user.id), db.getSharedBills(), db.getGlynBills(user.id),
         db.getLeaveLogs(user.id), db.getLeaveSettings(user.id), db.getMonthlyTs(user.id),
@@ -5244,23 +5314,31 @@ export default function App() {
       if (sc) setScheduledBills(sc);
 
       // Timesheet hours: start afresh in a new pay period, otherwise keep only this
-      // period's days and feed their hours to the Pay Calc.
-      if (accData && accData.data) {
-        if (shouldResetTimesheet(accData.lastUpload)) {
-          const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
-          setAccumulated(empty);
-          setTsLastUpload(null);
-          db.saveAccumulator(user.id, empty, null);
-          setCMany({ otHrs:0, weekendOtHrs:0, holidayHrs:0, stdHrs:getCurrentMonthHours() });
-        } else {
-          const t = currentPeriodTotals(accData.data.days);
-          const cleaned = { ...accData.data, days: t.days, otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs };
-          setAccumulated(cleaned);
-          setTsLastUpload(accData.lastUpload);
-          setCMany({ otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs, holidayHrs: t.holidayHrs });
-          // Persist the cleaned accumulator so a previous period's days don't linger.
-          if (t.days.length !== (accData.data.days || []).length) db.saveAccumulator(user.id, cleaned, accData.lastUpload);
+      // period's days and feed their hours to the Pay Calc. Not if this phone saved hours
+      // while this was loading: what's on screen is newer than what was read.
+      if (accData !== undefined) {
+        if (accData && accData.data && accWrites.current === accSeq) {
+          if (shouldResetTimesheet(accData.lastUpload)) {
+            const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+            accumulatedRef.current = empty;
+            setAccumulated(empty);
+            setTsLastUpload(null);
+            db.saveAccumulator(user.id, empty, null);
+            setCMany({ otHrs:0, weekendOtHrs:0, holidayHrs:0, stdHrs:getCurrentMonthHours() });
+          } else {
+            const t = currentPeriodTotals(accData.data.days);
+            const cleaned = { ...accData.data, days: t.days, otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs };
+            accumulatedRef.current = cleaned;
+            setAccumulated(cleaned);
+            setTsLastUpload(accData.lastUpload);
+            setCMany({ otHrs: t.otHrs, weekendOtHrs: t.weekendOtHrs, holidayHrs: t.holidayHrs });
+            // Persist the cleaned accumulator so a previous period's days don't linger.
+            if (t.days.length !== (accData.data.days || []).length) db.saveAccumulator(user.id, cleaned, accData.lastUpload);
+          }
         }
+        // Read (or nothing saved yet): timesheets can import now.
+        accReadyRef.current = true;
+        setAccReady(true);
       }
 
       if (silent && loadBankRef.current) loadBankRef.current();
@@ -5273,8 +5351,10 @@ export default function App() {
   // Quiet refresh, always using the latest state.
   const refreshAll = useCallback(() => { setPolicyTick(t => t + 1); return loadRef.current ? loadRef.current({ silent: true }) : Promise.resolve(); }, []);
 
-  // Full load when someone signs in.
+  // Full load when someone signs in. No timesheet imports until their saved hours are in.
   React.useEffect(() => {
+    accReadyRef.current = false;
+    setAccReady(false);
     if (!user) return;
     loadRef.current({ silent: false });
   }, [user]);
@@ -5523,8 +5603,9 @@ export default function App() {
   const [tsLastEmail, setTsLastEmail] = useState(() => load(SK.tsLastEmail, ""));
   const [tsAutoMsg, setTsAutoMsg] = useState(null); // { text, ok } -- brief status toast
 
-  // Apply timesheet days (auto-import, or a manual upload with emailId null).
-  const applyTimesheetDays = (days, emailId, meta = null) => {
+  // Apply timesheet days (auto-import, or a manual upload with emailId null). savedAcc is the
+  // copy saved online, read just before, so days saved but not on screen are never dropped.
+  const applyTimesheetDays = async (days, emailId, meta = null, savedAcc = null) => {
     const STD = 8.25;
     const today = new Date();
     const enrichedDays = days.map(d => {
@@ -5561,39 +5642,39 @@ export default function App() {
     // rule the Pay Calc uses, so overtime on the 29th-31st is never dropped.
     const currentDays = enrichedDays.filter(d => inCurrentPeriod(d, today));
 
-    // Merge into accumulated timesheet
-    setAccumulated(prev => {
-      const seen = new Set();
-      // NEW DATA FIRST so it wins on dedup conflicts (correct values from latest email)
-      const merged = [...(currentDays.length > 0 ? currentDays : []), ...(prev.days || [])]
-        .sort((a, b) => {
-          const [ad, am] = (a.date || "").split("/").map(Number);
-          const [bd, bm] = (b.date || "").split("/").map(Number);
-          return am !== bm ? am - bm : ad - bd;
-        })
-        .filter(d => {
-          const key = d.date + "_" + d.day;
-          if (seen.has(key)) return false;
-          seen.add(key); return true;
-        });
+    // Merge into the saved hours: the new days first so they win (the latest email's figures),
+    // then what's on screen, then the copy saved online (this period's days). So an import can
+    // never drop saved days that aren't on screen yet (9 Nov 2026: a timesheet imported as the
+    // app opened saved 2-8 Nov over 29 Oct-1 Nov).
+    const prev = accumulatedRef.current || {};
+    const savedDays = (savedAcc && savedAcc.days) || [];
+    const weeklyBefore = [...savedDays, ...(prev.days || [])];   // for the monthly cross-check
+    const seen = new Set();
+    const merged = sortTsDays([...currentDays, ...(prev.days || []), ...savedDays.filter(d => inCurrentPeriod(d, today))]
+      .filter(d => {
+        const key = d.date + "_" + d.day;
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+      }), today);
 
-      // Safety check: never reduce days count from a merge (this should only grow or stay equal)
-      const prevDayCount = (prev.days || []).length;
-      if (merged.length < prevDayCount && currentDays.length > 0) {
-        console.warn(`Refusing to reduce days from ${prevDayCount} to ${merged.length}. Keeping previous data.`);
-        return prev;
-      }
-
+    // Safety check: never reduce days count from a merge (this should only grow or stay equal)
+    const prevDayCount = (prev.days || []).length;
+    if (merged.length < prevDayCount && currentDays.length > 0) {
+      console.warn(`Refusing to reduce days from ${prevDayCount} to ${merged.length}. Keeping previous data.`);
+    } else {
       const totalOtHrs  = Math.round(merged.reduce((s, d) => s + (d.otHrs  || 0), 0) * 100) / 100;
       const totalWkndHrs= Math.round(merged.reduce((s, d) => s + (d.wkOtHrs|| 0), 0) * 100) / 100;
       const now = new Date().toISOString();
       const newAcc = { otHrs: totalOtHrs, weekendOtHrs: totalWkndHrs, weeks: [...(prev.weeks||[]), { uploadedAt: now }], days: merged, lastUpload: now };
-      if (user) db.saveAccumulator(user.id, newAcc, now).catch(e => console.error("Acc save failed:", e));
+      accumulatedRef.current = newAcc;   // a second email in the same go builds on this one
+      accWrites.current++;
+      setAccumulated(newAcc);
       // Update Pay Calc, counting only the current pay period's days.
       const pt = currentPeriodTotals(merged);
       setCMany({ otHrs: pt.otHrs, weekendOtHrs: pt.weekendOtHrs, holidayHrs: pt.holidayHrs });
-      return newAcc;
-    });
+      // Not saved (no signal, say): stop here, so the queue keeps the email and it's tried again.
+      if (user && !(await db.saveAccumulator(user.id, newAcc, now).catch(() => false))) return false;
+    }
 
     if (currentDays.length > 0) {
       const now = new Date().toISOString();
@@ -5632,9 +5713,11 @@ export default function App() {
       saveMonthlyTs(entry);
 
       // Cross-check: does the monthly timesheet match the accumulated weekly timesheets?
-      // Pass enrichedDays so isHoliday/hrs are already normalised, matching the accumulator format
-      checkMonthlyVsWeekly(enrichedDays, accumulatedRef.current.days || [], meta);
+      // Pass enrichedDays so isHoliday/hrs are already normalised, matching the accumulator format.
+      // Weekly days from before this merge, so the monthly isn't compared with itself.
+      checkMonthlyVsWeekly(enrichedDays, weeklyBefore, meta);
     }
+    return true;
   };
   const applyTsRef = useRef(null);
   applyTsRef.current = applyTimesheetDays;
@@ -5647,7 +5730,7 @@ export default function App() {
   const queueBusy = useRef(false);
   const drainQueue = useCallback(async () => {
     const secret = loadText(SK.tsSecret);
-    if (!secret || !user || queueBusy.current) return 0;
+    if (!secret || !user || queueBusy.current || !accReadyRef.current) return 0;   // saved hours first
     queueBusy.current = true;
     const headers = { "x-timesheet-token": secret };   // in a header, so it isn't in Vercel's logs
     let processed = 0;
@@ -5659,7 +5742,10 @@ export default function App() {
         if (data.status !== "pending" || !data.data) break;
         const { emailId, days } = data.data;
         if (!emailId || emailId !== loadText(SK.tsLastEmail)) {
-          applyTsRef.current(days || [], emailId || null, data.data.meta || null);
+          // Added to the copy saved online, read just before (not only to what's on screen).
+          const saved = await db.getAccumulator(user.id);
+          if (saved === undefined) break;   // couldn't read it: try again next time
+          if (!(await applyTsRef.current(days || [], emailId || null, data.data.meta || null, saved ? saved.data : null))) break;
           processed++;
         }
         // What Claude's read of the email cost (once per email, however many times it's taken).
@@ -5677,9 +5763,10 @@ export default function App() {
     return processed;
   }, [user]);
 
-  // Check the queue once a minute while the app is open, and straight away on return.
+  // Check the queue once a minute while the app is open, and straight away on return
+  // (once the saved hours have loaded).
   React.useEffect(() => {
-    if (!tsSecret || !user || !isOwner) return;
+    if (!tsSecret || !user || !isOwner || !accReady) return;
     let timer = null, stopped = false, running = false;
     const tick = async () => {
       if (running || stopped) return;
@@ -5692,7 +5779,7 @@ export default function App() {
     tick();
     document.addEventListener("visibilitychange", onVis);
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVis); };
-  }, [tsSecret, user, isOwner, drainQueue]);
+  }, [tsSecret, user, isOwner, accReady, drainQueue]);
 
   // -- Monthly timesheet history + discrepancy checker ---------------------
   const [monthlyTs, setMonthlyTs] = useState([]);
@@ -6046,8 +6133,8 @@ export default function App() {
 
   // Opening the Timesheet tab checks the queue straight away.
   React.useEffect(() => {
-    if (tab === "Timesheet" && tsSecret && user && isOwner) drainQueue();
-  }, [tab, tsSecret, user, isOwner, drainQueue]);
+    if (tab === "Timesheet" && tsSecret && user && isOwner && accReady) drainQueue();
+  }, [tab, tsSecret, user, isOwner, accReady, drainQueue]);
 
   // Auto-backup -- runs after data loads, if last backup was > 24h ago
   React.useEffect(() => {
@@ -6113,29 +6200,14 @@ export default function App() {
   // (working days × 8.25), absorb the deficit from weekday OT first, then weekend OT,
   // then std hours (as payroll does). Done silently — the pay calc just uses the effective figures.
   const effHrs=useMemo(()=>{
-    const STD=8.25;
-    const cur=getCurrentPayPeriodKey();
-    const now=new Date();
-    const periodDays=(accumulated.days||[]).filter(d=>{
-      if(!d||!d.date)return false;
-      const [dd,mm]=String(d.date).split("/").map(Number);
-      if(!dd||!mm)return false;
-      let yr=now.getFullYear();
-      if(now.getMonth()===0&&mm===12)yr-=1;
-      else if(now.getMonth()===11&&mm===1)yr+=1;
-      return payPeriodKeyForDate(new Date(yr,mm-1,dd))===cur;
-    });
-    const shortfall=Math.round(
-      periodDays
-        .filter(d=>!d.isHoliday&&!d.day?.toLowerCase().startsWith("sat")&&!d.day?.toLowerCase().startsWith("sun"))
-        .reduce((s,d)=>s+Math.max(0,STD-((d.hrs||0)+(d.holHrs||0))),0)
-      *100)/100;
+    // Same short time as the Timesheet page shows (dayShortHrs), this period's days only.
+    const shortfall=roundHrs(currentPeriodTotals(accumulated.days).days.reduce((s,d)=>s+dayShortHrs(d),0));
     let rem=shortfall;
-    const otHrs=Math.max(0,(ci.otHrs||0)-rem);
+    const otHrs=roundHrs(Math.max(0,(ci.otHrs||0)-rem));
     rem=Math.max(0,rem-(ci.otHrs||0));
-    const weekendOtHrs=Math.max(0,(ci.weekendOtHrs||0)-rem);
+    const weekendOtHrs=roundHrs(Math.max(0,(ci.weekendOtHrs||0)-rem));
     rem=Math.max(0,rem-(ci.weekendOtHrs||0));
-    const stdHrs=Math.max(0,(ci.stdHrs||0)-rem-(ci.holidayHrs||0));
+    const stdHrs=roundHrs(Math.max(0,(ci.stdHrs||0)-rem-(ci.holidayHrs||0)));
     return{stdHrs,otHrs,weekendOtHrs};
   },[accumulated.days,ci.stdHrs,ci.otHrs,ci.weekendOtHrs,ci.holidayHrs]);
 
@@ -6557,6 +6629,8 @@ export default function App() {
           // previous period's hours, reset it and clear the calculator now.
           if (shouldResetTimesheet(accumulatedRef.current.lastUpload)) {
             const empty = {otHrs:0,weekendOtHrs:0,weeks:[],days:[],lastUpload:null};
+            accumulatedRef.current = empty;
+            accWrites.current++;
             setAccumulated(empty);
             if (user) db.saveAccumulator(user.id, empty, null);
             setCMany({ otHrs:0, weekendOtHrs:0, holidayHrs:0, stdHrs:getCurrentMonthHours() });
@@ -7088,15 +7162,20 @@ const calcTimesheetTotals = days => {
     e.target.value = "";
   };
 
-  // A manual upload goes through exactly the same steps as an auto-import.
-  const confirmTimesheet = () => {
+  // A manual upload goes through exactly the same steps as an auto-import,
+  // added to the copy saved online.
+  const confirmTimesheet = async () => {
     if (!tsPending) return;
-    applyTimesheetDays(tsPending.days, null, null);
+    const saved = user ? await db.getAccumulator(user.id) : null;
+    const ok = saved !== undefined && await applyTimesheetDays(tsPending.days, null, null, saved ? saved.data : null);
+    if (!ok) { setTsMsg("⚠️ Couldn't save — check your signal and tap Apply again"); setTimeout(() => setTsMsg(""), 5000); return; }
     setTsPending(null);
   };
 
   const resetTimesheet = () => {
     const empty = { otHrs: 0, weekendOtHrs: 0, weeks: [], days: [], lastUpload: null };
+    accumulatedRef.current = empty;
+    accWrites.current++;
     setAccumulated(empty);
     if (user) db.saveAccumulator(user.id, empty, null).catch(()=>{});
     setTsPending(null);
@@ -8939,24 +9018,38 @@ const calcTimesheetTotals = days => {
 
         {tab==="Timesheet"&&(
           <div>
-            {/* Summary cards */}
+            {/* Summary cards: overtime once any short time is taken off (as payroll and the Pay Calc
+                do), and what's left to work back to keep all of it */}
             {(()=>{
               const holDays=(accumulated.days||[]).filter(d=>d.isHoliday);
               const holCount=Math.round(holDays.reduce((s,d)=>s+(d.isHalf?STD_DAY_HRS/2:STD_DAY_HRS),0)*100)/100;
+              const net=netOvertime(accumulated.days);
+              const back=workBack(accumulated.days);
+              const periodEnd="28 "+MONTHS[Number(getCurrentPayPeriodKey().split("-")[1])-1];
               return(
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-                  {[
-                    {label:"Weekday OT",value:(accumulated.otHrs||0)+"h",accent:"#4affd4"},
-                    {label:"Weekend OT",value:(accumulated.weekendOtHrs||0)+"h",accent:"#ffb84a"},
-                    {label:"Holiday",value:holCount+"h",accent:"#00c88c"},
-                  ].map(k=>(
-                    <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
-                      <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
-                      <div style={{fontSize:20,fontWeight:700,color:k.accent}}>{k.value}</div>
-                      <div style={{fontSize:12,color:SUBTEXT,marginTop:2}}>this period</div>
+                <>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                    {[
+                      {label:"Weekday OT",value:net.otHrs+"h",accent:"#4affd4"},
+                      {label:"Weekend OT",value:net.weekendOtHrs+"h",accent:"#ffb84a"},
+                      {label:"Holiday",value:holCount+"h",accent:"#00c88c"},
+                    ].map(k=>(
+                      <div key={k.label} style={{...card,textAlign:"center",padding:"12px 6px"}}>
+                        <div style={{fontSize:11.5,color:SUBTEXT,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div>
+                        <div style={{fontSize:20,fontWeight:700,color:k.accent}}>{k.value}</div>
+                        <div style={{fontSize:12,color:SUBTEXT,marginTop:2}}>this period</div>
+                      </div>
+                    ))}
+                  </div>
+                  {back.mins>0&&(
+                    <div style={{...card,marginBottom:14,borderLeft:"3px solid #ffb84a"}}>
+                      <div style={{fontSize:15,fontWeight:700,color:"#e8eaf0"}}>⏱️ Work back <span style={{color:"#ffb84a"}}>{fmtMins(back.mins)}</span> by {periodEnd}</div>
+                      <div style={{fontSize:13,color:SUBTEXT,marginTop:4,lineHeight:1.45}}>
+                        to keep all your overtime{back.owedMins>0?" (and "+fmtMins(back.owedMins)+" of basic pay)":""}. Extra time you work counts towards it; each weekly timesheet updates this.
+                      </div>
                     </div>
-                  ))}
-                </div>
+                  )}
+                </>
               );
             })()}
 
@@ -9009,12 +9102,16 @@ const calcTimesheetTotals = days => {
                     const isWeekend=d.day.toLowerCase().startsWith("sat")||d.day.toLowerCase().startsWith("sun");
                     const isHol=d.isHoliday||false;
                     const isPartHol=d.isPartialHol||false;
+                    // A short weekday shows the time it was short, in red (−2.28h).
+                    const short=dayShortHrs(d);
+                    const wkdyOt=d.otHrs>0?"+"+d.otHrs+"h":short>0?"−"+short+"h":"--";
+                    const wkdyColor=short>0?"#ff6b8a":"#4affd4";
                     if(isPartHol) return(
                       <div key={i} style={{display:"grid",gridTemplateColumns:"60px 44px 1fr 68px 68px",padding:"10px",fontSize:13,background:"#0d121a",borderBottom:"1px solid #1a2030",alignItems:"center",borderLeft:"3px solid #4a9eff"}}>
                         <span style={{color:SUBTEXT,fontWeight:600}}>{d.date}</span>
                         <span style={{color:"#4a9eff",fontWeight:700}}>{d.day}</span>
                         <span style={{textAlign:"right",fontSize:12.5}}><span style={{color:"#e8eaf0",fontWeight:600}}>{d.hours}</span><span style={{color:"#00c88c",fontWeight:600}}> +{d.holiday} hol</span></span>
-                        <span style={{textAlign:"right",color:"#4affd4",fontWeight:600}}>{d.otHrs>0?"+"+d.otHrs+"h":"--"}</span>
+                        <span style={{textAlign:"right",color:wkdyColor,fontWeight:600}}>{wkdyOt}</span>
                         <span style={{textAlign:"right",color:SUBTEXT}}>--</span>
                       </div>
                     );
@@ -9032,7 +9129,7 @@ const calcTimesheetTotals = days => {
                         <span style={{color:SUBTEXT,fontWeight:600}}>{d.date}</span>
                         <span style={{color:isWeekend?"#ffb84a":SUBTEXT,fontWeight:isWeekend?700:400}}>{d.day}</span>
                         <span style={{textAlign:"right",color:"#e8eaf0",fontWeight:600}}>{d.hours}</span>
-                        <span style={{textAlign:"right",color:"#4affd4",fontWeight:600}}>{d.otHrs>0?"+"+d.otHrs+"h":"--"}</span>
+                        <span style={{textAlign:"right",color:wkdyColor,fontWeight:600}}>{wkdyOt}</span>
                         <span style={{textAlign:"right",color:"#ffb84a",fontWeight:600}}>{d.wkOtHrs>0?d.wkOtHrs+"h":"--"}</span>
                       </div>
                     );
@@ -10150,6 +10247,8 @@ const calcTimesheetTotals = days => {
                       }} style={{marginTop:6,width:"100%",background:"#1a1500",border:"1px solid #ffb84a",borderRadius:6,color:"#ffb84a",fontSize:12.5,fontWeight:700,padding:"8px",cursor:"pointer"}}>Reset Last Email ID</button>
                       <button onClick={()=>{
                         haptic("medium");
+                        // Never rescan (and save) before the saved hours have loaded.
+                        if(!accReadyRef.current){setTsMsg("⚠️ Your hours are still loading — try again in a moment");setTimeout(()=>setTsMsg(""),4000);return;}
                         const STD=8.25;
                         const rescanned=(accumulated.days||[]).map(d=>{
                           const norm=normaliseHoliday(d.holiday);
@@ -10165,6 +10264,8 @@ const calcTimesheetTotals = days => {
                         const totalOtHrs=Math.round(rescanned.reduce((s,d)=>s+(d.otHrs||0),0)*100)/100;
                         const totalWkndHrs=Math.round(rescanned.reduce((s,d)=>s+(d.wkOtHrs||0),0)*100)/100;
                         const newAcc={...accumulated,otHrs:totalOtHrs,weekendOtHrs:totalWkndHrs,days:rescanned};
+                        accumulatedRef.current=newAcc;
+                        accWrites.current++;
                         setAccumulated(newAcc);
                         if(user)db.saveAccumulator(user.id,newAcc,new Date().toISOString()).catch(e=>console.error("Rescan save failed:",e));
                         const pt=currentPeriodTotals(rescanned);
