@@ -929,7 +929,7 @@ function parseTierOverride(v) {
   if (typeof v === "object" && Number.isInteger(v.tierIdx)) return v.period === getCurrentPayPeriodKey() ? v.tierIdx : null;
   return null;
 }
-const APP_VERSION = "1.24.1";
+const APP_VERSION = "1.24.2";
 // What's new: after an update, a note of what's changed shows once on each phone (every version
 // since it was last opened; not on a new install), and again from Diag → App & Status.
 // Add an entry, newest first, with every update you'd notice. Each point is {b: bold start, t: the rest}.
@@ -938,6 +938,9 @@ const newsFor = (notes, isOwner) => notes
   .map(n => ({ ...n, items: n.items.filter(it => !it.owner || isOwner) }))
   .filter(n => n.items.length);
 const WHATS_NEW = [
+  { v: "1.24.2", date: "9 Nov 2026", items: [
+    { b: "Bills follow a switch to Direct Debit", t: " — a bill linked to a company's card payments now also picks up its Direct Debits, so it still ticks off (Car Insurance missed Direct Line's first one on 4 Nov).", owner: true },
+  ] },
   { v: "1.24.1", date: "9 Nov 2026", items: [
     { b: "No more lost days", t: " — a timesheet that arrives just as you open Vaulted now adds to your saved hours instead of replacing them. 29 Oct – 1 Nov, which went missing on 9 Nov, are back.", owner: true },
     { b: "Overtime after short days", t: " — Weekday OT now takes off any time you were short, like payroll and the Pay Calc do. Short days show in red in the list (e.g. −2.28h).", owner: true },
@@ -1851,6 +1854,7 @@ function payeeGroups(txns, pots, now = new Date()) {
     g.words = matchWords(g.pot ? g.name : [...new Set(g.txs.slice(-3).flatMap(t => [t.merchant, t.counterparty, t.description]))].join(" "));
     g.initials = initialsOf(matchWords(g.name));
     g.isDD = g.txs.some(t => t.dd_id);
+    g.merchants = [...new Set(g.txs.map(t => t.merchant_id).filter(Boolean))];   // Monzo's company ids
     const maxBy = [0, 0, 0, 0];
     for (const t of g.txs) { const mi = ago(txWhen(t)); maxBy[mi] = Math.max(maxBy[mi], -Number(t.amount)); }
     const floor = medianOf(maxBy.filter(Boolean)) / 2;
@@ -1910,6 +1914,22 @@ function autoLinks(bills, groups) {
     taken.add(c.key);
   }
   return out;
+}
+// The payees a bill you've linked covers. Linked to a company's card payments ("m:" + Monzo's id
+// for the company), it also takes that company's Direct Debits from the same account: Monzo files
+// a Direct Debit under its mandate, not the company (Direct Line moved from card to Direct Debit
+// in Nov 2026 and the bill stopped ticking). Not ones another bill has (used). Newest first, so
+// the Direct Debit's day is the one used.
+function linkKeys(key, groups, used = new Set()) {
+  const i = String(key).indexOf("|");
+  const acc = String(key).slice(0, i), k = String(key).slice(i + 1);
+  if (i < 0 || !k.startsWith("m:")) return [key];
+  const company = k.slice(2);
+  const dds = [...groups.values()].filter(g => g.key !== key && g.accountId === acc && g.isDD && !g.pot
+    && !used.has(g.key) && (g.merchants || []).includes(company)).map(g => g.key);
+  if (!dds.length) return [key];
+  const last = kk => { const g = groups.get(kk); return g ? g.last.getTime() : 0; };
+  return [key, ...dds].sort((a, b) => last(b) - last(a));
 }
 // A linked bill in one Budget month ("YYYY-MM"): paid (latest date, total, how many), due (its
 // usual day is still to come, or within 3 days), late (a monthly payment not seen 3 days after
@@ -7226,12 +7246,15 @@ const calcTimesheetTotals = days => {
     const auto=autoLinks(all.filter(x=>!links[x.ref]&&!isOd(x)).map(x=>({ref:x.ref,name:x.b.name,pence:penceOf(x.b),
       home:x.shared&&jIds.length?jIds:pIds})),new Map([...groups].filter(([k])=>!taken.has(k))));
     const byRef={};
+    // Payees a bill already has (picked or matched), so a company's Direct Debits only join a
+    // card-payment link when no other bill has them (linkKeys).
+    const used=new Set([...taken,...[...auto.values()].flatMap(a=>a.keys)]);
     for(const x of all){
       const man=links[x.ref];
       let kind=null,keys=[],isAuto=false;
       if(man&&man.k==="none")kind="none";
       else if((man&&man.k==="od")||(!man&&isOd(x))){kind="od";isAuto=!man;}
-      else if(man&&man.k){kind="tx";keys=[man.k];}
+      else if(man&&man.k){kind="tx";keys=linkKeys(man.k,groups,used);keys.forEach(k=>used.add(k));}
       else{const a=auto.get(x.ref);if(a){kind="tx";keys=a.keys;isAuto=true;}}
       let status=null,odFills=null;
       if(kind==="tx")status=billStatus(keys,groups,mk,penceOf(x.b),now);
